@@ -1,0 +1,13 @@
+*.pyc
+*.pyd
+node_modules/
+dist/
+
+.env
+.env.example
+goals.txt
+tests-ts/
+dist/
+docs/
+graphify-out/
+issues/

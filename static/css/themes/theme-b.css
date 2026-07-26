@@ -1,0 +1,79 @@
+/* ===== THEME B - BLUE ===== */
+.theme-b .header {
+    background: linear-gradient(135deg, #4a90e2, #7bb8f5);
+    color: white;
+    text-shadow: 0 1px 1px #1e5799;
+    border-bottom: 1px solid #5e87b0;
+}
+
+.theme-b .home-links {
+    background: #f0f8ff;
+    border-bottom: 1px solid #b8daff;
+}
+
+.theme-b .home-links a {
+    color: #4a90e2;
+}
+
+.theme-b .home-links a:hover {
+    color: #2e7cd6;
+}
+
+.theme-b .content {
+    background: #f3f3f3;
+    color: #222;
+    text-shadow: 0 1px 0 #fff;
+}
+
+.theme-b .footer {
+    background: linear-gradient(135deg, #5e87b0, #4a90e2);
+    color: white;
+    border-top: 1px solid #6facd5;
+}
+
+/* Theme B Buttons */
+.theme-b .btn {
+    background: linear-gradient(135deg, #4a90e2, #7bb8f5);
+    color: white;
+    text-shadow: 0 1px 1px #1e5799;
+    border: 1px solid #2e7cd6;
+}
+
+.theme-b .btn:hover {
+    background: linear-gradient(135deg, #5ba0f2, #8bc8f7);
+}
+
+/* Theme B Forms */
+.theme-b input, .theme-b select, .theme-b textarea {
+    border-color: #4a90e2;
+}
+
+/* Theme B Lists */
+.theme-b .list li.divider {
+    background: linear-gradient(135deg, #4a90e2, #7bb8f5);
+}
+
+/* Theme B Collapsible */
+.theme-b .collapsible-header {
+    background: linear-gradient(135deg, #4a90e2, #7bb8f5);
+    color: white;
+}
+
+/* Theme B Navbar */
+.theme-b .navbar {
+    background: linear-gradient(135deg, #4a90e2, #7bb8f5);
+}
+
+.theme-b .navbar a {
+    color: white;
+}
+
+.theme-b .navbar a:hover {
+    background: rgba(255,255,255,0.2);
+}
+
+/* Theme B Popups */
+.theme-b .popup {
+    border: 1px solid #4a90e2;
+    box-shadow: 0 8px 32px rgba(74, 144, 226, 0.3);
+}

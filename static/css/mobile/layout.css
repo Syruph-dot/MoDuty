@@ -1,0 +1,182 @@
+/* ===== LAYOUT SYSTEM ===== */
+.page {
+    max-width: 600px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: white;
+}
+
+.header {
+    padding: 15px 20px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 18px;
+}
+
+.shared-header {
+    display: -ms-flexbox;
+    display: flex;
+    -ms-flex-pack: justify;
+    justify-content: space-between;
+    -ms-flex-align: center;
+    align-items: center;
+}
+.shared-header > * {
+    margin-left: 8px;
+}
+.shared-header > *:first-child {
+    margin-left: 0;
+}
+
+.shared-header-title {
+    display: -ms-inline-flexbox;
+    display: inline-flex;
+    -ms-flex-align: center;
+    align-items: center;
+    min-width: 0;
+}
+
+.shared-header-title img {
+    display: block;
+    max-width: 320px;
+    width: auto;
+    height: auto;
+}
+@media (min-width: 481px) {
+    .shared-header-title img {
+        max-width: min(320px, 50vw);
+    }
+}
+
+.shared-header select {
+    -ms-flex-negative: 0;
+    flex-shrink: 0;
+    width: auto;
+    max-width: 45%;
+}
+
+.home-links {
+    padding: 8px 15px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #eee;
+    font-size: 12px;
+    text-align: right;
+}
+
+.shared-home-links {
+    display: -ms-flexbox;
+    display: flex;
+    -ms-flex-pack: justify;
+    justify-content: space-between;
+    -ms-flex-align: center;
+    align-items: center;
+}
+
+.shared-home-link-list {
+    display: -ms-flexbox;
+    display: flex;
+    -ms-flex-wrap: wrap;
+    flex-wrap: wrap;
+    -ms-flex-pack: end;
+    justify-content: flex-end;
+    width: 100%;
+}
+.shared-home-link-list a,
+.shared-home-link-list > * {
+    margin: 2px 8px;
+}
+
+.home-links a {
+    color: #666;
+    text-decoration: none;
+}
+
+.home-links a:hover {
+    color: #333;
+    text-decoration: underline;
+}
+
+.content {
+    padding: 20px;
+}
+
+.footer {
+    padding: 15px 20px;
+    text-align: center;
+    font-size: 14px;
+}
+
+/* ===== GRID SYSTEM ===== */
+/* IE11 fallback uses flexbox; modern browsers get CSS Grid via @supports */
+.grid-2, .grid-3, .grid-4,
+.ui-grid-a, .ui-grid-b, .ui-grid-c {
+    display: -ms-flexbox;
+    display: flex;
+    -ms-flex-wrap: wrap;
+    flex-wrap: wrap;
+    margin: -5px;
+}
+.grid-2 > *,
+.ui-grid-a > * {
+    -ms-flex: 0 0 50%;
+    flex: 0 0 50%;
+    max-width: 50%;
+    padding: 5px;
+    -ms-flex-preferred-size: calc(50% - 10px);
+    flex-basis: calc(50% - 10px);
+}
+.grid-3 > *,
+.ui-grid-b > * {
+    -ms-flex: 0 0 33.3333%;
+    flex: 0 0 33.3333%;
+    max-width: 33.3333%;
+    padding: 5px;
+    -ms-flex-preferred-size: calc(33.3333% - 10px);
+    flex-basis: calc(33.3333% - 10px);
+}
+.grid-4 > *,
+.ui-grid-c > * {
+    -ms-flex: 0 0 25%;
+    flex: 0 0 25%;
+    max-width: 25%;
+    padding: 5px;
+    -ms-flex-preferred-size: calc(25% - 10px);
+    flex-basis: calc(25% - 10px);
+}
+@supports (display: grid) {
+    .grid-2, .grid-3, .grid-4,
+    .ui-grid-a, .ui-grid-b, .ui-grid-c {
+        display: grid;
+        -ms-flex-wrap: none;
+        flex-wrap: nowrap;
+        margin: 0;
+    }
+    .grid-2, .ui-grid-a {
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+    .grid-3, .ui-grid-b {
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+    }
+    .grid-4, .ui-grid-c {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+    }
+    .grid-2 > *, .grid-3 > *, .grid-4 > *,
+    .ui-grid-a > *, .ui-grid-b > *, .ui-grid-c > * {
+        -ms-flex: none;
+        flex: none;
+        max-width: none;
+        padding: 0;
+        width: auto;
+        -ms-flex-preferred-size: auto;
+        flex-basis: auto;
+    }
+}
+
+.ui-block-a, .ui-block-b, .ui-block-c, .ui-block-d {
+    background: #f8f9fa;
+    padding: 10px;
+    border-radius: 0;
+}

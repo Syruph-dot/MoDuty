@@ -1,0 +1,38 @@
+/* ===== THEME D - WHITE ===== */
+.theme-d .header {
+    background: linear-gradient(135deg, #fff, #f8f8f8);
+    color: #333;
+    text-shadow: 0 1px 0 #fff;
+    border-bottom: 1px solid #ddd;
+    text-align: center;
+}
+
+.theme-d .header.text-left {
+    text-align: left;
+}
+
+.theme-d .header.text-right {
+    text-align: right;
+}
+
+.theme-d .content {
+    background: white;
+    color: #333;
+}
+
+.theme-d .footer {
+    background: linear-gradient(135deg, #f8f8f8, #fff);
+    color: #333;
+    border-top: 1px solid #ddd;
+}
+
+/* Theme D Buttons */
+.theme-d .btn {
+    background: linear-gradient(135deg, #fafafa, #f6f6f6);
+    color: #333;
+    border: 1px solid #bbb;
+}
+
+.theme-d .btn:hover {
+    background: linear-gradient(135deg, #fff, #eee);
+}

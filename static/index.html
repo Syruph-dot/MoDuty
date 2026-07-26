@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOMOKA — 会话管理</title>
+    <link rel="stylesheet" href="css/mobile-framework.css">
+    <link rel="stylesheet" href="css/ggmetro.css">
+    <link rel="stylesheet" href="css/app.css">
+    <script src="js/app.js" defer></script>
+    <script src="js/session.js" defer></script>
+</head>
+<body class="theme-c aero">
+    <div class="retro-page">
+        <main class="retro-shell" aria-labelledby="appTitle">
+            <!-- 工具栏 -->
+            <div class="retro-toolbar">
+                <span>MOMOKA 会话管理</span>
+                <span>
+                    <button class="tb-btn" onclick="showCreateModal()">+ 新建会话</button>
+                </span>
+            </div>
+
+            <!-- 会话列表 -->
+            <section class="retro-card session-page">
+                <aside class="retro-side" aria-label="关于">
+                    <div class="avatar-box">M</div>
+                    <div class="side-note">
+                        <strong>MOMOKA</strong><br>
+                        文件助手 v2.0<br>
+                        会话级管理
+                    </div>
+                    <div class="side-note" style="margin-top:6px">
+                        <strong>使用方式</strong><br>
+                        1. 新建会话<br>
+                        2. 设定核心目标<br>
+                        3. 指定工作文件夹<br>
+                        4. 开始对话
+                    </div>
+                    <div class="side-note" style="margin-top:6px">
+                        <strong>特性</strong><br>
+                        会话历史持久化<br>
+                        文件夹级别隔离<br>
+                        Likert 7点评分<br>
+                        技能自动匹配
+                    </div>
+                </aside>
+
+                <article class="retro-main session-main">
+                    <div class="session-list-header">
+                        <h2 class="profile-name" style="margin:0">会话列表</h2>
+                    </div>
+
+                    <!-- 空状态提示 -->
+                    <div id="emptyHint" class="session-empty">
+                        <div class="session-empty-icon">[ ]</div>
+                        <div class="session-empty-text">还没有会话</div>
+                        <div class="session-empty-sub">点击上方「+ 新建会话」开始</div>
+                    </div>
+
+                    <!-- 会话列表容器 -->
+                    <div id="sessionList" class="session-list"></div>
+
+                    <!-- 错误 Toast -->
+                    <div id="errorToast" class="toast-error"></div>
+                </article>
+
+                <!-- 右侧留白 -->
+                <aside class="retro-aside session-aside">
+                    <div class="aside-block">
+                        <div class="aside-title">快捷说明</div>
+                        <div class="aside-list" style="font-size:12px;line-height:1.8">
+                            <p>每个会话绑定一个工作文件夹，Agent 的文件操作默认在此文件夹内进行。</p>
+                            <p>创建时输入的核心目标将作为 Agent 的上下文指导。</p>
+                        </div>
+                    </div>
+                </aside>
+            </section>
+
+            <!-- 底部 -->
+            <footer class="retro-footer">
+                MOMOKA &copy; 2026 SophDotNet · 会话级 Agent 交互协议
+            </footer>
+        </main>
+    </div>
+
+    <!-- 创建会话弹窗 -->
+    <div id="createModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>新建会话</h3>
+                <button class="modal-close" onclick="hideCreateModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">会话核心目标</label>
+                    <input
+                        type="text"
+                        id="goalInput"
+                        class="form-input"
+                        placeholder="例如: 整理和重构项目文档结构"
+                        onkeydown="onGoalKeydown(event)"
+                        autofocus
+                    >
+                    <div class="form-hint">一句话描述本次会话的目标，Agent 将以此为指导</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">工作文件夹</label>
+                    <div class="form-input-row">
+                        <input
+                            type="text"
+                            id="folderInput"
+                            class="form-input"
+                            placeholder="例如: D:/projects/my-docs"
+                            onkeydown="onFolderKeydown(event)"
+                        >
+                        <button class="form-btn" onclick="selectFolder()" title="选择文件夹">浏览</button>
+                    </div>
+                    <div class="form-hint">Agent 的文件操作默认在此文件夹内进行</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="form-btn form-btn-cancel" onclick="hideCreateModal()">取消</button>
+                <button id="createBtn" class="form-btn form-btn-primary" onclick="createSession()">创建会话</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 目录浏览器弹窗 -->
+    <div id="dirBrowserModal" class="modal-overlay">
+        <div class="modal-dialog dir-browser-dialog">
+            <div class="modal-header">
+                <h3>选择工作文件夹</h3>
+                <button class="modal-close" onclick="hideDirBrowser()">✕</button>
+            </div>
+            <div class="modal-body dir-browser-body">
+                <div class="dir-breadcrumb" id="dirBreadcrumb"></div>
+                <div class="dir-list" id="dirList">
+                    <div class="dir-loading">加载中...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <div class="dir-selected" id="dirSelected">未选择</div>
+                <div>
+                    <button class="form-btn form-btn-cancel" onclick="hideDirBrowser()">取消</button>
+                    <button id="selectDirBtn" class="form-btn form-btn-primary" onclick="confirmDirSelection()" disabled>选择此文件夹</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOMOKA — 会话对话</title>
+    <link rel="stylesheet" href="css/mobile-framework.css">
+    <link rel="stylesheet" href="css/ggmetro.css">
+    <link rel="stylesheet" href="css/app.css">
+    <script src="js/app.js" defer></script>
+    <script src="js/chat.js" defer></script>
+</head>
+<body class="theme-c aero">
+    <div class="retro-page">
+        <main class="retro-shell" aria-labelledby="appTitle">
+            <!-- 工具栏：显示会话信息 -->
+            <div class="retro-toolbar chat-toolbar">
+                <div class="chat-toolbar-left">
+                    <button class="tb-btn tb-back" onclick="goBack()" title="返回会话列表">‹ 返回</button>
+                    <span class="chat-toolbar-title" id="sessionName">加载中...</span>
+                </div>
+                <div class="chat-toolbar-right">
+                    <span id="status-indicator">
+                        <span class="status-dot idle"></span>就绪
+                    </span>
+                    <span class="tb-sep">|</span>
+                    <span id="skill-indicator" class="tb-skill" title="当前匹配技能"></span>
+                    <span class="tb-sep">|</span>
+                    <a href="#" onclick="clearChatDisplay()" class="tb-link">清空显示</a>
+                </div>
+            </div>
+
+            <!-- 会话上下文条 -->
+            <div class="session-context-bar" id="sessionContext">
+                <span class="ctx-item ctx-goal" title="核心目标">
+                    <span class="ctx-label">目标:</span>
+                    <span id="sessionGoal" class="ctx-value">-</span>
+                </span>
+                <span class="ctx-item ctx-folder" title="工作文件夹">
+                    <span class="ctx-label">文件夹:</span>
+                    <span id="sessionFolder" class="ctx-value">-</span>
+                </span>
+            </div>
+
+            <!-- 三栏主体 -->
+            <section class="retro-card">
+                <!-- 左侧: Agent 状态 -->
+                <aside class="retro-side" aria-label="Agent 状态">
+                    <div class="avatar-box"><img src="images/momoka_01.jpg" alt="MOMOKA"></div>
+                    <div class="side-note">
+                        <strong>MOMOKA</strong><br>
+                        文件助手 v2.0<br>
+                        会话级管理
+                    </div>
+                    <div class="side-note" style="margin-top:6px">
+                        <strong>能力</strong><br>
+                        读取文件 · 写入文件<br>
+                        列出目录 · 追加内容<br>
+                        查询时间
+                    </div>
+                    <div class="side-note" style="margin-top:6px">
+                        <strong>交互方式</strong><br>
+                        输入任务描述<br>
+                        划一段Agent回复，评分；<br>
+                        使用下方量表评分<br>
+                        Agent 自动学习偏好
+                    </div>
+                </aside>
+
+                <!-- 中间: 对话区 -->
+                <article class="retro-main" id="chatContainer">
+                    <div class="chat-main">
+                        <div class="chat-messages" id="chatMessages">
+                            <div class="chat-message agent" data-msg-id="loading">
+                                <div class="msg-label">MOMOKA</div>
+                                <div class="msg-bubble">加载中...</div>
+                            </div>
+                        </div>
+                        <div class="chat-input-area">
+                            <input
+                                type="text"
+                                id="chatInput"
+                                placeholder="输入任务，例如: 列出当前目录的文件"
+                                autofocus
+                                onkeydown="handleKeydown(event)"
+                            >
+                            <button id="sendBtn" onclick="sendMessage()">发送</button>
+                        </div>
+                    </div>
+                </article>
+
+                <!-- 右侧: 工具调用日志 -->
+                <aside class="retro-aside" aria-label="工具调用日志">
+                    <div class="aside-block">
+                        <div class="aside-title">工具调用日志</div>
+                        <div class="tool-log-list" id="toolLogs">
+                            <div class="tool-log-empty">等待工具调用...</div>
+                        </div>
+                    </div>
+                    <div class="aside-block" style="margin-top:8px">
+                        <div class="aside-title">匹配技能</div>
+                        <div class="aside-list" id="skillTags">
+                            <span style="color:#999;font-size:11px">暂无</span>
+                        </div>
+                    </div>
+                    <div class="aside-block" style="margin-top:8px">
+                        <div class="aside-title">待审批操作</div>
+                        <input id="approvalOperator" type="text" maxlength="80" placeholder="操作者名称" aria-label="审批操作者" style="width:100%;box-sizing:border-box;margin-bottom:5px">
+                        <div class="aside-list" id="approvalPanel">
+                            <span style="color:#999;font-size:11px">加载中...</span>
+                        </div>
+                    </div>
+                </aside>
+            </section>
+
+            <!-- 底部 -->
+            <footer class="retro-footer">
+                MOMOKA &copy; 2011 SophDotNet · 批注式判断交互协议 · Likert 7-Point Scale
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

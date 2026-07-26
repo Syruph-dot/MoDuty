@@ -1,0 +1,20 @@
+{
+  "skills": [
+    {
+      "name": "summarizer",
+      "description": "读取文件并生成结构化摘要",
+      "trigger_keywords": ["总结", "概括", "摘要", "summarize", "简述"],
+      "utility_score": 0.87,
+      "version": "1.0.0",
+      "path": "summarizer/SKILL.md"
+    },
+    {
+      "name": "file_organizer",
+      "description": "按规则整理和分类文件",
+      "trigger_keywords": ["整理", "分类", "组织", "organize", "重命名"],
+      "utility_score": 0.72,
+      "version": "1.0.0",
+      "path": "file_organizer/SKILL.md"
+    }
+  ]
+}

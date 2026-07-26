@@ -1,0 +1,115 @@
+/* ===== METRO STYLE ===== */
+.metro .header {
+    background: #00897b;
+    color: white;
+    text-shadow: none;
+    border: none;
+    font-weight: 300;
+    letter-spacing: 1px;
+}
+
+.metro .home-links {
+    background: #f5f5f5;
+    border-bottom: 2px solid #00897b;
+}
+
+.metro .home-links a {
+    color: #00897b;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.metro .content {
+    background: white;
+    color: #333;
+    border: none;
+}
+
+.metro .footer {
+    background: #26a69a;
+    color: white;
+    text-shadow: none;
+    border: none;
+}
+
+/* Metro Buttons */
+.metro .btn {
+    background: #00897b;
+    color: white;
+    text-shadow: none;
+    border: none;
+    border-radius: 0;
+    font-weight: 300;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.metro .btn:hover {
+    background: #26a69a;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Metro Forms */
+.metro input, .metro select, .metro textarea {
+    border: 2px solid #e0e0e0;
+    border-radius: 0;
+}
+
+.metro input:focus, .metro select:focus, .metro textarea:focus {
+    border-color: #00897b;
+}
+
+/* Metro Lists */
+.metro .list {
+    box-shadow: none;
+    border: none;
+}
+
+.metro .list li {
+    border-bottom: 1px solid #e0e0e0;
+    border-left: 3px solid transparent;
+}
+
+.metro .list li:hover {
+    border-left-color: #00897b;
+    background: #f5f5f5;
+}
+
+/* Metro Collapsible */
+.metro .collapsible {
+    border: none;
+    box-shadow: none;
+}
+
+.metro .collapsible-header {
+    background: #00897b;
+    color: white;
+    border: none;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Metro Navbar */
+.metro .navbar {
+    background: #00897b;
+    border: none;
+}
+
+.metro .navbar a {
+    color: white;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 12px;
+}
+
+.metro .navbar a:hover {
+    background: #26a69a;
+}
+
+/* Metro Popups */
+.metro .popup {
+    border: none;
+    box-shadow: none;
+    border: 2px solid #00897b;
+}

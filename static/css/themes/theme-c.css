@@ -1,0 +1,31 @@
+/* ===== THEME C - LIGHT GRAY ===== */
+.theme-c .header {
+    background: linear-gradient(135deg, #eee, #ddd);
+    color: #3e3e3e;
+    text-shadow: 0 1px 0 #fff;
+    border-bottom: 1px solid #ccc;
+}
+
+.theme-c .content {
+    background: #f9f9f9;
+    color: #333;
+    text-shadow: 0 1px 0 #fff;
+}
+
+.theme-c .footer {
+    background: linear-gradient(135deg, #ddd, #eee);
+    color: #3e3e3e;
+    border-top: 1px solid #ccc;
+}
+
+/* Theme C Buttons */
+.theme-c .btn {
+    background: linear-gradient(135deg, #fff, #f1f1f1);
+    color: #333;
+    text-shadow: 0 1px 0 #fff;
+    border: 1px solid #ccc;
+}
+
+.theme-c .btn:hover {
+    background: linear-gradient(135deg, #f6f6f6, #e0e0e0);
+}

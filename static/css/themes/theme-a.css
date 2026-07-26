@@ -1,0 +1,109 @@
+/* ===== THEME A - DARK ===== */
+.theme-a .header {
+    background: linear-gradient(135deg, #111, #333);
+    color: white;
+    text-shadow: 0 1px 1px #000;
+    border-bottom: 1px solid #444;
+}
+
+.theme-a .home-links {
+    background: #2a2a2a;
+    border-bottom: 1px solid #444;
+}
+
+.theme-a .home-links a {
+    color: #ccc;
+}
+
+.theme-a .home-links a:hover {
+    color: white;
+}
+
+.theme-a .content {
+    background: #222;
+    color: white;
+    text-shadow: 0 1px 1px #111;
+}
+
+.theme-a .footer {
+    background: linear-gradient(135deg, #333, #111);
+    color: white;
+    border-top: 1px solid #444;
+}
+
+.theme-a .ui-block-a, .theme-a .ui-block-b, .theme-a .ui-block-c, .theme-a .ui-block-d {
+    background: #2a2a2a;
+    color: white;
+    border: 1px solid #444;
+}
+
+/* Theme A Buttons */
+.theme-a .btn {
+    background: linear-gradient(135deg, #444, #2d2d2d);
+    color: white;
+    text-shadow: 0 1px 1px #111;
+    border: 1px solid #111;
+}
+
+.theme-a .btn:hover {
+    background: linear-gradient(135deg, #555, #383838);
+}
+
+/* Theme A Forms */
+.theme-a input, .theme-a select, .theme-a textarea {
+    background: #333;
+    color: white;
+    border-color: #555;
+}
+
+/* Theme A Lists */
+.theme-a .list li {
+    background: #2a2a2a;
+    color: white;
+    border-bottom-color: #444;
+}
+
+.theme-a .list li.divider {
+    background: #444;
+}
+
+/* Theme A Collapsible */
+.theme-a .collapsible {
+    border-color: #444;
+}
+
+.theme-a .collapsible-header {
+    background: #333;
+    color: white;
+    border-bottom-color: #444;
+}
+
+.theme-a .collapsible-content {
+    background: #2a2a2a;
+    color: white;
+}
+
+/* Theme A Navbar */
+.theme-a .navbar {
+    background: #333;
+    border: 1px solid #444;
+}
+
+.theme-a .navbar a {
+    color: white;
+}
+
+.theme-a .navbar a:hover {
+    background: #444;
+}
+
+.theme-a .navbar a.active {
+    background: #4a90e2;
+}
+
+/* Theme A Popups */
+.theme-a .popup {
+    background: #2a2a2a;
+    color: white;
+    border: 1px solid #444;
+}

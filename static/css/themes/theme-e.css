@@ -1,0 +1,36 @@
+/* ===== THEME E - YELLOW ===== */
+.theme-e .header {
+    background: linear-gradient(135deg, #fadb4e, #fceda7);
+    color: #333;
+    text-shadow: 0 1px 0 #fff;
+    border-bottom: 1px solid #f7c942;
+}
+
+.theme-e .home-links {
+    background: #fff9df;
+    border-bottom: 1px solid #f7c942;
+}
+
+.theme-e .content {
+    background: #fff9df;
+    color: #222;
+    text-shadow: 0 1px 0 #fff;
+}
+
+.theme-e .footer {
+    background: linear-gradient(135deg, #fceda7, #fadb4e);
+    color: #333;
+    border-top: 1px solid #f7c942;
+}
+
+/* Theme E Buttons */
+.theme-e .btn {
+    background: linear-gradient(135deg, #ffefaa, #ffe155);
+    color: #333;
+    text-shadow: 0 1px 0 #fff;
+    border: 1px solid #f4c63f;
+}
+
+.theme-e .btn:hover {
+    background: linear-gradient(135deg, #fff5ba, #fbdd52);
+}

@@ -26,22 +26,10 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
         info: {
           provider: process.env.ALIYUN_API_KEY ? "DashScope" : (process.env.OPENAI_BASE_URL ?? "OpenAI"),
           key_prefix: `${(process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
-          skills_loaded: (await agent.skillRouter.listSkills()).length,
         },
         issues: process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY
           ? []
           : ["ALIYUN_API_KEY not configured. Set ALIYUN_API_KEY or OPENAI_API_KEY."],
-      });
-      return;
-    }
-    if (request.method === "GET" && url.pathname === "/api/skills") {
-      json(response, 200, { skills: await agent.skillRouter.listSkills() });
-      return;
-    }
-    if (request.method === "GET" && url.pathname === "/api/memory") {
-      json(response, 200, {
-        daily: await agent.memoryStore.readDaily(7),
-        long_term: (await agent.memoryStore.readLongTerm()).slice(0, 2000),
       });
       return;
     }
@@ -84,17 +72,6 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
         throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       }
       json(response, 200, { success: true });
-      return;
-    }
-
-    const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
-    if (runMatch && request.method === "GET") {
-      const runId = decodeURIComponent(runMatch[1] ?? "");
-      const run = await agent.getRun(runId);
-      if (!run) {
-        throw new MomokaHttpError(404, `Unknown run_id: ${runId}`);
-      }
-      json(response, 200, runToSnake(run));
       return;
     }
 

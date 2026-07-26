@@ -206,7 +206,6 @@ export interface JudgeRunResult extends JudgeResponse {
 export interface MomokaRuntime {
   runChat(input: ChatRunInput): Promise<ChatRunResult>;
   runJudge(input: JudgeRunInput): Promise<JudgeRunResult>;
-  getRun(runId: string): Promise<RunRecord | null>;
 }
 
 export interface ChatRequest {
@@ -270,7 +269,6 @@ export interface MomokaAgent {
   };
   chat(request: ChatRequest): Promise<ChatResponse>;
   judge(request: JudgeRequest): Promise<JudgeResponse>;
-  getRun(runId: string): Promise<RunRecord | null>;
   listApprovals(workDir: string): Promise<unknown[]>;
   decideApproval(workDir: string, id: string, decision: "approved" | "rejected", operator: string): Promise<unknown>;
   buildSystemPrompt(input?: { userMessage?: string; topic?: string; matchedSkills?: MatchedSkill[]; workDir?: string }): Promise<string>;

@@ -16,7 +16,7 @@
     "build": "npm run build:server && npm run build:frontend",
     "build:server": "tsc -p tsconfig.json",
     "build:frontend": "tsx scripts/build-frontend.ts",
-    "test": "tsx --test \"tests-ts/**/*.test.ts\"",
+    "test": "tsx --test --test-concurrency=1 \"tests-ts/**/*.test.ts\"",
     "start": "node dist/server.js"
   },
   "devDependencies": {
@@ -26,8 +26,6 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@langchain/core": "^1.1.48",
-    "@langchain/langgraph": "^1.3.3",
     "zod": "^3.25.76"
   }
 }

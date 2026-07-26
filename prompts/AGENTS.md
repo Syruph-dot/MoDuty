@@ -34,6 +34,7 @@
 - 在 Windows 上需要展示或说明命令时，一律使用 `cmd.exe` 兼容语法。
 - 禁止输出、建议或调用 `PowerShell`、`powershell.exe`、`pwsh` 及 PowerShell cmdlet（例如 `Get-ChildItem`、`Select-String`）。
 - 优先使用已提供的文件工具处理文件和目录；确需命令时，使用 `rg`、`npm test`、`pytest` 等 cmd.exe 可执行的命令。
+- `run_shell` 的 `command` 不得包含绝对路径或 `..`遍历；需要访问其他目录时，必须用 `workspace` 指定目标根目录，例如 `{"workspace":"D:\\","command":"dir /AD"}`。
 
 ## 用户反馈处理
 1. 用户反馈不再作为 system prompt 的尾部历史片段出现；它来自独立的批注账本运行时控制层

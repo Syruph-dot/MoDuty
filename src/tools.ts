@@ -124,6 +124,9 @@ export async function runShellTool(
   if (isPowerShellCommand(input.command)) {
     return "Error: PowerShell commands are not allowed. Use cmd.exe-compatible command syntax.";
   }
+  if (hasUnsafeCommandPath(input.command)) {
+    return "Error: Use the workspace field for target directories; command must not contain absolute paths or traversal.";
+  }
   if (!parseWhitelistedCommand(input.command)) {
     const approval = await approvals.request({
       targetWorkspace: workspace,
@@ -298,6 +301,9 @@ export async function executeToolCall(
   if (name === "run_shell" && isPowerShellCommand(String(args.command ?? ""))) {
     return "Error: PowerShell commands are not allowed. Use cmd.exe-compatible command syntax.";
   }
+  if (name === "run_shell" && hasUnsafeCommandPath(String(args.command ?? ""))) {
+    return "Error: Use the workspace field for target directories; command must not contain absolute paths or traversal.";
+  }
   const toolName = name as ApprovalToolName;
   if (isApprovalTool(toolName) && targetWorkspace !== sourceWorkspace) {
     return await deferCrossWorkspaceTool(toolName, args, sourceWorkspace, targetWorkspace, tracePath, approvalOrigin);
@@ -350,6 +356,11 @@ function isApprovalTool(value: string): value is ApprovalToolName {
 function isPowerShellCommand(command: string): boolean {
   const executable = command.trim().split(/\s+/u, 1)[0] ?? "";
   return /^(?:powershell|powershell\.exe|pwsh|pwsh\.exe)$/iu.test(executable);
+}
+
+function hasUnsafeCommandPath(command: string): boolean {
+  return command.trim().split(/\s+/u).some((token) => /^(?:[a-z]:|\\\\)/iu.test(token)
+    || /(?:^|[\\/])\.\.(?:[\\/]|$)/u.test(token));
 }
 
 async function deferCrossWorkspaceTool(

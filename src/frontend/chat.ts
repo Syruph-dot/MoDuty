@@ -31,6 +31,7 @@ async function initChat() {
         renderSessionHeader();
         await loadMessages();
         await refreshApprovals();
+        await initSandboxToggle();
 
         // 如果会话没有消息，自动将核心目标作为首条消息发给 Agent
         if (session.message_count === 0) {
@@ -713,6 +714,31 @@ function updateSkillTags(skills) {
     }
 }
 
+// ── 沙箱开关 ──
+async function initSandboxToggle() {
+    const toggle = document.getElementById('sandboxToggle');
+    if (!toggle) return;
+    try {
+        const data = await apiGet('/settings');
+        toggle.checked = Boolean(data.sandbox_enabled);
+    } catch {
+        toggle.checked = false;
+    }
+    toggle.addEventListener('change', async () => {
+        try {
+            const data = await apiPost('/settings/sandbox', { enabled: toggle.checked });
+            const enabled = Boolean(data.sandbox_enabled);
+            toggle.checked = enabled;
+            setStatus('idle', enabled
+                ? '沙箱已启用：命令在临时目录隔离执行'
+                : '沙箱已关闭：命令在宿主执行（白名单+审批保护）');
+        } catch (err) {
+            toggle.checked = !toggle.checked;
+            setStatus('error', `沙箱设置失败: ${err.message}`);
+        }
+    });
+}
+
 // ── 状态指示 ──
 function setStatus(state, text) {
     const indicator = document.getElementById('status-indicator');
@@ -780,4 +806,5 @@ Object.assign(window, {
     handleKeydown,
     clearChatDisplay,
     stopStreaming,
+    initSandboxToggle,
 });

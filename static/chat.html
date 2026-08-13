@@ -20,6 +20,10 @@
                     <span class="chat-toolbar-title" id="sessionName">加载中...</span>
                 </div>
                 <div class="chat-toolbar-right">
+                    <label class="tb-sandbox" title="命令执行沙箱：开 = 临时目录隔离执行；关 = 宿主直接执行（白名单+审批保护）" style="cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:3px">
+                        沙箱 <input type="checkbox" id="sandboxToggle">
+                    </label>
+                    <span class="tb-sep">|</span>
                     <span id="status-indicator">
                         <span class="status-dot idle"></span>就绪
                     </span>

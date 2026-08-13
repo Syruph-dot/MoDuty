@@ -9,6 +9,7 @@ import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./ap
 import { executeApprovedToolCall } from "./tools.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
+import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, MomokaAgent } from "./types.js";
 
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; }
@@ -22,6 +23,7 @@ export class MomokaAgentCore implements MomokaAgent {
 
   constructor(private readonly options: MomokaAgentOptions) {
     this.projectRoot = resolveProjectRoot(options.projectRoot);
+    initSettings(this.projectRoot);
     this.memoryStore = new MemoryStore(defaultPaths(this.projectRoot).memoryDir);
     this.sessionManager = new SessionManager(defaultPaths(this.projectRoot).memoryDir);
   }
@@ -96,6 +98,8 @@ export class MomokaAgentCore implements MomokaAgent {
   }
 
   async listApprovals(workDir: string) { return await (await this.approvalStore(workDir)).list(); }
+  getSandboxEnabled(): boolean { return getSandboxFlag(); }
+  async setSandboxEnabled(enabled: boolean): Promise<boolean> { return await persistSandboxFlag(enabled); }
   async decideApproval(workDir: string, id: string, decision: "approved" | "rejected", operator: string) {
     const store = await this.approvalStore(workDir);
     try {

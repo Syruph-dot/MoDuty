@@ -26,6 +26,7 @@
       renderSessionHeader();
       await loadMessages();
       await refreshApprovals();
+      await initSandboxToggle();
       if (session.message_count === 0) {
         await sendGoalAsFirstMessage();
       }
@@ -619,6 +620,27 @@
       indicator.textContent = `\u6280\u80FD: ${normalized.map((s) => s.name).join(", ")}`;
     }
   }
+  async function initSandboxToggle() {
+    const toggle = document.getElementById("sandboxToggle");
+    if (!toggle) return;
+    try {
+      const data = await apiGet("/settings");
+      toggle.checked = Boolean(data.sandbox_enabled);
+    } catch {
+      toggle.checked = false;
+    }
+    toggle.addEventListener("change", async () => {
+      try {
+        const data = await apiPost("/settings/sandbox", { enabled: toggle.checked });
+        const enabled = Boolean(data.sandbox_enabled);
+        toggle.checked = enabled;
+        setStatus("idle", enabled ? "\u6C99\u7BB1\u5DF2\u542F\u7528\uFF1A\u547D\u4EE4\u5728\u4E34\u65F6\u76EE\u5F55\u9694\u79BB\u6267\u884C" : "\u6C99\u7BB1\u5DF2\u5173\u95ED\uFF1A\u547D\u4EE4\u5728\u5BBF\u4E3B\u6267\u884C\uFF08\u767D\u540D\u5355+\u5BA1\u6279\u4FDD\u62A4\uFF09");
+      } catch (err) {
+        toggle.checked = !toggle.checked;
+        setStatus("error", `\u6C99\u7BB1\u8BBE\u7F6E\u5931\u8D25: ${err.message}`);
+      }
+    });
+  }
   function setStatus(state, text) {
     const indicator = document.getElementById("status-indicator");
     if (!indicator) return;
@@ -676,6 +698,7 @@
     goBack,
     handleKeydown,
     clearChatDisplay,
-    stopStreaming
+    stopStreaming,
+    initSandboxToggle
   });
 })();

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from "./approvals.js";
 import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
+import { isSandboxEnabled } from "./settings.js";
 
 export interface WorkspaceManifest {
   name: string;
@@ -408,9 +409,11 @@ export async function executeApprovedToolCall(toolName: ApprovalToolName, args: 
   if (toolName === "write_file") return await writeFileTool({ workDir: targetWorkspace, path: args.path ?? "", content: args.content ?? "" });
   if (toolName === "list_files") return await listFilesTool({ workDir: targetWorkspace, directory: args.directory || "." });
   if (toolName === "append_file") return await appendFileTool({ workDir: targetWorkspace, path: args.path ?? "", content: args.content ?? "" });
-  const store = new ApprovalStore(targetWorkspace, {
-    run: createSandboxShellRunner(targetWorkspace, { manifest: loadWorkspaceManifest(targetWorkspace) }),
-  });
+  const store = isSandboxEnabled()
+    ? new ApprovalStore(targetWorkspace, {
+        run: createSandboxShellRunner(targetWorkspace, { manifest: loadWorkspaceManifest(targetWorkspace) }),
+      })
+    : new ApprovalStore(targetWorkspace);
   try {
     const result = await store.runApproved(args.command ?? "", targetWorkspace);
     return [result.stdout, result.stderr].filter(Boolean).join("\n") || `Command exited with code ${result.code}`;
@@ -420,9 +423,13 @@ export async function executeApprovedToolCall(toolName: ApprovalToolName, args: 
 }
 
 function createDefaultApprovalStore(workspace: string): ApprovalStore {
-  return new ApprovalStore(workspace, {
-    run: createSandboxShellRunner(workspace, { manifest: loadWorkspaceManifest(workspace) }),
-  });
+  if (isSandboxEnabled()) {
+    return new ApprovalStore(workspace, {
+      run: createSandboxShellRunner(workspace, { manifest: loadWorkspaceManifest(workspace) }),
+    });
+  }
+  // 沙箱关闭（默认）：宿主白名单执行，与第二周行为一致
+  return new ApprovalStore(workspace);
 }
 
 function requireWorkspace(workDir: string | undefined): string {

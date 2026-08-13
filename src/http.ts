@@ -33,6 +33,17 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
       });
       return;
     }
+    if (request.method === "GET" && url.pathname === "/api/settings") {
+      json(response, 200, { sandbox_enabled: agent.getSandboxEnabled() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/settings/sandbox") {
+      const body = await readJsonBody(request);
+      await agent.setSandboxEnabled(Boolean(body.enabled));
+      json(response, 200, { sandbox_enabled: agent.getSandboxEnabled() });
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/directories") {
       json(response, 200, await agent.listDirectories(url.searchParams.get("path") ?? ""));
       return;

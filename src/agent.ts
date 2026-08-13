@@ -7,6 +7,8 @@ import { MemoryStore } from "./memory.js";
 import { SessionManager } from "./session-manager.js";
 import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
+import { buildBoundedHistory } from "./context.js";
+import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
@@ -36,10 +38,32 @@ export class MomokaAgentCore implements MomokaAgent {
     };
   }
 
-  async buildSystemPrompt(input: { workDir?: string } = {}): Promise<string> {
+  async buildSystemPrompt(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null } = {}): Promise<string> {
     let prompt = "You are MOMOKA, a concise file assistant.";
     try { prompt = await readFile(path.join(this.projectRoot, "prompts", "AGENTS.md"), "utf8"); } catch { /* fallback */ }
-    return input.workDir ? `${prompt}\n\n## Current Work Directory\n${input.workDir}` : prompt;
+    const sections: string[] = [];
+    if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
+
+    // 渐进披露：任务命中技能关键词时，注入相关技能内容（保持提示词精简）
+    const matched = matchSkills(input.topic ?? "", input.message ?? "", await loadSkillIndex(this.projectRoot));
+    if (matched.length > 0) {
+      const contents: string[] = [];
+      for (const skill of matched) {
+        const content = await loadSkillContent(this.projectRoot, skill);
+        if (content) contents.push(`### ${skill.name}${skill.description ? `（${skill.description}）` : ""}\n${content}`);
+      }
+      if (contents.length > 0) sections.push(`## 可用技能（按需使用）\n${contents.join("\n\n")}`);
+    }
+
+    // 长期记忆：按主题注入相关跨会话记忆
+    if (input.topic) {
+      const memories = await this.memoryStore.searchLongTerm(input.topic);
+      if (memories.length > 0) {
+        sections.push(`## 相关长期记忆\n${memories.map((memory) => `- ${memory.content}`).join("\n")}`);
+      }
+    }
+
+    return sections.length > 0 ? `${prompt}\n\n${sections.join("\n\n")}` : prompt;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -55,12 +79,12 @@ export class MomokaAgentCore implements MomokaAgent {
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       workDir = session.folderPath;
       await this.sessionManager.addMessage(sessionId, "user", message);
-      history = formatHistory((await this.sessionManager.getMessages(sessionId, null)).slice(0, -1));
+      history = buildBoundedHistory((await this.sessionManager.getMessages(sessionId, null)).slice(0, -1)).text;
     }
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const topic = request.topic?.trim() || message.slice(0, 80);
     const result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
-      systemPrompt: await this.buildSystemPrompt({ workDir }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+      systemPrompt: await this.buildSystemPrompt({ workDir, topic, message, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
       onEvent: request.onEvent, signal: request.signal,
     });
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
@@ -77,6 +101,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const output = await this.memoryStore.getOutput(request.outputId);
     if (!output) throw new MomokaHttpError(404, `Unknown output_id: ${request.outputId}`);
     const judgment = await this.memoryStore.recordJudgment(request);
+    await this.memoryStore.promoteToLongTerm(judgment);
     const label = LIKERT_LABELS[request.score] ?? "";
     const reflection = analyzeJudgment({ score: request.score, label, annotatedText: judgment.context, topic: judgment.topic, userComment: judgment.comment });
     const base: JudgeResponse = { runId: makeId("run"), outputId: request.outputId, score: request.score, label, analysis: reflection.summary, reflection, annotatedText: judgment.context, comment: judgment.comment, preferenceUpdate: { updated: false, promoted: [] }, evolutionProposals: [] };
@@ -86,7 +111,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const continuationOutputId = makeId("out");
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const result = await this.options.modelClient.run(buildFollowupPrompt({ topic: output.topic, outputText: output.response, judgment: { ...judgment, label }, reflection }), {
-      systemPrompt: await this.buildSystemPrompt({ workDir }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
+      systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
     });
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId: continuationOutputId, prompt: output.prompt, response: result.output, topic: output.topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
@@ -143,7 +168,6 @@ export class MomokaAgentCore implements MomokaAgent {
   private async approvalStore(workDir: string) { const workspace = path.resolve(workDir); if (!(await stat(workspace).catch(() => null))?.isDirectory()) throw new MomokaHttpError(400, `Directory does not exist: ${workspace}`); return new ApprovalStore(workspace); }
 }
 
-function formatHistory(messages: Array<{ role: string; content: string }>): string { return messages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n"); }
 async function listWindowsDrives() { const entries: Array<{ name: string; path: string; is_dir: true }> = []; for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") { const drive = `${letter}:\\`; try { await access(drive); entries.push({ name: drive.slice(0, -1), path: drive, is_dir: true }); } catch { /* absent */ } } return entries; }
 export class MomokaHttpError extends Error { constructor(readonly statusCode: number, message: string, readonly details: Record<string, unknown> = {}) { super(message); } }
 export function createMomokaAgent(options: MomokaAgentOptions): MomokaAgentCore { return new MomokaAgentCore(options); }

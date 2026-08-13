@@ -5,7 +5,7 @@ import path from "node:path";
 import { assessmentToSnake, evolutionProposalToSnake, reflectionToSnake } from "./casing.js";
 import { LIKERT_LABELS } from "./config.js";
 import { MomokaAgentCore, MomokaHttpError } from "./agent.js";
-import type { ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord } from "./types.js";
+import type { ChatRequest, ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
 
 export function createMomokaHttpHandler(agent: MomokaAgentCore): MomokaHttpHandler {
   return (request: IncomingMessage, response: ServerResponse) => {
@@ -97,13 +97,18 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
 
     if (request.method === "POST" && url.pathname === "/api/chat") {
       const body = await readJsonBody(request);
-      const result = await agent.chat({
+      const chatRequest: ChatRequest = {
         message: String(body.message ?? ""),
         sessionId: typeof body.session_id === "string" ? body.session_id : null,
         outputId: typeof body.output_id === "string" ? body.output_id : undefined,
         topic: typeof body.topic === "string" ? body.topic : undefined,
         workDir: typeof body.work_dir === "string" ? body.work_dir : undefined,
-      });
+      };
+      if (body.stream === true) {
+        await streamChat(agent, response, chatRequest);
+        return;
+      }
+      const result = await agent.chat(chatRequest);
       json(response, 200, chatToSnake(result));
       return;
     }
@@ -174,6 +179,34 @@ function contentTypeFor(filePath: string): string {
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".svg") return "image/svg+xml";
   return "application/octet-stream";
+}
+
+async function streamChat(agent: MomokaAgentCore, response: ServerResponse, request: ChatRequest): Promise<void> {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+  });
+  const controller = new AbortController();
+  response.on("close", () => {
+    if (!response.writableEnded) controller.abort();
+  });
+  try {
+    const result = await agent.chat({
+      ...request,
+      onEvent: (event: StreamEvent) => sseData(response, event),
+      signal: controller.signal,
+    });
+    sseData(response, { type: "done", ...chatToSnake(result) });
+  } catch (error) {
+    sseData(response, { type: "error", error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    response.end();
+  }
+}
+
+function sseData(response: ServerResponse, data: unknown): void {
+  response.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {

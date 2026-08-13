@@ -17,6 +17,12 @@ export interface ModelClient {
   run(input: string, context: ModelRunContext): Promise<ModelRunResult>;
 }
 
+export type StreamEvent =
+  | { type: "token"; text: string }
+  | { type: "tool_start"; name: string; args: string }
+  | { type: "tool_result"; name: string; result: string }
+  | { type: "approval_requested"; name: string; args: string; result: string };
+
 export interface ModelRunContext {
   systemPrompt: string;
   topic: string;
@@ -26,6 +32,10 @@ export interface ModelRunContext {
   runId?: string;
   matchedSkills: MatchedSkill[];
   requestKind: "chat" | "continuation" | "revision";
+  /** 流式/进度事件回调（SSE 转发用） */
+  onEvent?: (event: StreamEvent) => void;
+  /** 外部取消信号（客户端断开/超时） */
+  signal?: AbortSignal;
 }
 
 export type MomokaRequestKind = ModelRunContext["requestKind"];
@@ -214,6 +224,8 @@ export interface ChatRequest {
   outputId?: string;
   topic?: string;
   workDir?: string;
+  onEvent?: (event: StreamEvent) => void;
+  signal?: AbortSignal;
 }
 
 export interface ChatResponse {

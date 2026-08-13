@@ -59,6 +59,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const topic = request.topic?.trim() || message.slice(0, 80);
     const result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
       systemPrompt: await this.buildSystemPrompt({ workDir }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+      onEvent: request.onEvent, signal: request.signal,
     });
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });

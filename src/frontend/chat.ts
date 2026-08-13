@@ -90,39 +90,14 @@ async function sendMessage() {
     addMessage('user', message, uid('msg'), false);
 
     try {
-        const data = await apiPost('/chat', {
+        await runStreamingChat({
             session_id: sessionId,
             message: message,
             output_id: uid('out'),
             topic: session ? session.goal : message,
         });
-
-        // 更新 session 信息
-        if (data.session_id) {
-            session.message_count = (session.message_count || 0) + 1;
-            session.last_message_at = new Date().toISOString();
-        }
-
-        // 显示技能标签
-        const skillPayload = data.skill_reasons || data.matched_skills;
-        updateSkillTags(skillPayload);
-
-        // 显示工具调用
-        if (data.tool_calls && data.tool_calls.length > 0) {
-            for (const tc of data.tool_calls) {
-                addToolLog(tc.tool, tc.args, tc.result);
-            }
-        }
-
-        // 显示 Agent 回复
-        const outId = data.output_id || uid('out');
-        addMessage('agent', data.response, outId, true, data.matched_skills, data.tool_calls);
-        await refreshApprovals();
-        setStatus('idle', '就绪');
-
     } catch (err) {
-        addMessage('agent', `错误: ${err.message}`, '', false);
-        setStatus('error', '错误');
+        // 错误已在流式气泡中渲染
     } finally {
         isProcessing = false;
         input.disabled = false;
@@ -142,37 +117,173 @@ async function sendGoalAsFirstMessage() {
     addMessage('user', goal, uid('msg'), false);
 
     try {
-        const data = await apiPost('/chat', {
+        await runStreamingChat({
             session_id: sessionId,
             message: goal,
             output_id: uid('out'),
             topic: goal,
         });
-
-        if (data.session_id) {
-            session.message_count = (session.message_count || 0) + 1;
-        }
-
-        const skillPayload = data.skill_reasons || data.matched_skills;
-        updateSkillTags(skillPayload);
-
-        if (data.tool_calls && data.tool_calls.length > 0) {
-            for (const tc of data.tool_calls) {
-                addToolLog(tc.tool, tc.args, tc.result);
-            }
-        }
-
-        const outId = data.output_id || uid('out');
-        addMessage('agent', data.response, outId, true, data.matched_skills, data.tool_calls);
-        await refreshApprovals();
-        setStatus('idle', '就绪');
-
     } catch (err) {
-        addMessage('agent', `自动发送失败: ${err.message}`, '', false);
-        setStatus('error', '错误');
+        // 错误已在流式气泡中渲染
     } finally {
         isProcessing = false;
     }
+}
+
+// ── 流式对话（SSE） ──
+const STREAM_TIMEOUT_MS = 180000;
+let activeAbort = null;
+
+async function runStreamingChat(payload) {
+    const outId = payload.output_id || uid('out');
+    const holder = createStreamingAgentBubble(outId);
+    lastOutputId = outId;
+
+    activeAbort = new AbortController();
+    const timeoutTimer = setTimeout(() => {
+        if (activeAbort) activeAbort.abort();
+    }, STREAM_TIMEOUT_MS);
+    showStopButton(true);
+
+    let fullText = '';
+    let rafPending = false;
+    let lastToolCard = null;
+
+    const flush = () => {
+        rafPending = false;
+        holder.bubble.innerHTML = escapeHtml(fullText).replace(/\n/g, '<br>');
+        scrollToBottom();
+    };
+
+    try {
+        const res = await fetch(`${API_BASE}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({}, payload, { stream: true })),
+            signal: activeAbort.signal,
+        });
+        if (!res.ok || !res.body) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalData = null;
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf('\n\n')) >= 0) {
+                const frame = buffer.slice(0, idx);
+                buffer = buffer.slice(idx + 2);
+                for (const line of frame.split('\n')) {
+                    if (!line.startsWith('data:')) continue;
+                    let event;
+                    try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
+                    if (event.type === 'token') {
+                        fullText += event.text || '';
+                        if (!rafPending) {
+                            rafPending = true;
+                            requestAnimationFrame(flush);
+                        }
+                    } else if (event.type === 'tool_start') {
+                        lastToolCard = createToolCard(event.name, event.args, '执行中...');
+                    } else if (event.type === 'tool_result') {
+                        if (lastToolCard) {
+                            updateToolCardResult(lastToolCard, event.result);
+                            lastToolCard = null;
+                        } else {
+                            addToolLog(event.name, event.args || {}, event.result);
+                        }
+                    } else if (event.type === 'approval_requested') {
+                        setStatus('thinking', '等待审批...');
+                        refreshApprovals();
+                    } else if (event.type === 'done') {
+                        finalData = event;
+                    } else if (event.type === 'error') {
+                        throw new Error(event.error || '服务器错误');
+                    }
+                }
+            }
+        }
+
+        if (rafPending) requestAnimationFrame(flush);
+        if (!finalData) throw new Error('连接意外结束（未收到完成事件）');
+
+        const data = finalData;
+        if (data.session_id) {
+            session.message_count = (session.message_count || 0) + 1;
+            session.last_message_at = new Date().toISOString();
+        }
+        const skillPayload = data.skill_reasons || data.matched_skills;
+        updateSkillTags(skillPayload);
+        holder.bubble.insertAdjacentHTML('afterend', renderJudgeBar(data.output_id || outId));
+        await refreshApprovals();
+        setStatus('idle', '就绪');
+        return data;
+    } catch (err) {
+        const stopped = activeAbort && activeAbort.signal.aborted;
+        holder.bubble.innerHTML = escapeHtml(fullText) +
+            `<div style="color:#c33;font-size:11px;margin-top:4px">${stopped ? '已停止' : `错误: ${escapeHtml(err.message)}`}</div>`;
+        setStatus('error', stopped ? '已停止' : '错误');
+        throw err;
+    } finally {
+        clearTimeout(timeoutTimer);
+        showStopButton(false);
+        activeAbort = null;
+    }
+}
+
+function createStreamingAgentBubble(outId) {
+    const container = document.getElementById('chatMessages');
+    const div = document.createElement('div');
+    div.className = 'chat-message agent';
+    div.setAttribute('data-msg-id', outId);
+    div.innerHTML = '<div class="msg-label">MOMOKA</div><div class="msg-bubble"></div>';
+    container.appendChild(div);
+    scrollToBottom();
+    return { bubble: div.querySelector('.msg-bubble') };
+}
+
+function createToolCard(toolName, args, resultText) {
+    const container = document.getElementById('toolLogs');
+    const placeholder = container.querySelector('.tool-log-empty');
+    if (placeholder) placeholder.remove();
+    const card = document.createElement('div');
+    card.className = 'tool-card';
+    card.innerHTML = `
+        <div class="tool-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span class="tool-card-name">[TOOL] ${escapeHtml(toolName)}</span>
+            <span class="tool-card-time">${formatTime()}</span>
+        </div>
+        <div class="tool-card-body">
+            <div class="tool-card-args"><strong>参数:</strong> ${escapeHtml(typeof args === 'string' ? args : JSON.stringify(args))}</div>
+            <div class="tool-card-result">${escapeHtml(resultText || '')}</div>
+        </div>
+    `;
+    container.appendChild(card);
+    container.scrollTop = container.scrollHeight;
+    return card;
+}
+
+function updateToolCardResult(card, resultText) {
+    const resultEl = card.querySelector('.tool-card-result');
+    if (resultEl) resultEl.textContent = resultText || '';
+    const container = document.getElementById('toolLogs');
+    container.scrollTop = container.scrollHeight;
+}
+
+function stopStreaming() {
+    if (activeAbort) activeAbort.abort();
+}
+
+function showStopButton(visible) {
+    const btn = document.getElementById('stopBtn');
+    if (btn) btn.style.display = visible ? '' : 'none';
 }
 
 // ── 添加消息 ──
@@ -655,4 +766,5 @@ Object.assign(window, {
     goBack,
     handleKeydown,
     clearChatDisplay,
+    stopStreaming,
 });

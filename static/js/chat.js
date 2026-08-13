@@ -72,30 +72,13 @@
     setStatus("thinking", "\u601D\u8003\u4E2D...");
     addMessage("user", message, uid("msg"), false);
     try {
-      const data = await apiPost("/chat", {
+      await runStreamingChat({
         session_id: sessionId,
         message,
         output_id: uid("out"),
         topic: session ? session.goal : message
       });
-      if (data.session_id) {
-        session.message_count = (session.message_count || 0) + 1;
-        session.last_message_at = (/* @__PURE__ */ new Date()).toISOString();
-      }
-      const skillPayload = data.skill_reasons || data.matched_skills;
-      updateSkillTags(skillPayload);
-      if (data.tool_calls && data.tool_calls.length > 0) {
-        for (const tc of data.tool_calls) {
-          addToolLog(tc.tool, tc.args, tc.result);
-        }
-      }
-      const outId = data.output_id || uid("out");
-      addMessage("agent", data.response, outId, true, data.matched_skills, data.tool_calls);
-      await refreshApprovals();
-      setStatus("idle", "\u5C31\u7EEA");
     } catch (err) {
-      addMessage("agent", `\u9519\u8BEF: ${err.message}`, "", false);
-      setStatus("error", "\u9519\u8BEF");
     } finally {
       isProcessing = false;
       input.disabled = false;
@@ -110,32 +93,159 @@
     setStatus("thinking", "\u601D\u8003\u4E2D...");
     addMessage("user", goal, uid("msg"), false);
     try {
-      const data = await apiPost("/chat", {
+      await runStreamingChat({
         session_id: sessionId,
         message: goal,
         output_id: uid("out"),
         topic: goal
       });
-      if (data.session_id) {
-        session.message_count = (session.message_count || 0) + 1;
-      }
-      const skillPayload = data.skill_reasons || data.matched_skills;
-      updateSkillTags(skillPayload);
-      if (data.tool_calls && data.tool_calls.length > 0) {
-        for (const tc of data.tool_calls) {
-          addToolLog(tc.tool, tc.args, tc.result);
-        }
-      }
-      const outId = data.output_id || uid("out");
-      addMessage("agent", data.response, outId, true, data.matched_skills, data.tool_calls);
-      await refreshApprovals();
-      setStatus("idle", "\u5C31\u7EEA");
     } catch (err) {
-      addMessage("agent", `\u81EA\u52A8\u53D1\u9001\u5931\u8D25: ${err.message}`, "", false);
-      setStatus("error", "\u9519\u8BEF");
     } finally {
       isProcessing = false;
     }
+  }
+  var STREAM_TIMEOUT_MS = 18e4;
+  var activeAbort = null;
+  async function runStreamingChat(payload) {
+    const outId = payload.output_id || uid("out");
+    const holder = createStreamingAgentBubble(outId);
+    lastOutputId = outId;
+    activeAbort = new AbortController();
+    const timeoutTimer = setTimeout(() => {
+      if (activeAbort) activeAbort.abort();
+    }, STREAM_TIMEOUT_MS);
+    showStopButton(true);
+    let fullText = "";
+    let rafPending = false;
+    let lastToolCard = null;
+    const flush = () => {
+      rafPending = false;
+      holder.bubble.innerHTML = escapeHtml(fullText).replace(/\n/g, "<br>");
+      scrollToBottom();
+    };
+    try {
+      const res = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({}, payload, { stream: true })),
+        signal: activeAbort.signal
+      });
+      if (!res.ok || !res.body) {
+        const data2 = await res.json().catch(() => ({}));
+        throw new Error(data2.error || `HTTP ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalData = null;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          for (const line of frame.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            let event;
+            try {
+              event = JSON.parse(line.slice(5).trim());
+            } catch {
+              continue;
+            }
+            if (event.type === "token") {
+              fullText += event.text || "";
+              if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(flush);
+              }
+            } else if (event.type === "tool_start") {
+              lastToolCard = createToolCard(event.name, event.args, "\u6267\u884C\u4E2D...");
+            } else if (event.type === "tool_result") {
+              if (lastToolCard) {
+                updateToolCardResult(lastToolCard, event.result);
+                lastToolCard = null;
+              } else {
+                addToolLog(event.name, event.args || {}, event.result);
+              }
+            } else if (event.type === "approval_requested") {
+              setStatus("thinking", "\u7B49\u5F85\u5BA1\u6279...");
+              refreshApprovals();
+            } else if (event.type === "done") {
+              finalData = event;
+            } else if (event.type === "error") {
+              throw new Error(event.error || "\u670D\u52A1\u5668\u9519\u8BEF");
+            }
+          }
+        }
+      }
+      if (rafPending) requestAnimationFrame(flush);
+      if (!finalData) throw new Error("\u8FDE\u63A5\u610F\u5916\u7ED3\u675F\uFF08\u672A\u6536\u5230\u5B8C\u6210\u4E8B\u4EF6\uFF09");
+      const data = finalData;
+      if (data.session_id) {
+        session.message_count = (session.message_count || 0) + 1;
+        session.last_message_at = (/* @__PURE__ */ new Date()).toISOString();
+      }
+      const skillPayload = data.skill_reasons || data.matched_skills;
+      updateSkillTags(skillPayload);
+      holder.bubble.insertAdjacentHTML("afterend", renderJudgeBar(data.output_id || outId));
+      await refreshApprovals();
+      setStatus("idle", "\u5C31\u7EEA");
+      return data;
+    } catch (err) {
+      const stopped = activeAbort && activeAbort.signal.aborted;
+      holder.bubble.innerHTML = escapeHtml(fullText) + `<div style="color:#c33;font-size:11px;margin-top:4px">${stopped ? "\u5DF2\u505C\u6B62" : `\u9519\u8BEF: ${escapeHtml(err.message)}`}</div>`;
+      setStatus("error", stopped ? "\u5DF2\u505C\u6B62" : "\u9519\u8BEF");
+      throw err;
+    } finally {
+      clearTimeout(timeoutTimer);
+      showStopButton(false);
+      activeAbort = null;
+    }
+  }
+  function createStreamingAgentBubble(outId) {
+    const container = document.getElementById("chatMessages");
+    const div = document.createElement("div");
+    div.className = "chat-message agent";
+    div.setAttribute("data-msg-id", outId);
+    div.innerHTML = '<div class="msg-label">MOMOKA</div><div class="msg-bubble"></div>';
+    container.appendChild(div);
+    scrollToBottom();
+    return { bubble: div.querySelector(".msg-bubble") };
+  }
+  function createToolCard(toolName, args, resultText) {
+    const container = document.getElementById("toolLogs");
+    const placeholder = container.querySelector(".tool-log-empty");
+    if (placeholder) placeholder.remove();
+    const card = document.createElement("div");
+    card.className = "tool-card";
+    card.innerHTML = `
+        <div class="tool-card-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+            <span class="tool-card-name">[TOOL] ${escapeHtml(toolName)}</span>
+            <span class="tool-card-time">${formatTime()}</span>
+        </div>
+        <div class="tool-card-body">
+            <div class="tool-card-args"><strong>\u53C2\u6570:</strong> ${escapeHtml(typeof args === "string" ? args : JSON.stringify(args))}</div>
+            <div class="tool-card-result">${escapeHtml(resultText || "")}</div>
+        </div>
+    `;
+    container.appendChild(card);
+    container.scrollTop = container.scrollHeight;
+    return card;
+  }
+  function updateToolCardResult(card, resultText) {
+    const resultEl = card.querySelector(".tool-card-result");
+    if (resultEl) resultEl.textContent = resultText || "";
+    const container = document.getElementById("toolLogs");
+    container.scrollTop = container.scrollHeight;
+  }
+  function stopStreaming() {
+    if (activeAbort) activeAbort.abort();
+  }
+  function showStopButton(visible) {
+    const btn = document.getElementById("stopBtn");
+    if (btn) btn.style.display = visible ? "" : "none";
   }
   function addMessage(role, text, msgId, showJudge, matchedSkills, toolCalls) {
     const container = document.getElementById("chatMessages");
@@ -552,6 +662,7 @@
     showPageError,
     goBack,
     handleKeydown,
-    clearChatDisplay
+    clearChatDisplay,
+    stopStreaming
   });
 })();

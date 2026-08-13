@@ -13,6 +13,8 @@ export interface WorkspaceManifest {
   env: string[];
   commandTimeoutMs: number;
   allowedShellStrategies: string[];
+  /** 沙箱同步时排除的目录/文件（支持 `build-*` 前缀通配；默认已排除 .git/.omc/node_modules 等） */
+  sandboxExcludes?: string[];
 }
 
 export const DEFAULT_WORKSPACE_MANIFEST: WorkspaceManifest = {

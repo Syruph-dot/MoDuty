@@ -1,0 +1,8 @@
+{
+  "name": "momoka-workspace",
+  "readableDirs": ["."],
+  "writableDirs": ["."],
+  "env": [],
+  "commandTimeoutMs": 120000,
+  "allowedShellStrategies": ["parameterized"]
+}

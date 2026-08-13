@@ -8,6 +8,7 @@ import { SessionManager } from "./session-manager.js";
 import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
+import { saveRunSnapshot } from "./snapshot.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, MomokaAgent } from "./types.js";
 
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; }
@@ -62,6 +63,9 @@ export class MomokaAgentCore implements MomokaAgent {
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });
+    await saveRunSnapshot({ runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
+      await appendTraceEvent(tracePath, "snapshot_failed", { message: error instanceof Error ? error.message : String(error) });
+    });
     return { runId, outputId, topic, response: result.output, annotationRuntimeContext: "", outputAssessment: accept, toolCalls: result.toolCalls ?? [], matchedSkills: [], skillReasons: [], sessionId };
   }
 
@@ -84,6 +88,9 @@ export class MomokaAgentCore implements MomokaAgent {
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId: continuationOutputId, prompt: output.prompt, response: result.output, topic: output.topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId: continuationOutputId, toolCalls: result.toolCalls ?? [] });
+    await saveRunSnapshot({ runId: base.runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
+      await appendTraceEvent(tracePath, "snapshot_failed", { message: error instanceof Error ? error.message : String(error) });
+    });
     return { ...base, nextOutputId: continuationOutputId, nextResponse: result.output, nextAnnotationRuntimeContext: "", nextOutputAssessment: accept, nextToolCalls: result.toolCalls ?? [], nextSkillReasons: [] };
   }
 

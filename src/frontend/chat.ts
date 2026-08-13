@@ -605,6 +605,7 @@ async function refreshApprovals() {
         for (const approval of approvals) {
             const card = document.createElement('div');
             card.className = 'tool-card';
+            card.setAttribute('data-approval-id', approval.id);
             const title = document.createElement('div');
             title.className = 'tool-card-name';
             title.textContent = `[审批] ${approval.toolName || approval.tool_name || 'run_shell'}`;
@@ -648,21 +649,33 @@ async function decideApproval(approvalId, decision) {
         setStatus('error', '请输入审批操作者');
         return;
     }
+    // 防重复：点击后立即禁用该卡片按钮，避免重复提交导致“已决定”冲突
+    const card = document.querySelector(`.tool-card[data-approval-id="${approvalId}"]`);
+    if (card) {
+        card.querySelectorAll('button').forEach((btn) => { btn.disabled = true; });
+    }
+    setStatus('thinking', '审批处理中...');
     try {
         const data = await apiPost(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
             work_dir: session.folder_path,
             decision,
             operator,
         });
-        if (data.event) {
-            renderApprovalExecutionEvent(data.event);
+        if (data.alreadyDecided) {
+            setStatus('idle', '该审批已处理过');
+        } else {
+            if (data.event) {
+                renderApprovalExecutionEvent(data.event);
+            }
+            setStatus('idle', decision === 'approved'
+                ? (data.event ? '执行结果已返回' : '已批准并执行')
+                : '已拒绝操作');
         }
-        setStatus('idle', decision === 'approved'
-            ? (data.event ? '执行结果已返回' : '已批准并执行')
-            : '已拒绝操作');
-        await refreshApprovals();
     } catch (err) {
         setStatus('error', `审批失败: ${err.message}`);
+    } finally {
+        // 无论成败都同步面板：已决审批不再显示，避免残留卡片继续点击
+        await refreshApprovals();
     }
 }
 

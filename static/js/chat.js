@@ -522,6 +522,7 @@
       for (const approval of approvals) {
         const card = document.createElement("div");
         card.className = "tool-card";
+        card.setAttribute("data-approval-id", approval.id);
         const title = document.createElement("div");
         title.className = "tool-card-name";
         title.textContent = `[\u5BA1\u6279] ${approval.toolName || approval.tool_name || "run_shell"}`;
@@ -562,19 +563,31 @@
       setStatus("error", "\u8BF7\u8F93\u5165\u5BA1\u6279\u64CD\u4F5C\u8005");
       return;
     }
+    const card = document.querySelector(`.tool-card[data-approval-id="${approvalId}"]`);
+    if (card) {
+      card.querySelectorAll("button").forEach((btn) => {
+        btn.disabled = true;
+      });
+    }
+    setStatus("thinking", "\u5BA1\u6279\u5904\u7406\u4E2D...");
     try {
       const data = await apiPost(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
         work_dir: session.folder_path,
         decision,
         operator
       });
-      if (data.event) {
-        renderApprovalExecutionEvent(data.event);
+      if (data.alreadyDecided) {
+        setStatus("idle", "\u8BE5\u5BA1\u6279\u5DF2\u5904\u7406\u8FC7");
+      } else {
+        if (data.event) {
+          renderApprovalExecutionEvent(data.event);
+        }
+        setStatus("idle", decision === "approved" ? data.event ? "\u6267\u884C\u7ED3\u679C\u5DF2\u8FD4\u56DE" : "\u5DF2\u6279\u51C6\u5E76\u6267\u884C" : "\u5DF2\u62D2\u7EDD\u64CD\u4F5C");
       }
-      setStatus("idle", decision === "approved" ? data.event ? "\u6267\u884C\u7ED3\u679C\u5DF2\u8FD4\u56DE" : "\u5DF2\u6279\u51C6\u5E76\u6267\u884C" : "\u5DF2\u62D2\u7EDD\u64CD\u4F5C");
-      await refreshApprovals();
     } catch (err) {
       setStatus("error", `\u5BA1\u6279\u5931\u8D25: ${err.message}`);
+    } finally {
+      await refreshApprovals();
     }
   }
   function renderApprovalExecutionEvent(event) {

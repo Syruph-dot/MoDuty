@@ -5,6 +5,9 @@ import path from "node:path";
 
 import { appendTraceEvent, sanitizeDisplayText, sha256 } from "./trace.js";
 
+/** 并发防护：同一审批同时被多个请求决定时，只允许一个通过读-写窗口 */
+const decidingApprovals = new Set<string>();
+
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "executed";
 export type ApprovalToolName = "read_file" | "list_files" | "write_file" | "append_file" | "run_shell";
 
@@ -103,16 +106,22 @@ export class ApprovalStore {
 
   async decide(id: string, decision: "approved" | "rejected", operator: string): Promise<PendingApproval> {
     if (!operator.trim()) throw new ApprovalError("Approval operator is required");
-    const records = await this.list();
-    const record = records.find((candidate) => candidate.id === id);
-    if (!record) throw new ApprovalError(`Unknown approval: ${id}`);
-    if (record.status !== "pending") throw new ApprovalError(`Approval ${id} has already been decided`);
-    record.status = decision;
-    record.operator = operator.trim();
-    record.decidedAt = new Date().toISOString();
-    await this.save(records);
-    await appendTraceEvent(record.tracePath, "approval_decision", { ...traceDetails(record), decision, operator: record.operator });
-    return record;
+    if (decidingApprovals.has(id)) throw new ApprovalError(`Approval ${id} is already being decided`);
+    decidingApprovals.add(id);
+    try {
+      const records = await this.list();
+      const record = records.find((candidate) => candidate.id === id);
+      if (!record) throw new ApprovalError(`Unknown approval: ${id}`);
+      if (record.status !== "pending") throw new ApprovalError(`Approval ${id} has already been decided`);
+      record.status = decision;
+      record.operator = operator.trim();
+      record.decidedAt = new Date().toISOString();
+      await this.save(records);
+      await appendTraceEvent(record.tracePath, "approval_decision", { ...traceDetails(record), decision, operator: record.operator });
+      return record;
+    } finally {
+      decidingApprovals.delete(id);
+    }
   }
 
   async complete(id: string, result: string): Promise<PendingApproval> {

@@ -101,13 +101,26 @@ export class MomokaAgentCore implements MomokaAgent {
     try {
       const approval = await store.decide(id, decision, operator);
       if (decision === "rejected") return { approval, event: null };
+      // 幂等：审批已执行过（重复提交/刷新后重试）不再执行
+      if (approval.status === "executed") return { approval, event: null, alreadyDecided: true };
       const completed = await store.complete(approval.id, await executeApprovedToolCall(approval.toolName, approval.args, approval.targetWorkspace));
       const event = createApprovalExecutionEvent(completed);
       if (event.sessionId && await this.sessionManager.getSession(event.sessionId)) {
         event.messageId = (await this.sessionManager.addMessage(event.sessionId, "agent", event.message, { eventType: "approval_execution", approvalId: event.approvalId, toolName: event.toolName, toolArgs: event.args, toolResult: event.result, runId: event.runId })).id;
       }
       return { approval: completed, event };
-    } catch (error) { if (error instanceof ApprovalError) throw new MomokaHttpError(409, error.message); throw error; }
+    } catch (error) {
+      if (error instanceof ApprovalError) {
+        // 已决冲突收敛为幂等返回（含并发锁拒绝），不再让前端“卡住”报错
+        if (error.message.includes("already been decided") || error.message.includes("already being decided")) {
+          const records = await store.list();
+          const current = records.find((candidate) => candidate.id === id);
+          if (current) return { approval: current, event: null, alreadyDecided: true };
+        }
+        throw new MomokaHttpError(409, error.message);
+      }
+      throw error;
+    }
   }
   async createSession(goal: string, folderPath: string) {
     if (!goal.trim() || !folderPath.trim()) throw new MomokaHttpError(400, "Session goal and working directory are required");

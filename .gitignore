@@ -11,3 +11,9 @@ dist/
 docs/
 graphify-out/
 issues/
+
+# MOMOKA 运行时记忆/会话产物（不版本化）
+memory/.outputs/
+memory/.runs/
+memory/.sessions/
+memory/*.md

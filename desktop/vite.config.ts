@@ -8,6 +8,10 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // dev 期把 /api 代理到 MOMOKA 后端，避免跨源
+    proxy: {
+      "/api": "http://localhost:8888",
+    },
   },
   build: {
     outDir: "dist",

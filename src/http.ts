@@ -42,6 +42,14 @@ async function route(
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
 
+    // CORS：桌面壳（Tauri webview 为 tauri://localhost 源）跨源访问本地 API；
+    // 预检（JSON body / 自定义头）直接放行
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, corsHeaders());
+      response.end();
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/health") {
       send(response, 200, "MOMOKA OK", "text/plain; charset=utf-8");
       return;
@@ -357,8 +365,17 @@ function send(response: ServerResponse, status: number, body: string, contentTyp
   response.writeHead(status, {
     "content-type": contentType,
     "cache-control": "no-store",
+    ...corsHeaders(),
   });
   response.end(body);
+}
+
+function corsHeaders(): Record<string, string> {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
 }
 
 function chatToSnake(payload: ChatResponse): Record<string, unknown> {
@@ -478,6 +495,7 @@ function openAgentEvents(response: ServerResponse, sseClients: Set<ServerRespons
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
     connection: "keep-alive",
+    ...corsHeaders(),
   });
   // 立即冲刷响应头：不做的话 Node 会等第一个 write 才发头，客户端 fetch 将挂起
   response.flushHeaders();
@@ -520,6 +538,7 @@ async function streamAgentChat(
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
     connection: "keep-alive",
+    ...corsHeaders(),
   });
   const controller = new AbortController();
   response.on("close", () => {

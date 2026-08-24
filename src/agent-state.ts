@@ -143,6 +143,12 @@ export class AgentStateMachine {
     this.states.clear();
   }
 
+  /** 删除 Agent 时丢弃其内存态（不再广播） */
+  drop(agentId: string): void {
+    this.clearHold(agentId);
+    this.states.delete(agentId);
+  }
+
   private ensure(agentId: string): AgentRuntimeState {
     let current = this.states.get(agentId);
     if (!current) {

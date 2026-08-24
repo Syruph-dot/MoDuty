@@ -5,15 +5,40 @@ import path from "node:path";
 import { assessmentToSnake, evolutionProposalToSnake, reflectionToSnake } from "./casing.js";
 import { LIKERT_LABELS } from "./config.js";
 import { MomokaAgentCore, MomokaHttpError } from "./agent.js";
-import type { ChatRequest, ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
+import { AgentRegistry } from "./agent-registry.js";
+import { AgentStateMachine, type AgentStateEvent } from "./agent-state.js";
+import type { SessionRecord } from "./session-manager.js";
+import type { AgentRecord, ChatRequest, ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
 
-export function createMomokaHttpHandler(agent: MomokaAgentCore): MomokaHttpHandler {
+export interface AgentHttpOptions {
+  /** 多 Agent 注册表；缺省时 /api/agents 系列返回 503 */
+  registry?: AgentRegistry;
+  /** 生命周期状态机；缺省时 /api/agents 系列返回 503 */
+  machine?: AgentStateMachine;
+}
+
+export function createMomokaHttpHandler(agent: MomokaAgentCore, options: AgentHttpOptions = {}): MomokaHttpHandler {
+  const { registry, machine } = options;
+  const sseClients = new Set<ServerResponse>();
+  if (registry && machine) {
+    // 全局编排：任何状态/phase 转移 → 持久化注册表 + 广播给 /api/agents/events 的客户端
+    machine.subscribe((event) => {
+      void persistAgentState(registry, sseClients, event);
+    });
+  }
   return (request: IncomingMessage, response: ServerResponse) => {
-    void route(agent, request, response);
+    void route(agent, request, response, registry, machine, sseClients);
   };
 }
 
-async function route(agent: MomokaAgentCore, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function route(
+  agent: MomokaAgentCore,
+  request: IncomingMessage,
+  response: ServerResponse,
+  registry: AgentRegistry | undefined,
+  machine: AgentStateMachine | undefined,
+  sseClients: Set<ServerResponse>,
+): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
 
@@ -86,6 +111,82 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
       return;
     }
 
+    // ---- Agent registry & 实时状态 SSE（MOMOKA Agent Desktop）----
+    if (request.method === "GET" && url.pathname === "/api/agents/events") {
+      ensureAgents(registry, machine);
+      openAgentEvents(response, sseClients);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/agents") {
+      const runtime = ensureAgents(registry, machine);
+      const records = await runtime.registry.listAgents();
+      const agents = [];
+      for (const record of records) {
+        agents.push(agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)));
+      }
+      json(response, 200, { agents });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/agents") {
+      const runtime = ensureAgents(registry, machine);
+      const body = await readJsonBody(request);
+      const name = String(body.name ?? "").trim();
+      const role = String(body.role ?? "").trim();
+      const workspaceDir = String(body.workspace_dir ?? "").trim();
+      if (!name || !role || !workspaceDir) {
+        throw new MomokaHttpError(400, "name, role and workspace_dir are required");
+      }
+      const record = await runtime.registry.createAgent({
+        name,
+        role,
+        workspaceDir,
+        model: typeof body.model === "string" ? body.model : undefined,
+      });
+      runtime.machine.seed(record.id, record.state, record.phase);
+      json(response, 200, { agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)) });
+      return;
+    }
+
+    const agentMessagesMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/messages$/);
+    if (agentMessagesMatch && request.method === "GET") {
+      const runtime = ensureAgents(registry, machine);
+      const record = await requireAgent(runtime.registry, decodeURIComponent(agentMessagesMatch[1] ?? ""));
+      json(response, 200, { messages: await agent.sessionManager.getMessages(record.sessionId) });
+      return;
+    }
+
+    const agentChatMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/chat$/);
+    if (agentChatMatch && request.method === "POST") {
+      const runtime = ensureAgents(registry, machine);
+      const record = await requireAgent(runtime.registry, decodeURIComponent(agentChatMatch[1] ?? ""));
+      const body = await readJsonBody(request);
+      const message = String(body.message ?? "").trim();
+      if (!message) {
+        throw new MomokaHttpError(400, "Message cannot be empty");
+      }
+      await streamAgentChat(agent, runtime.machine, response, record, message);
+      return;
+    }
+
+    const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+    if (agentMatch && request.method === "GET") {
+      const runtime = ensureAgents(registry, machine);
+      const record = await requireAgent(runtime.registry, decodeURIComponent(agentMatch[1] ?? ""));
+      json(response, 200, {
+        agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)),
+        messages: await agent.sessionManager.getMessages(record.sessionId),
+      });
+      return;
+    }
+    if (agentMatch && request.method === "DELETE") {
+      const runtime = ensureAgents(registry, machine);
+      const record = await requireAgent(runtime.registry, decodeURIComponent(agentMatch[1] ?? ""));
+      await runtime.registry.deleteAgent(record.id);
+      runtime.machine.drop(record.id);
+      json(response, 200, { success: true });
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/approvals") {
       const workspace = url.searchParams.get("work_dir") ?? "";
       json(response, 200, { approvals: await agent.listApprovals(workspace) });
@@ -102,6 +203,16 @@ async function route(agent: MomokaAgentCore, request: IncomingMessage, response:
       if (!operator.trim()) throw new MomokaHttpError(400, "Approval operator is required");
       const workspace = typeof body.work_dir === "string" ? body.work_dir : "";
       const outcome = await agent.decideApproval(workspace, decodeURIComponent(approvalDecisionMatch[1] ?? ""), decision, operator);
+      // Agent 联动：审批事件若绑定某 Agent 的 session，则驱动其状态机脱离 waiting_approval
+      if (registry && machine && typeof outcome === "object" && outcome !== null) {
+        const sessionId = (outcome as { event?: { sessionId?: string } }).event?.sessionId;
+        if (typeof sessionId === "string" && sessionId) {
+          const bound = (await registry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
+          if (bound) {
+            machine.decide(bound.id, decision);
+          }
+        }
+      }
       json(response, 200, outcome);
       return;
     }
@@ -321,6 +432,119 @@ function sessionToSnake(session: {
     message_count: session.messageCount,
     last_message_at: session.lastMessageAt,
   };
+}
+
+function ensureAgents(registry: AgentRegistry | undefined, machine: AgentStateMachine | undefined): { registry: AgentRegistry; machine: AgentStateMachine } {
+  if (!registry || !machine) {
+    throw new MomokaHttpError(503, "Agent registry not configured");
+  }
+  return { registry, machine };
+}
+
+async function requireAgent(registry: AgentRegistry, agentId: string) {
+  const record = await registry.getAgent(agentId);
+  if (!record) {
+    throw new MomokaHttpError(404, `Unknown agent: ${agentId}`);
+  }
+  return record;
+}
+
+function agentToSnake(record: AgentRecord, session: SessionRecord | null): Record<string, unknown> {
+  return {
+    id: record.id,
+    name: record.name,
+    role: record.role,
+    ...(record.model ? { model: record.model } : {}),
+    workspace_dir: record.workspaceDir,
+    session_id: record.sessionId,
+    state: record.state,
+    phase: record.phase ?? null,
+    created_at: record.createdAt,
+    last_active_at: record.lastActiveAt,
+    session: session
+      ? {
+          goal: session.goal,
+          folder_path: session.folderPath,
+          message_count: session.messageCount,
+          last_message_at: session.lastMessageAt,
+        }
+      : null,
+  };
+}
+
+/** /api/agents/events：长连接，广播 agent_state 事件；30s 心跳注释保活 */
+function openAgentEvents(response: ServerResponse, sseClients: Set<ServerResponse>): void {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+  });
+  // 立即冲刷响应头：不做的话 Node 会等第一个 write 才发头，客户端 fetch 将挂起
+  response.flushHeaders();
+  sseClients.add(response);
+  const ping = setInterval(() => {
+    if (!response.writableEnded) {
+      response.write(": ping\n\n");
+    }
+  }, 30000);
+  response.on("close", () => {
+    clearInterval(ping);
+    sseClients.delete(response);
+  });
+}
+
+/** 状态转移 → 持久化注册表 + 广播给所有 /api/agents/events 客户端 */
+async function persistAgentState(registry: AgentRegistry, sseClients: Set<ServerResponse>, event: AgentStateEvent): Promise<void> {
+  await registry.updateAgentState(event.agent_id, event.state, event.phase);
+  const frame = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of [...sseClients]) {
+    try {
+      if (!client.writableEnded) {
+        client.write(frame);
+      }
+    } catch {
+      // 客户端已断开，忽略
+    }
+  }
+}
+
+/** /api/agents/:id/chat：SSE 流式，作用域锁定 Agent 绑定的 session，事件喂给状态机 */
+async function streamAgentChat(
+  agent: MomokaAgentCore,
+  machine: AgentStateMachine,
+  response: ServerResponse,
+  record: AgentRecord,
+  message: string,
+): Promise<void> {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+  });
+  const controller = new AbortController();
+  response.on("close", () => {
+    if (!response.writableEnded) {
+      controller.abort();
+    }
+  });
+  try {
+    const result = await agent.chat({
+      message,
+      sessionId: record.sessionId,
+      onEvent: (event: StreamEvent) => {
+        machine.consumeEvent(record.id, event);
+        sseData(response, event);
+      },
+      signal: controller.signal,
+    });
+    machine.complete(record.id);
+    sseData(response, { type: "done", ...chatToSnake(result) });
+  } catch (error) {
+    machine.fail(record.id);
+    sseData(response, { type: "error", error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    response.end();
+  }
 }
 
 export { LIKERT_LABELS };

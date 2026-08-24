@@ -236,3 +236,109 @@
 .agent-window__input:disabled {
   opacity: 0.6;
 }
+
+/* ---- 审批面板 ---- */
+
+.approval-panel {
+  position: fixed;
+  top: 64px;
+  right: 22px;
+  z-index: 950;
+  width: min(360px, calc(100vw - 44px));
+  background: rgba(24, 30, 46, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(245, 185, 66, 0.35);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.approval-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-panel__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.approval-panel__count {
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(245, 185, 66, 0.9);
+  border: 1px solid rgba(245, 185, 66, 0.4);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.approval-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.5);
+}
+
+.approval-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-card__row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.approval-card__tool {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffd98a;
+}
+
+.approval-card__args {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(232, 237, 247, 0.7);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.approval-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.approval-card__reject {
+  color: rgba(255, 232, 232, 0.85);
+}
+
+.approval-panel__error {
+  margin: 0;
+  font-size: 12px;
+  color: #ff9090;
+}

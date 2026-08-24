@@ -9,6 +9,8 @@ import path from "node:path";
 const PAGE = process.argv[2] ?? "http://localhost:5173/";
 const API = process.argv[3] ?? "http://localhost:8888";
 const OUT = process.argv[4] ?? "ui-smoke-result.json";
+/** SMOKE_EXPECT_STREAM=<text> 时进入流式令牌验证模式（配合 stub-chat-server 使用） */
+const EXPECT_STREAM = process.env.SMOKE_EXPECT_STREAM ?? "";
 const CDP_PORT = 9223;
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
@@ -23,6 +25,7 @@ const chrome = spawn(
 );
 
 const state = { page: PAGE, api: API, startedAt: new Date().toISOString() };
+const consoleErrors = [];
 let ws;
 
 try {
@@ -50,6 +53,11 @@ try {
     if (data.id && pending.has(data.id)) {
       pending.get(data.id)(data);
       pending.delete(data.id);
+    } else if (data.method === "Runtime.exceptionThrown") {
+      const detail = data.params?.exceptionDetails;
+      consoleErrors.push(`exception: ${detail?.text ?? ""} ${detail?.exception?.description ?? ""}`);
+    } else if (data.method === "Runtime.consoleAPICalled" && data.params?.type === "error") {
+      consoleErrors.push(`console.error: ${JSON.stringify(data.params.args?.map((arg) => arg.value ?? arg.description) ?? [])}`);
     }
   };
   const send = (method, params = {}) =>
@@ -65,15 +73,67 @@ try {
   };
 
   await send("Runtime.enable");
-  await sleep(1800); // React 挂载 + store.load()
+  await sleep(2500); // React 挂载 + store.load()
 
-  state.initial = await evaluate(`({
-    title: document.querySelector('.tile-wall__title')?.textContent ?? null,
-    hasNewTile: Boolean(document.querySelector('.new-tile')),
-    agentTileCount: document.querySelectorAll('.agent-tile').length,
-    rootExists: Boolean(document.getElementById('root')),
-  })`);
+  state.initial = await evaluate(`(async () => {
+    const apiProbe = await fetch('/api/agents').then((r) => r.status, 0).catch((e) => 'fetch-failed:' + String(e));
+    await new Promise((r) => setTimeout(r, 400));
+    return {
+      title: document.querySelector('.tile-wall__title')?.textContent ?? null,
+      hasNewTile: Boolean(document.querySelector('.new-tile')),
+      agentTileCount: document.querySelectorAll('.agent-tile').length,
+      rootExists: Boolean(document.getElementById('root')),
+      errorText: document.querySelector('.tile-wall__error')?.textContent ?? null,
+      apiProbe,
+    };
+  })()`);
 
+  if (EXPECT_STREAM) {
+    // ---- 流式令牌验证模式（stub 后端）：双击 → 发送 → agent 气泡逐字累积 ----
+    state.mode = "token-stream";
+    await evaluate(`(() => {
+      const tile = document.querySelector('.agent-tile');
+      tile?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return Boolean(tile);
+    })()`);
+    await sleep(1000);
+    state.window = await evaluate(`({
+      visible: Boolean(document.querySelector('.agent-window')),
+      inputCount: document.querySelectorAll('.agent-window__input').length,
+    })`);
+    await evaluate(`(() => {
+      const input = document.querySelector('.agent-window__input');
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'go');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'typed';
+    })()`);
+    await sleep(250);
+    state.afterType = await evaluate(`({
+      inputValue: document.querySelector('.agent-window__input')?.value ?? null,
+      sendDisabled: document.querySelector('.agent-window .btn--primary')?.disabled ?? null,
+    })`);
+    await evaluate(`document.querySelector('.agent-window .btn--primary')?.click(); 'sent'`);
+    await sleep(500);
+    state.afterSend = await evaluate(`({
+      userBubble: [...document.querySelectorAll('.msg--user .msg__bubble')].map((el) => el.textContent),
+      messageCount: document.querySelectorAll('.msg').length,
+    })`);
+    await sleep(1700); // 等 token 帧全部到达
+    state.tokenStream = await evaluate(`(() => {
+      const bubbles = [...document.querySelectorAll('.msg--agent .msg__bubble')];
+      const last = bubbles[bubbles.length - 1];
+      setTimeout(() => {
+        const b2 = [...document.querySelectorAll('.msg--agent .msg__bubble')];
+        const last2 = b2[b2.length - 1];
+        window.__probeSnapshot = { countNow: document.querySelectorAll('.msg').length, agentText: last2?.textContent ?? null, errorShown: Boolean(document.querySelector('.agent-window__error')) };
+      }, 1200);
+      return { agentTextAtSend: last?.textContent ?? null, errorShownAtSend: Boolean(document.querySelector('.agent-window__error')) };
+    })()`);
+    await sleep(1400);
+    state.tokenStreamFinal = await evaluate(`window.__probeSnapshot ?? null`);
+    state.tokenStreamExpected = EXPECT_STREAM;
+    await evaluate(`(() => { location.href = 'about:blank'; return 'done'; })()`);
+  } else {
   // 经真实后端 API 建一个 Agent（等价于表单提交路径的数据结果）
   const created = await fetch(`${API}/api/agents`, {
     method: "POST",
@@ -145,12 +205,69 @@ try {
       : null;
   })()`);
 
+  // ---- 对话窗口（ISS-08）：双击打开 → 历史 → 发送 → 流式/错误 → 关闭 → 重开持久化 ----
+  await evaluate(`(() => {
+    const tiles = [...document.querySelectorAll('.agent-tile')];
+    const tile = tiles.find((el) => el.querySelector('.agent-tile__name')?.textContent === 'Smoke Agent');
+    tile?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    return Boolean(tile);
+  })()`);
+  await sleep(900);
+  state.window = await evaluate(`({
+    visible: Boolean(document.querySelector('.agent-window')),
+    title: document.querySelector('.agent-window__title')?.textContent ?? null,
+    messageCount: document.querySelectorAll('.msg').length,
+    firstMsgText: document.querySelector('.msg__bubble')?.textContent ?? null,
+  })`);
+
+  // 发送新消息（无 API key → 流内 error 帧 → 显示错误 + 用户消息保留）
+  await evaluate(`(() => {
+    const input = document.querySelector('.agent-window__input');
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'round two');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'typed';
+  })()`);
+  await sleep(150);
+  await evaluate(`document.querySelector('.agent-window .btn--primary')?.click(); 'sent'`);
+  await sleep(1500);
+  state.windowAfterSend = await evaluate(`({
+    userBubble: [...document.querySelectorAll('.msg--user .msg__bubble')].some((el) => el.textContent === 'round two'),
+    errorShown: Boolean(document.querySelector('.agent-window__error')),
+    errorText: document.querySelector('.agent-window__error')?.textContent ?? null,
+    emptyAgentBubble: [...document.querySelectorAll('.msg--agent .msg__bubble')].some((el) => el.textContent === ''),
+  })`);
+
+  // 关闭回磁贴墙
+  await evaluate(`document.querySelector('.agent-window__close')?.click(); 'closed'`);
+  await sleep(500);
+  state.afterClose = await evaluate(`({
+    wallVisible: Boolean(document.querySelector('.tile-wall')),
+    windowGone: !document.querySelector('.agent-window'),
+  })`);
+
+  // 重开：持久化消息（两轮 user 消息都在）
+  await evaluate(`(() => {
+    const tiles = [...document.querySelectorAll('.agent-tile')];
+    const tile = tiles.find((el) => el.querySelector('.agent-tile__name')?.textContent === 'Smoke Agent');
+    tile?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    return Boolean(tile);
+  })()`);
+  await sleep(900);
+  state.afterReopen = await evaluate(`({
+    windowVisible: Boolean(document.querySelector('.agent-window')),
+    userBubbles: [...document.querySelectorAll('.msg--user .msg__bubble')].map((el) => el.textContent),
+  })`);
+  await evaluate(`document.querySelector('.agent-window__close')?.click(); 'closed'`);
+  await sleep(400);
+
   // 清理：删除测试 Agent
   for (const agent of await (await fetch(`${API}/api/agents`)).json().then((d) => d.agents)) {
     await fetch(`${API}/api/agents/${agent.id}`, { method: "DELETE" });
   }
   state.cleanupDone = true;
+  }
   state.ok = true;
+  state.consoleErrors = consoleErrors;
 } catch (error) {
   state.ok = false;
   state.error = error instanceof Error ? error.message : String(error);

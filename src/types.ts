@@ -23,6 +23,25 @@ export type StreamEvent =
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; name: string; args: string; result: string };
 
+/** Agent 生命周期状态（agent-registry / agent-state） */
+export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
+
+/** Agent running 时的子阶段（由 SSE 事件推导） */
+export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "verifying";
+
+export interface AgentRecord {
+  id: string; // agt_xxx
+  name: string; // persona 名
+  role: string; // 系统提示词 / 角色定位
+  model?: string; // 可选，缺省用全局 model client
+  workspaceDir: string; // 工作目录
+  sessionId: string; // 1:1 绑定的 session（上下文串）
+  state: AgentState;
+  phase?: AgentPhase; // running 时的子阶段
+  createdAt: string;
+  lastActiveAt: string;
+}
+
 export interface ModelRunContext {
   systemPrompt: string;
   topic: string;

@@ -1,4 +1,4 @@
-*.pyc
+﻿*.pyc
 *.pyd
 node_modules/
 dist/
@@ -12,9 +12,14 @@ docs/
 graphify-out/
 issues/
 
-# MOMOKA 运行时记忆/会话产物（不版本化）
+# MOMOKA 杩愯鏃惰蹇?浼氳瘽浜х墿锛堜笉鐗堟湰鍖栵級
 memory/.outputs/
 memory/.runs/
 memory/.sessions/
 memory/*.md
 .omc/
+
+
+# mission local execution artifacts
+.mission/
+

@@ -35,3 +35,53 @@ body,
   font-size: 15px;
   opacity: 0.6;
 }
+
+/* Borderless fullscreen window chrome (decorations:false) */
+.control-bar {
+  position: fixed;
+  top: 10px;
+  right: 14px;
+  z-index: 1000;
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(10, 14, 24, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.control-bar--browser {
+  right: auto;
+  left: 12px;
+  background: rgba(10, 14, 24, 0.35);
+}
+
+.control-bar__hint {
+  font-size: 11px;
+  opacity: 0.45;
+  padding: 2px 6px;
+}
+
+.control-bar__btn {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #cdd6e6;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.control-bar__btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.control-bar__btn--close:hover {
+  background: rgba(232, 84, 84, 0.85);
+  color: #fff;
+}

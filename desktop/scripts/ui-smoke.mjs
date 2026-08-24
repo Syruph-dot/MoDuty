@@ -11,6 +11,8 @@ const API = process.argv[3] ?? "http://localhost:8888";
 const OUT = process.argv[4] ?? "ui-smoke-result.json";
 /** SMOKE_EXPECT_STREAM=<text> 时进入流式令牌验证模式（配合 stub-chat-server 使用） */
 const EXPECT_STREAM = process.env.SMOKE_EXPECT_STREAM ?? "";
+/** SMOKE_APPROVAL=1 时进入审批面板验证模式（stub 端支持审批流） */
+const APPROVAL_MODE = process.env.SMOKE_APPROVAL === "1";
 const CDP_PORT = 9223;
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
@@ -88,7 +90,48 @@ try {
     };
   })()`);
 
-  if (EXPECT_STREAM) {
+  if (APPROVAL_MODE) {
+    // ---- 审批面板验证模式（stub）：waiting → 面板卡片 → 批准/拒绝 → SSE 驱动状态翻转 ----
+    state.mode = "approval";
+    const triggerChat = () =>
+      fetch(`${API}/api/agents/agt_stubsample/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "run something" }),
+      });
+
+    await triggerChat();
+    await sleep(1500);
+    state.waiting = await evaluate(`({
+      tileStates: [...document.querySelectorAll('.agent-tile__state')].map((el) => el.textContent),
+      panelVisible: Boolean(document.querySelector('.approval-panel')),
+      cardCount: document.querySelectorAll('.approval-card').length,
+      toolName: document.querySelector('.approval-card__tool')?.textContent ?? null,
+      cardArgs: document.querySelector('.approval-card__args')?.textContent ?? null,
+    })`);
+
+    await evaluate(`document.querySelector('.approval-card .btn--primary')?.click(); 'approved'`);
+    await sleep(1200);
+    state.afterApprove = await evaluate(`({
+      panelGone: !document.querySelector('.approval-panel'),
+      tileStates: [...document.querySelectorAll('.agent-tile__state')].map((el) => el.textContent),
+      panelVisible: Boolean(document.querySelector('.approval-panel')),
+    })`);
+
+    await triggerChat();
+    await sleep(1500);
+    state.waitingReject = await evaluate(`({
+      panelVisible: Boolean(document.querySelector('.approval-panel')),
+      cardCount: document.querySelectorAll('.approval-card').length,
+    })`);
+    await evaluate(`document.querySelector('.approval-card .btn--ghost')?.click(); 'rejected'`);
+    await sleep(1200);
+    state.afterReject = await evaluate(`({
+      panelGone: !document.querySelector('.approval-panel'),
+      tileStates: [...document.querySelectorAll('.agent-tile__state')].map((el) => el.textContent),
+    })`);
+    await evaluate(`(() => { location.href = 'about:blank'; return 'done'; })()`);
+  } else if (EXPECT_STREAM) {
     // ---- 流式令牌验证模式（stub 后端）：双击 → 发送 → agent 气泡逐字累积 ----
     state.mode = "token-stream";
     await evaluate(`(() => {

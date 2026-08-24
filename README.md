@@ -99,6 +99,66 @@ console.log(reply.outputId, reply.response);
 
 `agent.chat()` 返回 `outputId`、`response`、`toolCalls`、`matchedSkills`、`outputAssessment` 等结构化字段；`agent.judge()` 接收 1-7 分评分并可触发续猜。
 
+## Agent Desktop（磁贴化桌面应用）
+
+MOMOKA 附带一个 **Tauri 无边框全屏桌面壳**：多个 Agent（1 Agent = 1 session 上下文串）以磁贴形式呈现在全屏磁贴墙上，磁贴实时反映 Agent 状态（idle / running / waiting_approval / completed / error）与阶段（planning / searching / reading / executing / verifying），双击磁贴进入 SSE 流式对话窗口；Agent 等待审批时浮出审批面板。
+
+### 架构
+
+```
+MOMOKA/
+├── src/
+│   ├── agent.ts            # 不动：单引擎（LLM client + tool loop + chat）
+│   ├── session-manager.ts  # 不动：session CRUD
+│   ├── agent-registry.ts   # 多 Agent 注册表（1:1 绑定 session，JSON 持久化）
+│   ├── agent-state.ts      # 生命周期状态机 + phase 推导 + 事件总线
+│   └── http.ts             # /api/agents 系列 + 状态 SSE（旧路由保持兼容）
+├── desktop/                # React + Vite + TS + Zustand 桌面前端
+└── src-tauri/              # Tauri v1 壳（borderless fullscreen，加载 desktop 产物）
+```
+
+### 桌面开发模式
+
+```bash
+# 终端 1：后端（端口 8888）
+npm start          # 或 npx tsx src/server.ts
+
+# 终端 2：Vite dev（端口 5173，/api 代理到 8888）
+npm run desktop:dev
+
+# 可选：浏览器直连 http://localhost:5173 即可看到磁贴墙
+```
+
+### 桌面构建 / 打包
+
+```bash
+# 构建（server + 旧前端 + desktop 前端）
+npm run build
+
+# 调试产物（免安装器，直接出可执行文件）
+cd src-tauri && cargo tauri build --debug --no-bundle
+# 产物：src-tauri/target/debug/momoka-desktop.exe
+
+# 完整安装包（需要 NSIS/WiX，用时较长）
+cargo tauri build
+```
+
+旧 `static/index.html` / `chat.html` 保留为 debug fallback：仍然通过 `http://localhost:8888` 访问，`serveStatic` 未改动。
+
+### 桌面前端结构
+
+`desktop/` 是独立 npm 包：
+
+```
+desktop/src/
+├── components/     # Desktop / AgentTile / NewAgentTile / SessionTile / AgentWindow / ApprovalPanel / ControlBar
+├── state/          # Zustand store（SSE 事件驱动）
+├── lib/            # api base 解析、sseClient（重连+轮询降级）、chatStream SSE 解析
+└── styles/         # metro 磁贴 + aero 毛玻璃
+```
+
+验证工具：`desktop/scripts/ui-smoke.mjs`（headless Chrome CDP 真机 DOM 冒烟，支持 `SMOKE_APPROVAL=1` 与 `SMOKE_EXPECT_STREAM=<text>` 模式）。
+
 ## 交互指南
 
 ### Web 界面：会话管理
@@ -211,6 +271,15 @@ MOMOKA/
 | `/api/skills` | GET | 列出已加载技能 |
 | `/api/memory` | GET | 查看最近记忆 |
 | `/api/directories` | GET | 浏览文件系统目录 |
+| `/api/agents` | GET | 列出 Agent（含 state/phase + session 摘要） |
+| `/api/agents` | POST | 创建 Agent（自动创建其绑定 session） |
+| `/api/agents/{id}` | GET | Agent 详情 + 最近消息 |
+| `/api/agents/{id}` | DELETE | 删除 Agent（连带删除其 session） |
+| `/api/agents/{id}/messages` | GET | Agent 会话消息历史 |
+| `/api/agents/{id}/chat` | POST | SSE 流式对话（作用域锁定 Agent 的 session） |
+| `/api/agents/events` | GET | SSE 实时广播 `{type:"agent_state", agent_id, state, phase}` |
+
+> 注意：`/api/agents` 系列需要 server 装配 registry + state machine（`createMomokaServer()` 自动装配；直接使用 `createMomokaHttpHandler(agent)` 时返回 503）。
 
 ## 扩展：添加新技能
 

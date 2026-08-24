@@ -1,0 +1,446 @@
+/* MOMOKA Desktop 磁贴墙 —— metro 磁贴 + aero 毛玻璃视觉 */
+
+.tile-wall {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 56px 32px 32px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.tile-wall__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.tile-wall__title {
+  font-size: 34px;
+  font-weight: 200;
+  letter-spacing: 0.12em;
+  margin: 0;
+  color: #f2f5fb;
+}
+
+.tile-wall__subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+.tile-wall__error {
+  font-size: 12px;
+  color: #e85a5a;
+  background: rgba(232, 90, 90, 0.12);
+  border: 1px solid rgba(232, 90, 90, 0.3);
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 0;
+}
+
+.tile-wall__hint {
+  color: rgba(232, 237, 247, 0.5);
+  font-size: 14px;
+  padding: 48px 0;
+  text-align: center;
+}
+
+/* ---- Agent 磁贴 ---- */
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.agent-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 168px;
+  padding: 18px;
+  text-align: left;
+  color: #e8edf7;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 10px 24px rgba(0, 0, 0, 0.22);
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.agent-tile::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 10px 10px 0 0;
+  background: #7d8796;
+}
+
+.agent-tile:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.agent-tile:focus-visible {
+  outline: 2px solid #4f8cff;
+  outline-offset: 2px;
+}
+
+.agent-tile--running::before {
+  background: linear-gradient(90deg, #4f8cff, #7ab0ff);
+}
+
+.agent-tile--waiting_approval::before {
+  background: linear-gradient(90deg, #f5b942, #ffd98a);
+}
+
+.agent-tile--completed::before {
+  background: linear-gradient(90deg, #35c07e, #6fe0a9);
+}
+
+.agent-tile--error::before {
+  background: linear-gradient(90deg, #e85a5a, #ff9090);
+}
+
+.agent-tile__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-tile__name {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.state-dot--idle {
+  background: #7d8796;
+}
+
+.state-dot--running {
+  background: #4f8cff;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.state-dot--waiting {
+  background: #f5b942;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+.state-dot--completed {
+  background: #35c07e;
+}
+
+.state-dot--error {
+  background: #e85a5a;
+}
+
+.agent-tile__badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agent-tile__state {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(232, 237, 247, 0.72);
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.agent-tile__phase {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7ab0ff;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(79, 140, 255, 0.14);
+  border: 1px solid rgba(79, 140, 255, 0.35);
+}
+
+.agent-tile__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.agent-tile__row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  font-size: 12px;
+}
+
+.agent-tile__row-label {
+  color: rgba(232, 237, 247, 0.45);
+  flex: none;
+  min-width: 30px;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.agent-tile__row-label--sep {
+  margin-left: auto;
+  min-width: 26px;
+}
+
+.agent-tile__row-value {
+  color: rgba(232, 237, 247, 0.85);
+  overflow-wrap: anywhere;
+}
+
+.agent-tile__row-value--truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 新建磁贴 ---- */
+
+.new-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 168px;
+  padding: 18px;
+  color: rgba(232, 237, 247, 0.55);
+  font: inherit;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.new-tile:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: rgba(232, 237, 247, 0.85);
+}
+
+.new-tile:focus-visible {
+  outline: 2px solid #4f8cff;
+  outline-offset: 2px;
+}
+
+.new-tile__plus {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 200;
+}
+
+.new-tile__label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ---- Legacy 会话磁贴 ---- */
+
+.sessions-section {
+  margin-top: 28px;
+}
+
+.sessions-section__title {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 247, 0.5);
+  margin: 0 0 12px;
+}
+
+.sessions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.session-tile {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.session-tile__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a35f8f;
+  margin-top: 5px;
+  flex: none;
+}
+
+.session-tile__name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-tile__meta {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+/* ---- 创建弹窗 ---- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 9, 16, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.dialog {
+  width: min(460px, calc(100vw - 48px));
+  background: rgba(22, 28, 42, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 22px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dialog__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dialog__label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgba(232, 237, 247, 0.6);
+}
+
+.dialog__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  color: #e8edf7;
+  font: inherit;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+}
+
+.dialog__input:focus {
+  outline: none;
+  border-color: #4f8cff;
+}
+
+.dialog__input--area {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.5;
+}
+
+.dialog__error {
+  margin: 0;
+  font-size: 12px;
+  color: #ff9090;
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.btn {
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 13px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.btn--primary {
+  background: #2f6fe0;
+  color: #fff;
+}
+
+.btn--primary:hover {
+  background: #3d7df0;
+}
+
+.btn--primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: rgba(232, 237, 247, 0.75);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(79, 140, 255, 0.45);
+  }
+  50% {
+    opacity: 0.65;
+    box-shadow: 0 0 0 4px rgba(79, 140, 255, 0);
+  }
+}

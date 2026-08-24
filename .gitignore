@@ -23,3 +23,5 @@ memory/*.md
 # mission local execution artifacts
 .mission/
 
+memory/.agents/
+

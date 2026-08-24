@@ -38,10 +38,11 @@ interface ModelRoundResult {
 }
 
 const APPROVAL_PATTERN = /pending approval/i;
+const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const apiKey = options.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
-  const baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/u, "");
+  const baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
   const model = options.model ?? process.env.MOMOKA_MODEL ?? "qwen-plus";
   const fetchImpl = options.fetch ?? fetch;
   const maxToolRounds = options.maxToolRounds ?? 4;
@@ -50,8 +51,9 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
 
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
-      if (!apiKey) {
-        throw new Error("API key 未配置：请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY");
+      // 只有默认 DashScope 端点强制要求 key；显式提供 OPENAI_BASE_URL 的无鉴权端点（如免费代理）允许空 key
+      if (!apiKey && baseUrl === DEFAULT_DASHSCOPE) {
+        throw new Error("API key 未配置：请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY，或提供无需鉴权的 OPENAI_BASE_URL");
       }
       const messages: ChatMessage[] = [
         { role: "system", content: context.systemPrompt },
@@ -149,7 +151,7 @@ async function callModelRound(options: {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
     },
     body: JSON.stringify(payload),
     signal,

@@ -55,14 +55,16 @@ async function route(
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/config") {
+      const configured = Boolean(process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
       json(response, 200, {
         info: {
           provider: process.env.ALIYUN_API_KEY ? "DashScope" : (process.env.OPENAI_BASE_URL ?? "OpenAI"),
           key_prefix: `${(process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
+          model: process.env.MOMOKA_MODEL ?? "qwen-plus",
         },
-        issues: process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY
+        issues: configured
           ? []
-          : ["ALIYUN_API_KEY not configured. Set ALIYUN_API_KEY or OPENAI_API_KEY."],
+          : ["ALIYUN_API_KEY not configured. Set ALIYUN_API_KEY, OPENAI_API_KEY, or a free OPENAI_BASE_URL."],
       });
       return;
     }

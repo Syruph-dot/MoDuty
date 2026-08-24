@@ -22,7 +22,7 @@ export function createMomokaServer(options: {
   const projectRoot = resolveProjectRoot(options.projectRoot);
   const agent = createMomokaAgent({
     projectRoot,
-    modelClient: createOpenAICompatibleModelClient(),
+    modelClient: createOpenAICompatibleModelClient({ stream: true }),
   });
   // Agent Desktop：多 Agent 注册表（1:1 绑定 session）+ 生命周期状态机
   const registry = new AgentRegistry(defaultPaths(projectRoot).memoryDir, agent.sessionManager);

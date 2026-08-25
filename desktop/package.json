@@ -1,9 +1,9 @@
 {
-  "name": "momoka-desktop",
+  "name": "arona-chest",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "MOMOKA Agent Desktop — borderless fullscreen tile wall UI (React + Vite + TypeScript + Zustand)",
+  "description": "Arona Chest — AI Agent tile-wall desktop UI (React + Vite + TypeScript + Zustand)",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

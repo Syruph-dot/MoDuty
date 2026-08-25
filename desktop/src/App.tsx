@@ -7,7 +7,7 @@ import NewAgentDialog from "./components/NewAgentDialog";
 import { useAgentsStore } from "./state/agentsStore";
 
 /**
- * MOMOKA Agent Desktop：
+ * Arona Chest：
  * 全屏磁贴墙 + 浮动控制条；
  * 双击磁贴 → 打开该 Agent 的对话窗口（SSE 流式）；
  * 任一 Agent 进入 waiting_approval 时浮出审批面板；

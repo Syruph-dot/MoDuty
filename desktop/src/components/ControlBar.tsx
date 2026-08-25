@@ -32,7 +32,7 @@ export default function ControlBar() {
       <button
         type="button"
         className="control-bar__btn control-bar__btn--close"
-        aria-label="Close MOMOKA Desktop"
+        aria-label="Close Arona Chest"
         onClick={() => {
           void appWindow.close();
         }}

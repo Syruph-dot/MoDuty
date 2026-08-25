@@ -1,11 +1,11 @@
 [package]
-name = "momoka-desktop"
+name = "arona-chest"
 version = "0.1.0"
-description = "MOMOKA Agent Desktop — borderless fullscreen local tile-wall shell"
-authors = ["MOMOKA"]
+description = "Arona Chest — borderless fullscreen local tile-wall shell (powered by MOMOKA Agent core)"
+authors = ["Arona Chest"]
 license = ""
 repository = ""
-default-run = "momoka-desktop"
+default-run = "arona-chest"
 edition = "2021"
 rust-version = "1.60"
 
@@ -15,7 +15,7 @@ tauri-build = { version = "1.5.6", features = [] }
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "1.8.3", features = [] }
+tauri = { version = "1.8.3", features = ["shell-execute", "shell-sidecar"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.

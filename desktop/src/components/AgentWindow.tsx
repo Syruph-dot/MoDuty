@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { apiBase } from "../lib/api";
+import { awaitApiBase } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
@@ -51,7 +51,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const load = useAgentsStore((state) => state.load);
 
   const reloadMessages = async () => {
-    const res = await fetch(`${apiBase}/api/agents/${encodeURIComponent(agent.id)}/messages`);
+    const base = await awaitApiBase();
+    const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/messages`);
     if (!res.ok) {
       return;
     }
@@ -91,8 +92,9 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     const controller = new AbortController();
     abortRef.current = controller;
     try {
+      const base = await awaitApiBase();
       await runChatStream(
-        apiBase,
+        base,
         agent.id,
         text,
         {

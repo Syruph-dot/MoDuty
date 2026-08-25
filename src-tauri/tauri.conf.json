@@ -6,12 +6,28 @@
     "distDir": "../desktop/dist"
   },
   "package": {
-    "productName": "momoka-desktop",
+    "productName": "Arona Chest",
     "version": "0.1.0"
   },
   "tauri": {
     "allowlist": {
-      "all": false
+      "all": false,
+      "shell": {
+        "all": false,
+        "execute": true,
+        "sidecar": true,
+        "scope": [
+          {
+            "name": "binaries/momoka-server",
+            "sidecar": true,
+            "args": true,
+            "env": {
+              "MOMOKA_PORT_FILE": "1",
+              "MOMOKA_PROJECT_ROOT": "1"
+            }
+          }
+        ]
+      }
     },
     "bundle": {
       "active": true,
@@ -20,7 +36,9 @@
       "deb": {
         "depends": []
       },
-      "externalBin": [],
+      "externalBin": [
+        "binaries/momoka-server"
+      ],
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",
@@ -28,17 +46,17 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.momoka.desktop",
-      "longDescription": "",
+      "identifier": "com.aronachest.app",
+      "longDescription": "Arona Chest — AI Agent tile-wall desktop shell powered by the MOMOKA Agent core.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
         "frameworks": [],
-        "providerShortName": null,
+        "providerShortName": "Arona Chest",
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "",
+      "shortDescription": "Arona Chest — AI Agent tile-wall desktop",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -58,7 +76,7 @@
         "fullscreen": true,
         "height": 600,
         "resizable": true,
-        "title": "MOMOKA Desktop",
+        "title": "Arona Chest",
         "width": 800
       }
     ]

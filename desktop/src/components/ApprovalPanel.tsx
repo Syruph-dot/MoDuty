@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-import { apiBase } from "../lib/api";
+import { awaitApiBase } from "../lib/api";
 import { useAgentsStore } from "../state/agentsStore";
 
 interface PendingApproval {
@@ -50,11 +50,12 @@ export default function ApprovalPanel() {
     }
     let cancelled = false;
     void (async () => {
+      const base = await awaitApiBase();
       const found: PendingApproval[] = [];
       for (const agent of waitingAgents) {
         const params = new URLSearchParams({ work_dir: agent.workspace_dir });
         try {
-          const res = await fetch(`${apiBase}/api/approvals?${params.toString()}`);
+          const res = await fetch(`${base}/api/approvals?${params.toString()}`);
           if (!res.ok) {
             continue;
           }
@@ -81,8 +82,9 @@ export default function ApprovalPanel() {
     setDeciding(approvalId);
     setError(null);
     try {
+      const base = await awaitApiBase();
       const workspace = waitingAgents[0]?.workspace_dir ?? "";
-      const res = await fetch(`${apiBase}/api/approvals/${encodeURIComponent(approvalId)}/decision`, {
+      const res = await fetch(`${base}/api/approvals/${encodeURIComponent(approvalId)}/decision`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ decision, operator: OPERATOR, work_dir: workspace }),

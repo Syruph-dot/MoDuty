@@ -1,7 +1,11 @@
-﻿*.pyc
+*.pyc
 *.pyd
 node_modules/
 dist/
+
+# Bundled sidecar binaries (Bun --compile outputs, rebuilt per platform)
+binaries/
+src-tauri/binaries/
 
 .env
 .env.example

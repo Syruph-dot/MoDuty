@@ -2,9 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEv
 
 import AgentTile from "./AgentTile";
 import TileShell from "./TileShell";
-import { apiBase } from "../lib/api";
+import { awaitApiBase } from "../lib/api";
 import { DEFAULT_TILE_GEOMETRY } from "../lib/persistTiles";
-import { startAgentEventStream } from "../lib/sseClient";
+import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { useAgentsStore } from "../state/agentsStore";
 import { useContextMenuStore } from "../state/contextMenuStore";
 import { useDialogStore } from "../state/dialogStore";
@@ -49,14 +49,29 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   }, []);
 
   useEffect(() => {
-    void load();
-    const stream = startAgentEventStream(apiBase, {
-      onEvent: (event) => applyAgentEvent(event),
-      onPolling: () => {
-        // 降级轮询：状态仍会经 applyAgentEvent 反映到磁贴
-      },
-    });
-    return () => stream.stop();
+    let stream: AgentEventStreamControl | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await load();
+        if (cancelled) return;
+        const base = await awaitApiBase();
+        if (cancelled) return;
+        stream = startAgentEventStream(base, {
+          onEvent: (event) => applyAgentEvent(event),
+          onPolling: () => {
+            // 降级轮询：状态仍会经 applyAgentEvent 反映到磁贴
+          },
+        });
+      } catch (error) {
+        // 端口解析 / load 失败：状态由 agentsStore.error 体现，事件流可由下次 mount 重试
+        console.error("[desktop] init failed:", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stream?.stop();
+    };
   }, [load, applyAgentEvent]);
 
   // 桌面空白处右键 → 弹出菜单（仅「New Agent」一项）

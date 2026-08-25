@@ -19,9 +19,9 @@ interface AgentsStore {
   loading: boolean;
   error: string | null;
   selectedAgentId: string | null;
-  load: (base?: string) => Promise<void>;
-  createAgent: (input: CreateAgentInput, base?: string) => Promise<Agent | null>;
-  deleteAgent: (id: string, base?: string) => Promise<void>;
+  load: () => Promise<void>;
+  createAgent: (input: CreateAgentInput) => Promise<Agent | null>;
+  deleteAgent: (id: string) => Promise<void>;
   selectAgent: (id: string | null) => void;
   applyAgentEvent: (event: AgentStateEvent) => void;
   /** 拖动中 / 任何 store 内同步（不落盘） */
@@ -60,11 +60,11 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   error: null,
   selectedAgentId: null,
 
-  async load(base) {
+  async load() {
     set({ loading: true, error: null });
     try {
       const [agents, storedTiles] = await Promise.all([
-        listAgents(base),
+        listAgents(),
         Promise.resolve(loadAllTiles()),
       ]);
       const tiles = ensureDefaultTiles(agents, storedTiles);
@@ -74,9 +74,9 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     }
   },
 
-  async createAgent(input, base) {
+  async createAgent(input) {
     try {
-      const agent = await apiCreateAgent(input, base);
+      const agent = await apiCreateAgent(input);
       set((state) => {
         // 新 agent：自动给一个默认位置
         const tiles = state.tiles[agent.id]
@@ -91,8 +91,8 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     }
   },
 
-  async deleteAgent(id, base) {
-    await apiDeleteAgent(id, base);
+  async deleteAgent(id) {
+    await apiDeleteAgent(id);
     set((state) => {
       const { [id]: _removed, ...rest } = state.tiles;
       return {

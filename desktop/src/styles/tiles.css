@@ -71,6 +71,116 @@
   outline-offset: 2px;
 }
 
+/* ---- 8 方向 resize 把手 ---- */
+
+.tile-shell__handle {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.tile-shell__handle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+/* 鼠标移上磁贴时显隐把手（小尺寸不挡视觉，hover 时才显形） */
+.tile-shell:hover .tile-shell__handle::after,
+.tile-shell--dragging .tile-shell__handle::after {
+  opacity: 1;
+}
+
+/* 角把手（nw / ne / sw / se） */
+.tile-shell__handle--nw::after,
+.tile-shell__handle--ne::after,
+.tile-shell__handle--sw::after,
+.tile-shell__handle--se::after {
+  background: rgba(79, 140, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 6px rgba(79, 140, 255, 0.6);
+  border-radius: 2px;
+}
+
+.tile-shell__handle--nw { inset: 0 auto auto 0; width: 12px; height: 12px; }
+.tile-shell__handle--ne { inset: 0 0 auto auto; width: 12px; height: 12px; }
+.tile-shell__handle--sw { inset: auto 0 0 0; width: 12px; height: 12px; }
+.tile-shell__handle--se { inset: auto 0 0 auto; width: 14px; height: 14px; }
+
+/* 边把手（n / s / e / w）—— 中等长度条 */
+.tile-shell__handle--n,
+.tile-shell__handle--s {
+  left: 50%;
+  width: 36px;
+  height: 8px;
+  transform: translateX(-50%);
+}
+.tile-shell__handle--n { top: 0; }
+.tile-shell__handle--s { bottom: 0; }
+.tile-shell__handle--n::after,
+.tile-shell__handle--s::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 4px;
+  background: rgba(79, 140, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+}
+
+.tile-shell__handle--e,
+.tile-shell__handle--w {
+  top: 50%;
+  width: 8px;
+  height: 36px;
+  transform: translateY(-50%);
+}
+.tile-shell__handle--e { right: 0; }
+.tile-shell__handle--w { left: 0; }
+.tile-shell__handle--e::after,
+.tile-shell__handle--w::after {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 24px;
+  background: rgba(79, 140, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+}
+
+/* ---- 对齐辅助线覆盖层 ---- */
+
+.snap-guides {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1500;
+}
+
+.snap-guides__line {
+  position: absolute;
+  background: #4f8cff;
+  box-shadow: 0 0 6px rgba(79, 140, 255, 0.6);
+  pointer-events: none;
+}
+
+.snap-guides__line--v {
+  width: 1px;
+  transform: translateX(-0.5px);
+}
+
+.snap-guides__line--h {
+  height: 1px;
+  transform: translateY(-0.5px);
+}
+
 /* ---- Agent 磁贴（视觉卡片，填满壳） ---- */
 
 .tile-shell .agent-tile {

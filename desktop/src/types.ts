@@ -3,6 +3,14 @@
 export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
 export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "verifying";
 
+/** 磁贴在桌面上的几何（绝对定位），持久化到 localStorage */
+export interface TileGeometry {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SessionSummary {
   goal: string;
   folder_path: string;
@@ -22,16 +30,6 @@ export interface Agent {
   created_at: string;
   last_active_at: string;
   session: SessionSummary | null;
-}
-
-export interface SessionRecord {
-  id: string;
-  name: string;
-  goal: string;
-  folder_path: string;
-  created_at: string;
-  message_count: number;
-  last_message_at: string;
 }
 
 export interface AgentStateEvent {

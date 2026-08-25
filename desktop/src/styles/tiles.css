@@ -1,37 +1,21 @@
-/* MOMOKA Desktop 磁贴墙 —— metro 磁贴 + aero 毛玻璃视觉 */
+/* MOMOKA Desktop 磁贴墙 —— 桌面型自由定位 + aero 毛玻璃视觉 */
+
+/* ---- 桌面画布 ---- */
 
 .tile-wall {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  width: 100%;
   height: 100%;
-  padding: 56px 32px 32px;
+  overflow: hidden;
+  padding: 0;
   box-sizing: border-box;
-  overflow: auto;
-}
-
-.tile-wall__header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.tile-wall__title {
-  font-size: 34px;
-  font-weight: 200;
-  letter-spacing: 0.12em;
-  margin: 0;
-  color: #f2f5fb;
-}
-
-.tile-wall__subtitle {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: rgba(232, 237, 247, 0.55);
 }
 
 .tile-wall__error {
+  position: absolute;
+  top: 56px;
+  left: 32px;
+  z-index: 50;
   font-size: 12px;
   color: #e85a5a;
   background: rgba(232, 90, 90, 0.12);
@@ -42,18 +26,58 @@
 }
 
 .tile-wall__hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: rgba(232, 237, 247, 0.5);
   font-size: 14px;
-  padding: 48px 0;
-  text-align: center;
+  margin: 0;
+  pointer-events: none;
 }
 
-/* ---- Agent 磁贴 ---- */
+.tile-wall__new-agent-anchor {
+  position: absolute;
+  right: 28px;
+  bottom: 28px;
+  z-index: 5;
+}
 
-.tile-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 18px;
+/* ---- 磁贴壳（可拖拽，绝对定位） ---- */
+
+.tile-shell {
+  position: absolute;
+  cursor: move;
+  user-select: none;
+  border-radius: 10px;
+}
+
+.tile-shell--dragging {
+  cursor: grabbing;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  opacity: 0.96;
+}
+
+.tile-shell--dragging * {
+  /* 拖动中子元素也禁用文本选择 */
+  user-select: none !important;
+  cursor: grabbing !important;
+}
+
+/* 拖动手感：壳被点中时给一个细微的吸边提示 */
+.tile-shell:active:not(.tile-shell--dragging) {
+  outline: 1px solid rgba(79, 140, 255, 0.35);
+  outline-offset: 2px;
+}
+
+/* ---- Agent 磁贴（视觉卡片，填满壳） ---- */
+
+.tile-shell .agent-tile {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
 }
 
 .agent-tile {
@@ -221,101 +245,53 @@
   white-space: nowrap;
 }
 
-/* ---- 新建磁贴 ---- */
+/* ---- 右键菜单（桌面空白处） ---- */
 
-.new-tile {
+.context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 180px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: rgba(22, 28, 42, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 168px;
-  padding: 18px;
-  color: rgba(232, 237, 247, 0.55);
+  gap: 2px;
+}
+
+.context-menu__item {
+  width: 100%;
+  padding: 7px 12px;
   font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: #e8edf7;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px dashed rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background 100ms ease;
 }
 
-.new-tile:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.35);
-  color: rgba(232, 237, 247, 0.85);
+.context-menu__item:hover:not(:disabled) {
+  background: rgba(79, 140, 255, 0.22);
+  color: #f2f5fb;
 }
 
-.new-tile:focus-visible {
-  outline: 2px solid #4f8cff;
-  outline-offset: 2px;
+.context-menu__item:disabled {
+  color: rgba(232, 237, 247, 0.35);
+  cursor: default;
 }
 
-.new-tile__plus {
-  font-size: 34px;
-  line-height: 1;
-  font-weight: 200;
-}
-
-.new-tile__label {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-/* ---- Legacy 会话磁贴 ---- */
-
-.sessions-section {
-  margin-top: 28px;
-}
-
-.sessions-section__title {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: rgba(232, 237, 247, 0.5);
-  margin: 0 0 12px;
-}
-
-.sessions-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 12px;
-}
-
-.session-tile {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 12px 14px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-}
-
-.session-tile__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #a35f8f;
-  margin-top: 5px;
-  flex: none;
-}
-
-.session-tile__name {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-tile__meta {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: rgba(232, 237, 247, 0.45);
+.context-menu__item:focus-visible {
+  outline: 1px solid #4f8cff;
+  outline-offset: -1px;
 }
 
 /* ---- 创建弹窗 ---- */

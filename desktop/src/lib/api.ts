@@ -1,4 +1,4 @@
-import type { Agent, SessionRecord } from "../types";
+import type { Agent } from "../types";
 
 /**
  * API base 解析：
@@ -28,11 +28,6 @@ async function jsonOrThrow(res: Response, label: string): Promise<unknown> {
 export async function listAgents(base: string = apiBase): Promise<Agent[]> {
   const data = (await jsonOrThrow(await fetch(`${base}/api/agents`), "GET /api/agents")) as { agents: Agent[] };
   return data.agents;
-}
-
-export async function listSessions(base: string = apiBase): Promise<SessionRecord[]> {
-  const data = (await jsonOrThrow(await fetch(`${base}/api/sessions`), "GET /api/sessions")) as { sessions: SessionRecord[] };
-  return data.sessions;
 }
 
 export async function createAgent(

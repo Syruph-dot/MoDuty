@@ -1,24 +1,49 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import AgentTile from "./AgentTile";
-import NewAgentTile from "./NewAgentTile";
-import SessionTile from "./SessionTile";
+import TileShell from "./TileShell";
 import { apiBase } from "../lib/api";
+import { DEFAULT_TILE_GEOMETRY } from "../lib/persistTiles";
 import { startAgentEventStream } from "../lib/sseClient";
 import { useAgentsStore } from "../state/agentsStore";
+import { useContextMenuStore } from "../state/contextMenuStore";
+import { useDialogStore } from "../state/dialogStore";
 import type { Agent } from "../types";
 
 /**
- * 全屏磁贴墙桌面。挂载时加载 agents/sessions 并订阅实时状态 SSE；
- * 双击磁贴 → onOpen（由上层决定是否打开对话窗口，ISS-08 接线）。
+ * 全屏磁贴墙桌面。
+ * - 挂载时加载 agents + 从 localStorage 还原磁贴几何
+ * - 订阅实时状态 SSE，磁贴实时反映 Agent 状态
+ * - 空白处右键 → 右键菜单（仅 New Agent 一项）
+ * - 双击 Agent 磁贴 → onOpen
  */
 export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) {
   const agents = useAgentsStore((state) => state.agents);
-  const sessions = useAgentsStore((state) => state.sessions);
+  const tiles = useAgentsStore((state) => state.tiles);
   const loading = useAgentsStore((state) => state.loading);
   const error = useAgentsStore((state) => state.error);
   const load = useAgentsStore((state) => state.load);
   const applyAgentEvent = useAgentsStore((state) => state.applyAgentEvent);
+  const moveTile = useAgentsStore((state) => state.moveTile);
+  const commitTile = useAgentsStore((state) => state.commitTile);
+  const showContextMenu = useContextMenuStore((state) => state.show);
+  const openNewAgent = useDialogStore((state) => state.openNewAgent);
+
+  // 父容器尺寸，用于 clamp（用 state 才能在 ResizeObserver 触发后让 TileShell 重新 clamp）
+  const wallRef = useRef<HTMLDivElement | null>(null);
+  const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const el = wallRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      setBounds({ width: rect.width, height: rect.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     void load();
@@ -31,43 +56,53 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return () => stream.stop();
   }, [load, applyAgentEvent]);
 
+  // 桌面空白处右键 → 弹出菜单（仅「New Agent」一项）
+  const onContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      // 点在磁贴上不响应（按你定的"仅空白桌面"）
+      if (event.target instanceof Element && event.target.closest(".tile-shell")) {
+        return;
+      }
+      event.preventDefault();
+      showContextMenu(
+        { x: event.clientX, y: event.clientY },
+        [
+          {
+            id: "new-agent",
+            label: "New Agent",
+            onClick: () => openNewAgent(),
+          },
+        ],
+      );
+    },
+    [showContextMenu, openNewAgent],
+  );
+
   return (
-    <div className="tile-wall">
-      <header className="tile-wall__header">
-        <div>
-          <h1 className="tile-wall__title">MOMOKA</h1>
-          <p className="tile-wall__subtitle">Agent Desktop — 双击磁贴进入对话</p>
-        </div>
-        {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
-      </header>
+    <div className="tile-wall" ref={wallRef} onContextMenu={onContextMenu}>
+      {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
 
-      <main className="tile-wall__main">
-        <section aria-label="Agents">
-          {loading && agents.length === 0 ? (
-            <div className="tile-wall__hint" role="status" aria-busy="true">
-              Loading agents…
-            </div>
-          ) : (
-            <div className="tile-grid">
-              {agents.map((agent) => (
-                <AgentTile key={agent.id} agent={agent} onOpen={onOpen} />
-              ))}
-              <NewAgentTile />
-            </div>
-          )}
-        </section>
+      {loading && agents.length === 0 ? (
+        <p className="tile-wall__hint" role="status" aria-busy="true">
+          Loading agents…
+        </p>
+      ) : null}
 
-        {sessions.length > 0 ? (
-          <section className="sessions-section" aria-label="Legacy sessions">
-            <h2 className="sessions-section__title">Sessions</h2>
-            <div className="sessions-grid" role="list">
-              {sessions.map((session) => (
-                <SessionTile key={session.id} session={session} />
-              ))}
-            </div>
-          </section>
-        ) : null}
-      </main>
+      {agents.map((agent) => {
+        const geometry = tiles[agent.id] ?? DEFAULT_TILE_GEOMETRY;
+        return (
+          <TileShell
+            key={agent.id}
+            id={agent.id}
+            geometry={geometry}
+            bounds={bounds}
+            onMove={(next) => moveTile(agent.id, next)}
+            onCommit={(next) => commitTile(agent.id, next)}
+          >
+            <AgentTile agent={agent} onOpen={onOpen} />
+          </TileShell>
+        );
+      })}
     </div>
   );
 }

@@ -23,10 +23,16 @@ export const STATE_FOOTER: Record<AgentState, string> = {
   error: "Error · retry",
 };
 
-/** role → 顶部类标（设计稿的 RESEARCH / CONVERSATIONS 风格：全大写 letter-spacing 标签） */
+/** role → 顶部类标（设计稿 RESEARCH / AGENT · ACTIVE 标签）
+ *  
+ * agent.role 可能是完整 prompt（如 "你是一个有用的 AI 助手…"），
+ * 截取前 12 字 + 省略号，保证类标紧凑。
+ */
 export function roleLabel(role: string | undefined | null): string {
-  const trimmed = (role ?? "").trim().toUpperCase();
-  return trimmed || "AGENT";
+  const trimmed = (role ?? "").trim();
+  if (!trimmed) return "AGENT";
+  const upper = trimmed.toUpperCase();
+  return upper.length > 12 ? upper.slice(0, 12) + "…" : upper;
 }
 
 /** 组装磁贴 footer 文案：running 且带 phase → phase 动作；否则用 state 静态文案 */

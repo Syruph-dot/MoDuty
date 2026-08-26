@@ -10,6 +10,7 @@ import SettingsDialog from "./components/SettingsDialog";
 import WallpaperDialog from "./components/WallpaperDialog";
 import { useAgentsStore } from "./state/agentsStore";
 import { applyWallpaperTo } from "./state/wallpaperStore";
+import { applyFontSourceLink } from "./state/tileThemeStore";
 
 /**
  * Arona Chest：
@@ -27,6 +28,11 @@ export default function App() {
   const shellRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     return applyWallpaperTo(shellRef.current);
+  }, []);
+
+  // 外部字体资源（可配置）：有 fontSourceUrl 时注入 <link rel=stylesheet>
+  useEffect(() => {
+    return applyFontSourceLink();
   }, []);
 
   return (

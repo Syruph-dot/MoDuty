@@ -84,7 +84,10 @@
   padding: 8px 10px;
 }
 
-.tile-shell--expanded .tile-flip__face--front .agent-tile__meta {
+.tile-shell--expanded .tile-flip__face--front .agent-tile__big,
+.tile-shell--expanded .tile-flip__face--front .agent-tile__sub,
+.tile-shell--expanded .tile-flip__face--front .agent-tile__result,
+.tile-shell--expanded .tile-flip__face--front .agent-tile__utility {
   display: none;
 }
 
@@ -128,20 +131,18 @@
   padding: 8px 10px;
 }
 
-.tile-shell--dock .agent-tile__head {
-  gap: 6px;
+/* 坞磁贴只保留名字 + footer 状态（隐藏 data/result/utility 与 role 类标） */
+.tile-shell--dock .agent-tile__role,
+.tile-shell--dock .agent-tile__big,
+.tile-shell--dock .agent-tile__sub,
+.tile-shell--dock .agent-tile__page--result,
+.tile-shell--dock .agent-tile__utility {
+  display: none;
 }
 
 .tile-shell--dock .agent-tile__name {
   font-size: 12px;
-}
-
-.tile-shell--dock .agent-tile__badge {
-  gap: 5px;
-}
-
-.tile-shell--dock .agent-tile__meta {
-  display: none;
+  font-weight: 600;
 }
 
 .tile-shell--dock:hover {
@@ -734,4 +735,200 @@
     opacity: 0.65;
     box-shadow: 0 0 0 4px rgba(79, 140, 255, 0);
   }
+}
+
+/* ================================================================
+   Metro 交互稿（interactionv2）磁贴样式升级
+   2 页结构（状态+数据 / 最近结果）+ footer 一句话状态 + utility 条
+   字号/字体家族为可配置项：由 tileThemeStore 经 CSS 变量注入
+   ================================================================ */
+
+.agent-tile {
+  --tile-font-family: "";
+  --tile-name-size: 22px;
+  --tile-big-size: 52px;
+  --tile-meta-size: 11px;
+  --tile-footer-size: 11px;
+  gap: 8px;
+  font-family: var(--tile-font-family), "Segoe UI", Arial, sans-serif;
+}
+
+.agent-tile:hover {
+  filter: brightness(1.06); /* 色块语义亮度反馈（设计稿 .tile:hover） */
+}
+
+/* 2 页容器：叠放切换 */
+.agent-tile__pages {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.agent-tile__page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 260ms ease, transform 260ms ease;
+  pointer-events: none;
+}
+
+.agent-tile__page--active {
+  opacity: 1;
+  transform: none;
+}
+
+/* role 类标（设计稿 RESEARCH / AGENT · ACTIVE 标签） */
+.agent-tile__role {
+  font-size: var(--tile-meta-size, 11px);
+  line-height: 1.4;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+/* 名字：light 大标题（字号可配置） */
+.agent-tile__name {
+  font-size: var(--tile-name-size, 22px);
+  font-weight: 300;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* big 数字（52/200 超轻） */
+.agent-tile__big {
+  font-size: var(--tile-big-size, 52px);
+  font-weight: 200;
+  line-height: 1;
+  margin-top: auto;
+  letter-spacing: -0.02em;
+}
+
+/* 摘要 meta（大数字下的一行说明） */
+.agent-tile__sub {
+  font-size: var(--tile-meta-size, 11px);
+  color: rgba(232, 237, 247, 0.55);
+}
+
+/* 页2：最近结果 */
+.agent-tile__result {
+  margin-top: auto;
+  font-size: calc(var(--tile-big-size, 52px) * 0.34);
+  font-weight: 300;
+  line-height: 1.35;
+  color: rgba(232, 237, 247, 0.9);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* footer：dot + 一句话状态 + 时间 */
+.agent-tile__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 2px;
+  font-size: var(--tile-footer-size, 11px);
+  color: rgba(232, 237, 247, 0.78);
+}
+
+.state-dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+}
+
+.agent-tile__footer-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tile__footer-time {
+  margin-left: auto;
+  flex: none;
+  color: rgba(232, 237, 247, 0.42);
+}
+
+/* utility 条（hover 浮现；设计稿 .utility 黑色工具条） */
+.agent-tile__utility {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 12px;
+  background: #050505;
+  color: #fff;
+  font-size: var(--tile-meta-size, 11px);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.agent-tile:hover .agent-tile__utility,
+.agent-tile__utility--visible,
+.agent-tile__utility:focus-visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.agent-tile__utility:hover {
+  background: #1c1c1c;
+}
+
+.agent-tile__utility:focus-visible {
+  outline: 2px solid #4f8cff;
+  outline-offset: 2px;
+}
+
+.agent-tile__utility-key {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* 重命名输入框适配 light 字阶 */
+.agent-tile__rename-input {
+  font-family: var(--tile-font-family), "Segoe UI", Arial, sans-serif;
+  font-size: var(--tile-name-size, 22px);
+}
+
+/* ---- 磁贴字体配置区（Settings 弹窗） ---- */
+
+.tile-font-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.tile-font-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tile-font-col__label {
+  white-space: nowrap;
+}
+
+.tile-font-reset {
+  flex: none;
+  align-self: flex-end;
 }

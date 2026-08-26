@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useDialogStore } from "../state/dialogStore";
+import { useTileThemeStore, type TileTheme } from "../state/tileThemeStore";
 import { fetchSettings, updateSettings, fetchModels } from "../lib/api";
 
 interface FormState {
@@ -154,6 +155,9 @@ export default function SettingsDialog() {
           </button>
         </label>
 
+        {/* 磁贴字体主题：前端样式可配置项 */}
+        <TileFontSection />
+
         {error ? (
           <p className="dialog__error" role="alert">
             {error}
@@ -175,5 +179,77 @@ export default function SettingsDialog() {
         </div>
       </form>
     </div>
+  );
+}
+
+/** 磁贴字体主题（前端样式配置，localStorage 即时生效；不影响后端设置保存） */
+function TileFontSection() {
+  const theme = useTileThemeStore();
+  const [familyDraft, setFamilyDraft] = useState(theme.fontFamily);
+  const [urlDraft, setUrlDraft] = useState(theme.fontSourceUrl);
+
+  useEffect(() => {
+    setFamilyDraft(theme.fontFamily);
+    setUrlDraft(theme.fontSourceUrl);
+  }, [theme.fontFamily, theme.fontSourceUrl]);
+
+  const sizeFields: ReadonlyArray<{
+    key: keyof Pick<TileTheme, "nameSize" | "bigSize" | "metaSize" | "footerSize">;
+    label: string;
+    min: number;
+    max: number;
+  }> = [
+    { key: "nameSize", label: "名字", min: 12, max: 40 },
+    { key: "bigSize", label: "大数字", min: 20, max: 96 },
+    { key: "metaSize", label: "标签", min: 8, max: 18 },
+    { key: "footerSize", label: "Footer", min: 8, max: 18 },
+  ];
+
+  return (
+    <section className="dialog__field">
+      <span className="dialog__label">磁贴字体（前端样式）</span>
+      <div className="tile-font-row">
+        {sizeFields.map((field) => (
+          <label key={field.key} className="tile-font-col">
+            <span className="dialog__label tile-font-col__label">{field.label}</span>
+            <input
+              className="dialog__input"
+              type="number"
+              min={field.min}
+              max={field.max}
+              value={theme[field.key]}
+              aria-label={`磁贴${field.label}字号`}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) {
+                  useTileThemeStore.getState().update({ [field.key]: value });
+                }
+              }}
+            />
+          </label>
+        ))}
+        <button
+          type="button"
+          className="btn btn--ghost tile-font-reset"
+          onClick={() => useTileThemeStore.getState().reset()}
+        >
+          Reset
+        </button>
+      </div>
+      <input
+        className="dialog__input"
+        placeholder="字体家族（如 Segoe UI Light, Inter），留空 = 默认"
+        value={familyDraft}
+        onChange={(event) => setFamilyDraft(event.target.value)}
+        onBlur={() => useTileThemeStore.getState().update({ fontFamily: familyDraft.trim() })}
+      />
+      <input
+        className="dialog__input"
+        placeholder="外部字体样式 URL（可选，自动注入 <link>），留空 = 不引入"
+        value={urlDraft}
+        onChange={(event) => setUrlDraft(event.target.value)}
+        onBlur={() => useTileThemeStore.getState().update({ fontSourceUrl: urlDraft.trim() })}
+      />
+    </section>
   );
 }

@@ -43,3 +43,53 @@
 4. 低分（1-3）表示之前方向被否定，应主动换解释框架或调整路径
 5. 高分（6-7）表示某条判断路径被认可，可沿该路径深化
 6. 若运行时控制层给出文字批注，优先把它当作用户明确写下的判断标准；不要要求用户重复解释评分原因
+
+## 会话引用（Session Reference）
+
+用户输入里可能出现 `&ses_<id>`（或 `&tile_<agentId>`）形式的会话引用。它是一个
+**资源句柄（resource handle）**，不是要你复述的文本，也不等于当前上下文。
+
+### 基本规则
+- `&ses_<id>` 指向一个历史会话。把它当成**可检索资源**，不要整段塞进上下文。
+- 用户没显式给 `&ses_<id>` 时，不要主动翻历史会话。
+- 一条消息可含多个 `&ses_<id>`，各自独立处理。
+
+### 检索协议（检索优先于全量读取）
+1. `inspect_session(id)` ── 先看元数据（标题、目标、主题、turn 数、时间范围），判断相关性。
+2. 需要具体内容，按成本从低到高三选一：
+   - `search_sessions("关键词")`     跨会话检索，定位到相关 turn；
+   - `search_content(id, "关键词")`  在该会话 transcript 内按内容 grep；
+   - `read_session(id, from, to)`    已知区间时直接读指定 turn 范围。
+3. 只读相关 turn，综合后回答；禁止 `read_session` 全量后整段粘贴。
+
+### 引用与归因
+- 用到某会话内容时标注 `[来源 &ses_<id> · Turn N]`，让用户能回看原处。
+- 用户只说“参考 &ses_xxx”却没说要什么：先 `inspect_session` 给构成摘要，再确认挖哪部分。
+
+### 文件侧同理（everything / rg 二分法）
+- `search_files(名称/路径)` 管“找文件”（everything 侧）；
+- `search_content(内容)`     管“找内容”（rg 侧）。
+- 二者都遵循：先检索、后读取，绝不先全量 dump。
+
+### 示例
+
+例1 定向结论
+用户：参考 &ses_d2d8 里关于架构的最终结论
+Agent：
+  inspect_session(d2d8)              → topics 含“架构”
+  search_content(d2d8, "最终架构|架构结论")
+  read_session(d2d8, 82, 104)
+  → 提炼结论 + [来源 &ses_d2d8 · Turn 82-104]
+
+例2 模糊引用
+用户：把 &ses_ac50 和 &ses_4dc1 里做过的测试思路汇总
+Agent：
+  inspect_session(ac50) → 弹球游戏测试
+  inspect_session(4dc1) → 测试
+  search_sessions("测试思路")  → 各自命中区间
+  → 分别 read_session 后汇总，各自标注来源
+
+例3 反例（禁止）
+用户：参考 &ses_a1b2 的架构结论
+❌ Agent：read_session(a1b2) 全量 184 条 → 整段贴出
+✅ 见例1 的选择性检索

@@ -101,7 +101,7 @@ console.log(reply.outputId, reply.response);
 
 ## Agent Desktop（磁贴化桌面应用）
 
-MOMOKA 附带一个 **Tauri 无边框全屏桌面壳**：多个 Agent（1 Agent = 1 session 上下文串）以磁贴形式呈现在全屏磁贴墙上，磁贴实时反映 Agent 状态（idle / running / waiting_approval / completed / error）与阶段（planning / searching / reading / executing / verifying），双击磁贴进入 SSE 流式对话窗口；Agent 等待审批时浮出审批面板。
+MOMOKA 附带一个 **Tauri 无边框全屏桌面壳**：多个 Agent（1 Agent = 1 session 上下文串）以磁贴形式呈现在全屏磁贴墙上，磁贴实时反映 Agent 状态（idle / running / waiting_approval / completed / error）与阶段（planning / searching / reading / executing / verifying）。双击磁贴进入**分屏展开模式**：未打开磁贴收缩进左半屏坞，打开磁贴（含 SSE 流式对话窗口）在右半屏按 2n / 2n+1 规则展开，多窗口可拖拽重排、拖回左坞或点 × 收起；Agent 等待审批时浮出审批面板。
 
 ### 架构
 

@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Desktop — Metro Interaction Prototype</title>
+<style>
+*{box-sizing:border-box}
+:root{
+  --bg:#111;
+  --tile:#0879d1;
+  --tile2:#7036bd;
+  --tile3:#d9552e;
+  --tile4:#18866f;
+  --white:#fff;
+  --muted:#ffffff88;
+  --bar:#050505;
+}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
+body{font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:#fff}
+.header{height:94px;padding:27px 42px;display:flex;align-items:center;gap:22px}
+.header h1{margin:0;font-size:34px;font-weight:300;letter-spacing:-1px}
+.header span{font-size:11px;letter-spacing:2px;color:#ffffff55}
+.help{margin-left:auto;font-size:11px;color:#ffffff55}
+.canvas{
+  position:relative;height:calc(100vh - 94px);
+  padding:24px 42px;
+  background:
+    linear-gradient(#ffffff04 1px,transparent 1px),
+    linear-gradient(90deg,#ffffff04 1px,transparent 1px);
+  background-size:42px 42px;
+}
+.tile{
+  position:absolute;width:196px;height:196px;padding:21px;
+  cursor:grab;user-select:none;overflow:visible;
+  transition:transform .18s,filter .18s,box-shadow .18s;
+}
+.tile:active{cursor:grabbing}
+.tile:hover{filter:brightness(1.06)}
+.blue{background:#0879d1}.purple{background:#7036bd}.orange{background:#d9552e}
+.green{background:#18866f}.gray{background:#444}
+.t1{left:50px;top:35px}.t2{left:260px;top:35px}.t3{left:470px;top:35px}
+.t4{left:50px;top:245px}.t5{left:260px;top:245px}.t6{left:470px;top:245px}
+.name{font-size:22px;font-weight:300}.meta{font-size:11px;color:#ffffff88;margin-top:5px}
+.big{font-size:52px;font-weight:200;margin-top:30px}
+.bottom{position:absolute;left:21px;right:21px;bottom:18px;font-size:11px;color:#ffffffaa}
+.dot{display:inline-block;width:7px;height:7px;border:1px solid #fff;border-radius:50%;margin-right:6px}
+.page{position:absolute;inset:0;padding:21px;display:flex;flex-direction:column;justify-content:space-between;animation:live 8s infinite}
+.page:nth-child(2){transform:translateY(100%);animation-delay:2.65s}
+.page:nth-child(3){transform:translateY(100%);animation-delay:5.3s}
+@keyframes live{
+  0%,27%{transform:translateY(0)}
+  32%,60%{transform:translateY(-100%)}
+  65%,93%{transform:translateY(-200%)}
+  98%,100%{transform:translateY(0)}
+}
+.stack{
+  position:absolute;left:700px;top:35px;width:250px;height:260px;
+  cursor:pointer;
+}
+.stack .s{
+  position:absolute;width:210px;height:190px;padding:21px;
+  transition:transform .3s,box-shadow .25s;
+}
+.stack .s:nth-child(1){background:#0879d1;left:0;top:0;z-index:4}
+.stack .s:nth-child(2){background:#7036bd;left:13px;top:13px;z-index:3;transform:scale(.96)}
+.stack .s:nth-child(3){background:#d9552e;left:26px;top:26px;z-index:2;transform:scale(.92)}
+.stack:hover .s:nth-child(1){transform:translateY(-5px)}
+.stack:hover .s:nth-child(2){transform:translate(13px,13px) scale(.96)}
+.stack:hover .s:nth-child(3){transform:translate(26px,26px) scale(.92)}
+.stack-label{position:absolute;left:0;bottom:-2px;font-size:10px;letter-spacing:1.5px;color:#fff7;z-index:8}
+.utility{
+  position:absolute;left:0;bottom:-42px;width:210px;height:38px;
+  background:#050505;color:#fff;display:flex;align-items:center;
+  padding:0 15px;font-size:11px;letter-spacing:1.5px;
+  opacity:0;transform:translateY(-4px);pointer-events:none;
+  transition:.16s;z-index:20;
+}
+.stack:hover .utility{opacity:1;transform:translateY(0);pointer-events:auto}
+.utility:hover{background:#222}
+.pre{
+  position:absolute;width:210px;height:190px;padding:21px;
+  left:985px;top:35px;background:#1683d8;
+  opacity:.72;transform:scale(.96);
+}
+.pre:after{
+  content:"";position:absolute;inset:0;border:2px solid #fff;
+  animation:preload 1s linear infinite;
+}
+@keyframes preload{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.pre .hint{position:absolute;bottom:18px;font-size:10px;letter-spacing:1px;color:#fff9}
+.dragghost{
+  position:absolute;width:210px;height:190px;background:#0879d1;
+  left:985px;top:250px;padding:21px;opacity:.3;
+}
+.panel{
+  position:absolute;right:42px;bottom:35px;width:300px;
+  border-left:2px solid #fff2;padding-left:18px;color:#fff8;
+}
+.panel b{color:#fff;font-weight:400}.panel p{font-size:11px;line-height:1.7;margin:5px 0}
+.state{position:absolute;left:42px;bottom:31px;font-size:10px;letter-spacing:1.4px;color:#fff5}
+</style>
+</head>
+<body>
+<header class="header">
+  <h1>start</h1>
+  <span>AGENT DESKTOP / METRO OBJECT PROTOTYPE</span>
+  <div class="help">LIVE · DRAG · STACK · OPEN</div>
+</header>
+
+<main class="canvas">
+
+  <!-- ordinary live tiles -->
+  <div class="tile blue t1">
+    <div class="page"><div><div class=name>RESEARCH</div><div class=meta>AGENT · ACTIVE</div></div><div class=bottom><span class=dot></span>Searching sessions…</div></div>
+    <div class="page"><div><div class=big>27</div><div class=meta>resources selected</div></div><div class=bottom>cross-session</div></div>
+    <div class="page"><div><div class=name>LAST RESULT</div><div class=meta>Live tiles as information windows</div></div><div class=bottom>01:04</div></div>
+  </div>
+
+  <div class="tile purple t2">
+    <div class=name>CONVERSATIONS</div><div class=big>8</div>
+    <div class=bottom>recent sessions</div>
+  </div>
+
+  <div class="tile orange t3">
+    <div class=name>FILES</div><div class=big>142</div>
+    <div class=bottom>indexed objects</div>
+  </div>
+
+  <div class="tile green t4">
+    <div class=name>TASKS</div><div class=big>03</div>
+    <div class=bottom>running agents</div>
+  </div>
+
+  <div class="tile gray t5">
+    <div class=name>HISTORY</div>
+    <div style="margin-top:25px;font-size:13px;line-height:1.8">
+      01:04 opened paper.pdf<br>
+      00:58 search finished<br>
+      00:51 session linked
+    </div>
+    <div class=bottom>timeline</div>
+  </div>
+
+  <div class="tile purple t6">
+    <div class=name>PROJECT</div>
+    <div class=meta>Agent Desktop</div>
+    <div style="margin-top:30px;font-size:15px">8 objects<br>3 active</div>
+    <div class=bottom>workspace</div>
+  </div>
+
+  <!-- stack: click rotates top -->
+  <div class=stack id=stack title="Click to rotate stack">
+    <div class=s>
+      <div class=name>RESEARCH</div><div class=meta>top object</div>
+      <div style="margin-top:28px;font-size:15px">Searching…</div>
+      <div class=bottom>click → rotate</div>
+    </div>
+    <div class=s>
+      <div class=name>MATH LAB</div><div class=meta>queued object</div>
+      <div style="margin-top:28px;font-size:15px">Proving theorem</div>
+    </div>
+    <div class=s>
+      <div class=name>PAPERS</div><div class=meta>queued object</div>
+      <div style="margin-top:28px;font-size:15px">27 resources</div>
+    </div>
+    <div class=utility id=utility>OPEN <span style="margin-left:auto;color:#fff5">↵</span></div>
+    <div class=stack-label>STACK · 3 OBJECTS</div>
+  </div>
+
+  <!-- pre-stack visualization -->
+  <div class=pre>
+    <div class=name>PROJECT</div>
+    <div class=meta>drop candidate</div>
+    <div style="margin-top:28px;font-size:15px">Hold 1.0s…</div>
+    <div class=hint>PRE-STACK</div>
+  </div>
+
+  <div class=dragghost>
+    <div class=name>DRAGGED TILE</div>
+    <div class=meta>moving object</div>
+  </div>
+
+  <div class=panel>
+    <b>Interaction grammar</b>
+    <p>Hover → observe</p>
+    <p>Click stack → rotate top object</p>
+    <p>Drag tile → move object</p>
+    <p>Hover target for 1s → pre-stack</p>
+    <p>Release → create stack</p>
+    <p>Hover stack → black utility bar</p>
+    <p>Click <b>OPEN</b> → enter session</p>
+  </div>
+
+  <div class=state>PROTOTYPE · STACK IS NOT A FOLDER</div>
+</main>
+
+<script>
+const stack=document.getElementById("stack");
+const utility=document.getElementById("utility");
+let order=[0,1,2];
+const cards=[...stack.querySelectorAll(".s")];
+
+stack.addEventListener("click",e=>{
+  if(e.target===utility || utility.contains(e.target)) return;
+  order=[order[1],order[2],order[0]];
+  order.forEach((v,i)=>{
+    cards[v].style.zIndex=4-i;
+    cards[v].style.left=(i*13)+"px";
+    cards[v].style.top=(i*13)+"px";
+    cards[v].style.transform=`scale(${1-i*.04})`;
+  });
+});
+
+utility.addEventListener("click",e=>{
+  e.stopPropagation();
+  alert("OPEN → session");
+});
+
+/* Demonstration drag interaction:
+   dragging a normal tile over the pre-stack target for 1s changes it into
+   the same visual language used by the static prototype. */
+document.querySelectorAll(".tile").forEach(tile=>{
+  tile.draggable=true;
+  tile.addEventListener("dragstart",()=>tile.style.opacity=".45");
+  tile.addEventListener("dragend",()=>tile.style.opacity="");
+});
+</script>
+</body>
+</html>

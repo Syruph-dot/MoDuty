@@ -5,6 +5,8 @@ export interface ContextMenuItem {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  /** 渲染为分隔线（此时 label/onClick 被忽略） */
+  divider?: boolean;
 }
 
 interface ContextMenuStore {

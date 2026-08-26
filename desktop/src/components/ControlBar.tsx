@@ -10,11 +10,7 @@ export default function ControlBar() {
   const inTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
   if (!inTauri) {
-    return (
-      <div className="control-bar control-bar--browser" aria-hidden="true">
-        <span className="control-bar__hint">browser mode</span>
-      </div>
-    );
+    return null;
   }
 
   return (

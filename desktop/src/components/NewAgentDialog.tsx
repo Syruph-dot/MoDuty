@@ -5,12 +5,11 @@ import { useDialogStore } from "../state/dialogStore";
 
 interface FormState {
   name: string;
-  role: string;
   workspace_dir: string;
   model: string;
 }
 
-const EMPTY_FORM: FormState = { name: "", role: "", workspace_dir: "", model: "" };
+const EMPTY_FORM: FormState = { name: "新建Agent", workspace_dir: "", model: "" };
 
 /**
  * 新建 Agent 弹窗（由 dialogStore.newAgentOpen 控制）。
@@ -42,19 +41,19 @@ export default function NewAgentDialog() {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = form.name.trim();
-    const role = form.role.trim();
     const workspaceDir = form.workspace_dir.trim();
-    if (!name || !role || !workspaceDir) {
-      setError("name / role / workspace_dir 均为必填");
+    if (!name) {
+      setError("name 为必填");
       return;
     }
     setSubmitting(true);
     setError(null);
+    const spawn = useDialogStore.getState().newAgentSpawn;
     const agent = await createAgent({
       name,
-      role,
       workspace_dir: workspaceDir,
       ...(form.model.trim() ? { model: form.model.trim() } : {}),
+      ...(spawn ? { spawn } : {}),
     });
     setSubmitting(false);
     if (agent) {
@@ -92,15 +91,6 @@ export default function NewAgentDialog() {
           />
         </label>
 
-        <label className="dialog__field">
-          <span className="dialog__label">Role / 系统提示词</span>
-          <textarea
-            className="dialog__input dialog__input--area"
-            value={form.role}
-            onChange={(event) => setForm({ ...form, role: event.target.value })}
-            placeholder="You are a research assistant that verifies sources."
-          />
-        </label>
 
         <label className="dialog__field">
           <span className="dialog__label">Workspace dir</span>

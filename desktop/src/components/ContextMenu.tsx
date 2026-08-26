@@ -60,23 +60,27 @@ export default function ContextMenu() {
       role="menu"
       onContextMenu={(event) => event.preventDefault()}
     >
-      {items.map((item) => (
-        <li key={item.id} role="none">
-          <button
-            type="button"
-            role="menuitem"
-            className="context-menu__item"
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return;
-              hide();
-              item.onClick();
-            }}
-          >
-            {item.label}
-          </button>
-        </li>
-      ))}
+      {items.map((item) =>
+        item.divider ? (
+          <li key={item.id} role="separator" className="context-menu__divider" aria-hidden="true" />
+        ) : (
+          <li key={item.id} role="none">
+            <button
+              type="button"
+              role="menuitem"
+              className="context-menu__item"
+              disabled={item.disabled}
+              onClick={() => {
+                if (item.disabled) return;
+                hide();
+                item.onClick();
+              }}
+            >
+              {item.label}
+            </button>
+          </li>
+        ),
+      )}
     </ul>
   );
 }

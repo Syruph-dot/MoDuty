@@ -65,7 +65,7 @@ export async function listAgents(): Promise<Agent[]> {
   return data.agents;
 }
 
-export async function createAgent(input: { name: string; role: string; workspace_dir: string; model?: string }): Promise<Agent> {
+export async function createAgent(input: { name: string; workspace_dir?: string; model?: string }): Promise<Agent> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
     await fetch(`${base}/api/agents`, {
@@ -81,4 +81,61 @@ export async function createAgent(input: { name: string; role: string; workspace
 export async function deleteAgent(id: string): Promise<void> {
   const base = await awaitApiBase();
   await jsonOrThrow(await fetch(`${base}/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }), "DELETE /api/agents/:id");
+}
+
+export async function renameAgent(id: string, name: string): Promise<Agent> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/agents/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    }),
+    "PUT /api/agents/:id",
+  )) as { agent: Agent };
+  return data.agent;
+}
+
+export interface MomokaSettingsView {
+  apiKey_masked: string;
+  baseUrl: string;
+  model: string;
+  sandbox_enabled: boolean;
+}
+
+/** 读取当前设置（apiKey 仅返回前 8 位掩码） */
+export async function fetchSettings(): Promise<MomokaSettingsView> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/settings`),
+    "GET /api/settings",
+  )) as MomokaSettingsView;
+  return data;
+}
+
+/** 保存设置（空字段表示不修改，例如留空 apiKey 则不覆盖已有密钥） */
+export async function updateSettings(input: {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}): Promise<void> {
+  const base = await awaitApiBase();
+  await jsonOrThrow(
+    await fetch(`${base}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+    "POST /api/settings",
+  );
+}
+
+/** 按当前 Base URL + Key 从官方拉取模型列表（走后端代理，避免 webview CORS） */
+export async function fetchModels(): Promise<string[]> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/models`),
+    "GET /api/models",
+  )) as { models: string[] };
+  return data.models ?? [];
 }

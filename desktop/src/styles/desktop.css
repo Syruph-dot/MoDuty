@@ -50,18 +50,6 @@ body,
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.control-bar--browser {
-  right: auto;
-  left: 12px;
-  background: rgba(10, 14, 24, 0.35);
-}
-
-.control-bar__hint {
-  font-size: 11px;
-  opacity: 0.45;
-  padding: 2px 6px;
-}
-
 .control-bar__btn {
   width: 30px;
   height: 30px;

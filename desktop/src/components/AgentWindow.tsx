@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { awaitApiBase } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
@@ -10,6 +10,24 @@ interface StoredMessage {
   content: string;
   timestamp: string;
   toolCalls?: Array<{ tool: string; args: string; result: string }>;
+}
+
+/** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
+interface SessionCandidate {
+  id: string;
+  name: string;
+  goal: string;
+  created_at: string;
+  message_count: number;
+  last_message_at: string;
+}
+
+/** & 提及状态：active 时吞噬导航键，Enter/Tab 选中后回插 &ses_<id> */
+interface Mention {
+  active: boolean;
+  query: string; // & 之后、光标之前的过滤串
+  start: number; // & 在 value 中的起始下标
+  index: number; // 高亮项游标
 }
 
 interface DisplayMessage {
@@ -38,7 +56,7 @@ function shortArgs(args: string): string {
   }
 }
 
-/** 覆盖式对话窗口：历史消息 + /api/agents/:id/chat SSE 流式 */
+/** 嵌入分屏窗口：作为展开磁贴内容（由 TileShell 定位），header 可拖拽，× 或拖到左坞收起 */
 export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [toolCards, setToolCards] = useState<ToolCard[]>([]);
@@ -48,6 +66,10 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const mirrorRef = useRef<HTMLSpanElement>(null);
+  const [sessions, setSessions] = useState<SessionCandidate[]>([]);
+  const [mention, setMention] = useState<Mention | null>(null);
+  const [mentionX, setMentionX] = useState(0);
   const load = useAgentsStore((state) => state.load);
 
   const reloadMessages = async () => {
@@ -73,6 +95,100 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
+
+  // & 提及候选：GET /api/sessions（已存在，零后端新依赖）；排除当前 agent 自己的会话
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const base = await awaitApiBase();
+        const res = await fetch(`${base}/api/sessions`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { sessions?: SessionCandidate[] };
+        if (alive) setSessions(data.sessions ?? []);
+      } catch {
+        // 候选不可用时静默降级：& 不弹窗，其余功能不受影响
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
+
+  // 过滤候选：空 query 取最近 20 条（索引便宜）；带 query 才按 name/goal 过滤
+  const candidates = useMemo(() => {
+    if (!mention?.active || sessions.length === 0) return [];
+    const base = sessions.filter((session) => session.id !== agent.session_id);
+    if (!mention.query.trim()) return base.slice(0, 20);
+    const needle = mention.query.toLowerCase();
+    return base
+      .filter((session) => `${session.name} ${session.goal ?? ""}`.toLowerCase().includes(needle))
+      .slice(0, 20);
+  }, [sessions, mention, agent.session_id]);
+
+  /** 离屏 mirror 测 caret X：与 input 同字体/同字号，偏移量 = mirror 宽度 + input padding-left(14px) */
+  const measureCaretX = (text: string): number => {
+    const el = mirrorRef.current;
+    if (!el) return 0;
+    el.textContent = text;
+    return el.offsetWidth + 14;
+  };
+
+  const onChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    setInput(value);
+    const caret = event.target.selectionStart ?? value.length;
+    const match = value.slice(0, caret).match(/&(\S*)$/);
+    if (match) {
+      setMention({ active: true, query: match[1] ?? "", start: caret - match[0].length, index: 0 });
+      setMentionX(measureCaretX(value.slice(0, caret)));
+    } else {
+      setMention(null);
+    }
+  };
+
+  /** 选中候选：把 value[start..caret] 替换为机器句柄 &ses_<id>，光标后置 */
+  const applyMention = (sessionId: string) => {
+    if (!mention) return;
+    const value = input;
+    const caret = inputRef.current?.selectionStart ?? value.length;
+    setInput(`${value.slice(0, mention.start)}&ses_${sessionId} ${value.slice(caret)}`);
+    setMention(null);
+    inputRef.current?.focus();
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (mention?.active && candidates.length > 0) {
+      const last = candidates.length - 1;
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setMention((prev) => (prev ? { ...prev, index: prev.index >= last ? 0 : prev.index + 1 } : prev));
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setMention((prev) => (prev ? { ...prev, index: prev.index <= 0 ? last : prev.index - 1 } : prev));
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const hit = candidates[mention.index];
+        if (hit) applyMention(hit.id);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMention(null);
+        return;
+      }
+      return; // mention 活跃时其余键不发送
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void send();
+    }
+  };
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -134,14 +250,20 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   };
 
   return (
-    <div className="agent-window" role="dialog" aria-modal="true" aria-label={`Agent ${agent.name} 对话窗口`}>
-      <header className="agent-window__header">
+    <div className="agent-window" role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
+      <header className="agent-window__header" title="拖动标题栏到左栏可收起">
         <div className="agent-window__identity">
           <span className={`state-dot state-dot--${agent.state}`} aria-hidden="true" />
           <h2 className="agent-window__title">{agent.name}</h2>
           <span className="agent-window__state">{agent.state}{agent.phase ? ` · ${agent.phase}` : ""}</span>
         </div>
-        <button type="button" className="agent-window__close" aria-label="关闭对话窗口" onClick={onClose}>
+        <button
+          type="button"
+          className="agent-window__close"
+          aria-label="关闭对话窗口"
+          onClick={onClose}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
           ×
         </button>
       </header>
@@ -184,18 +306,35 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       </div>
 
       <footer className="agent-window__composer">
+        <span ref={mirrorRef} className="mention-popup__mirror" aria-hidden="true" />
+        {mention?.active && candidates.length > 0 ? (
+          <ul className="mention-popup" style={{ left: Math.min(mentionX, 380) }} role="listbox" aria-label="引用会话">
+            {candidates.map((candidate, index) => (
+              <li
+                key={candidate.id}
+                className={`mention-popup__item${index === mention.index ? " mention-popup__item--active" : ""}`}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  applyMention(candidate.id);
+                }}
+                role="option"
+                aria-selected={index === mention.index}
+              >
+                <span className="mention-popup__name">{candidate.name}</span>
+                <span className="mention-popup__meta">
+                  {candidate.goal ? candidate.goal.slice(0, 44) : `${candidate.message_count} 条消息`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <input
           ref={inputRef}
           className="agent-window__input"
           value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          placeholder="输入消息，Enter 发送"
+          onChange={onChange}
+          onKeyDown={onKeyDown}
+          placeholder="输入消息，Enter 发送；输入 & 可引用历史会话"
           disabled={streaming}
           aria-label="消息输入"
         />

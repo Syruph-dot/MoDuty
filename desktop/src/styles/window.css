@@ -1,34 +1,47 @@
-/* AgentWindow —— 覆盖式对话窗口（aero 毛玻璃） */
+/* AgentWindow —— 嵌入分屏对话窗口（作为展开磁贴第二显示态；aero 毛玻璃）
+   注意：进场不设自身动画——由磁贴双面翻转（rotateY 90° 后显露）承担显示过渡 */
 
 .agent-window {
-  position: fixed;
+  position: absolute;
   inset: 0;
-  z-index: 900;
   display: flex;
   flex-direction: column;
-  background: rgba(13, 18, 30, 0.92);
+  background: rgba(13, 18, 30, 0.94);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .agent-window__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 28px 14px;
+  padding: 11px 14px 9px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: move;
+  user-select: none;
+  transition: background 120ms ease;
+}
+
+.agent-window__header:hover {
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .agent-window__identity {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 
 .agent-window__title {
   margin: 0;
-  font-size: 19px;
+  font-size: 15px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-window__state {
@@ -59,10 +72,10 @@
 .agent-window__list {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 32px;
+  padding: 13px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .agent-window__empty {
@@ -211,10 +224,70 @@
 /* 输入区 */
 
 .agent-window__composer {
+  position: relative; /* & 提及弹窗的定位锚点 */
   display: flex;
-  gap: 10px;
-  padding: 16px 28px 24px;
+  gap: 8px;
+  padding: 10px 14px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---- & 提及（会话引用）---- */
+
+/* 离屏 mirror：测量光标 X，不参与布局 */
+.mention-popup__mirror {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  font-size: 14px;
+  font-family: inherit;
+  letter-spacing: inherit;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.mention-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 60;
+  min-width: 240px;
+  max-width: 340px;
+  max-height: 240px;
+  margin: 0 0 6px;
+  padding: 6px;
+  list-style: none;
+  overflow-y: auto;
+  background: rgba(16, 21, 34, 0.96);
+  border: 1px solid rgba(79, 140, 255, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.mention-popup__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #e8edf7;
+}
+
+.mention-popup__item--active {
+  background: rgba(79, 140, 255, 0.22);
+}
+
+.mention-popup__name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mention-popup__meta {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-window__input {

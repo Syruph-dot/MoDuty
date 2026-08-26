@@ -36,6 +36,8 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
   });
   // Agent Desktop：多 Agent 注册表（1:1 绑定 session）+ 生命周期状态机
   const registry = new AgentRegistry(defaultPaths(projectRoot).memoryDir, agent.sessionManager);
+  // 让 Agent 核心能解析 &tile_<agentId> 别名 → 其绑定的 session
+  agent.agentRegistry = registry;
   const machine = new AgentStateMachine();
   const server = createServer(createMomokaHttpHandler(agent, { registry, machine }));
   return {
@@ -47,7 +49,13 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
       const basePort = options.port ?? Number(process.env.PORT ?? 8888);
       const host = options.host ?? process.env.HOST ?? "0.0.0.0";
       const maxTries = Math.max(1, options.portTries ?? 10);
-      return listenWithFallback(server, basePort, host, maxTries, options.portFile);
+      return listenWithFallback(server, basePort, host, maxTries, options.portFile).then((result) => {
+        // 存量会话 transcript 回填（异步，不阻塞启动与请求）
+        void agent.sessionManager.ensureTranscripts().catch((error: unknown) => {
+          console.warn(`警告: 回填会话 transcript 失败: ${error instanceof Error ? error.message : String(error)}`);
+        });
+        return result;
+      });
     },
   };
 }
@@ -66,12 +74,18 @@ function listenWithFallback(
       const port = basePort + attempt;
       const onError = (err: NodeJS.ErrnoException) => {
         server.off("listening", onListening);
-        if (err.code === "EADDRINUSE" && attempt + 1 < maxTries) {
-          attempt += 1;
-          // 重置：removeListener 后再次 listen
-          tryListen();
+        if (err.code === "EADDRINUSE") {
+          // 端口被占用时直接失败，而不是递增端口再起一个实例。
+          // 多实例会并发读写同一份 agents.json（无文件锁），是注册表被清空/损坏的根因。
+          reject(
+            new Error(
+              `Port ${port} is already in use. Another MOMOKA server instance may still be running. ` +
+                `Stop the existing instance first (run-all.ps1 cleans port ${basePort}, or kill the process bound to ${port}) ` +
+                `before starting a new one.`,
+            ),
+          );
         } else {
-          reject(new Error(`Failed to start server. Is port ${port} in use? (${err.message})`));
+          reject(new Error(`Failed to start server on port ${port}: ${err.message}`));
         }
       };
       const onListening = async () => {

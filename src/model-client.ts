@@ -1,4 +1,5 @@
 import { executeToolCall, TOOL_SPECS } from "./tools.js";
+import { loadSettings } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
 import type { ModelClient, ModelRunContext, ModelRunResult, StreamEvent, ToolCall } from "./types.js";
 
@@ -39,6 +40,7 @@ interface ModelRoundResult {
 
 const APPROVAL_PATTERN = /pending approval/i;
 const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const apiKey = options.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
@@ -48,11 +50,27 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   const maxToolRounds = options.maxToolRounds ?? 4;
   const stream = options.stream ?? false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
-      // 只有默认 DashScope 端点强制要求 key；显式提供 OPENAI_BASE_URL 的无鉴权端点（如免费代理）允许空 key
-      if (!apiKey && baseUrl === DEFAULT_DASHSCOPE) {
+      // 每次对话重新解析凭证：参数 > 环境变量 > 配置文件(.momoka/settings.json) > 默认值
+      // 这样软件内修改设置无需重启后端即可生效
+      const settings = await loadSettings();
+      const apiKey =
+        options.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? settings.apiKey ?? "";
+      const baseUrl = (
+        options.baseUrl ?? process.env.OPENAI_BASE_URL ?? settings.baseUrl ?? DEFAULT_DASHSCOPE
+      ).replace(/\/+$/u, "");
+      const model = options.model ?? process.env.MOMOKA_MODEL ?? settings.model ?? "qwen-plus";
+      const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+
+      if (!apiKey && (baseUrl === DEFAULT_DASHSCOPE || isZen)) {
+        if (isZen) {
+          throw new Error(
+            "OpenCode Zen 需要 API key：请前往 https://opencode.ai/auth 注册免费账号并获取 API key，然后设置 OPENAI_API_KEY 环境变量。"
+          );
+        }
         throw new Error("API key 未配置：请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY，或提供无需鉴权的 OPENAI_BASE_URL");
       }
       const messages: ChatMessage[] = [
@@ -102,10 +120,18 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             arguments: args,
           });
           context.onEvent?.({ type: "tool_start", name: tool, args });
-          const result = await executeToolCall(tool, args, context.workDir, context.tracePath, {
-            sessionId: context.sessionId ?? undefined,
-            runId: context.runId,
-          });
+          const result = await executeToolCall(
+            tool,
+            args,
+            context.workDir,
+            context.tracePath,
+            {
+              sessionId: context.sessionId ?? undefined,
+              runId: context.runId,
+            },
+            context.sessionManager,
+            context.agentRegistry,
+          );
           await appendTraceEvent(context.tracePath, "tool_result", {
             name: tool,
             result,
@@ -147,12 +173,19 @@ async function callModelRound(options: {
   };
   if (stream) payload.stream = true;
 
+  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (apiKey) {
+    if (isZen) {
+      headers["x-api-key"] = apiKey;
+    } else {
+      headers["authorization"] = `Bearer ${apiKey}`;
+    }
+  }
+
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-    },
+    headers,
     body: JSON.stringify(payload),
     signal,
   });

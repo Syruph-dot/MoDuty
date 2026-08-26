@@ -5,6 +5,7 @@ import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore } from "./memory.js";
 import { SessionManager } from "./session-manager.js";
+import type { AgentRegistry } from "./agent-registry.js";
 import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
 import { buildBoundedHistory } from "./context.js";
@@ -14,7 +15,7 @@ import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, MomokaAgent } from "./types.js";
 
-interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; }
+interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
@@ -22,12 +23,14 @@ export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
   readonly memoryStore: MemoryStore;
   readonly sessionManager: SessionManager;
+  agentRegistry?: AgentRegistry;
 
   constructor(private readonly options: MomokaAgentOptions) {
     this.projectRoot = resolveProjectRoot(options.projectRoot);
     initSettings(this.projectRoot);
     this.memoryStore = new MemoryStore(defaultPaths(this.projectRoot).memoryDir);
     this.sessionManager = new SessionManager(defaultPaths(this.projectRoot).memoryDir);
+    this.agentRegistry = options.agentRegistry;
   }
 
   get memory() {
@@ -86,6 +89,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
       systemPrompt: await this.buildSystemPrompt({ workDir, topic, message, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
       onEvent: request.onEvent, signal: request.signal,
+      sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
@@ -112,6 +116,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const result = await this.options.modelClient.run(buildFollowupPrompt({ topic: output.topic, outputText: output.response, judgment: { ...judgment, label }, reflection }), {
       systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
+      sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId: continuationOutputId, prompt: output.prompt, response: result.output, topic: output.topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });

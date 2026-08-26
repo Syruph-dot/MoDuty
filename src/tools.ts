@@ -6,6 +6,8 @@ import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from ".
 import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
 import { isSandboxEnabled } from "./settings.js";
+import type { SessionManager } from "./session-manager.js";
+import type { AgentRegistry } from "./agent-registry.js";
 
 export interface WorkspaceManifest {
   name: string;
@@ -231,6 +233,11 @@ const TOOL_ARGUMENT_SCHEMAS = {
   append_file: z.object({ path: z.string().min(1), content: z.string(), workspace: z.string().min(1).optional() }).strict(),
   run_command_echo_only: z.object({ command: z.string().min(1) }).strict(),
   run_shell: z.object({ command: z.string().min(1), workspace: z.string().min(1).optional() }).strict(),
+  inspect_session: z.object({ id: z.string().min(1) }).strict(),
+  search_sessions: z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).strict(),
+  read_session: z.object({ id: z.string().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() }).strict(),
+  search_content: z.object({ id: z.string().min(1).optional(), query: z.string().min(1) }).strict(),
+  search_files: z.object({ query: z.string().min(1), scope: z.string().optional() }).strict(),
 };
 
 export const TOOL_SPECS = [
@@ -339,6 +346,84 @@ export const TOOL_SPECS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "inspect_session",
+      description: "检视一个历史会话的元数据（标题/目标/主题/turn 数/时间范围）。把 &ses_<id> 或 &tile_<agentId> 当作资源句柄，不要整段读取。",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string", minLength: 1, description: "会话句柄：ses_<id> 或 tile_<agentId>" } },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_sessions",
+      description: "跨会话检索，按相关度排序返回命中会话与匹配 turn 区间。用于在不读取全文的情况下定位相关历史。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 1 },
+          limit: { type: "number", description: "返回上限，默认 5，最大 50" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_session",
+      description: "读取指定会话的 turn 区间（from..to，1-based 闭区间）明文切片。只读相关片段，禁止全量后整段粘贴。",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", minLength: 1 },
+          from: { type: "number", description: "起始 turn（含），默认 1" },
+          to: { type: "number", description: "结束 turn（含），默认末尾" },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_content",
+      description: "在会话 transcript 内按内容 grep（rg 侧）。id 省略时跨所有会话检索。返回命中行。",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "可选：限定会话 ses_<id> / tile_<agentId>" },
+          query: { type: "string", minLength: 1 },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_files",
+      description: "按文件名/路径检索工作目录下的文件（everything 侧）。返回匹配的相对路径列表。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 1 },
+          scope: { type: "string", description: "可选子目录范围" },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export async function executeToolCall(
@@ -347,6 +432,8 @@ export async function executeToolCall(
   workDir?: string,
   tracePath?: string,
   approvalOrigin?: ApprovalOrigin,
+  sessionManager?: SessionManager,
+  agentRegistry?: AgentRegistry,
 ): Promise<string> {
   const schema = TOOL_ARGUMENT_SCHEMAS[name as keyof typeof TOOL_ARGUMENT_SCHEMAS];
   if (!schema) {
@@ -397,6 +484,52 @@ export async function executeToolCall(
   }
   if (name === "append_file") {
     return await appendFileTool({ workDir: targetWorkspace, path: String(args.path ?? ""), content: String(args.content ?? "") }, tracePath);
+  }
+  if (name === "inspect_session") {
+    if (!sessionManager) return "错误：会话检索工具不可用（缺少 sessionManager）。";
+    try {
+      const sid = await resolveSessionId(String(args.id ?? ""), sessionManager, agentRegistry);
+      return JSON.stringify(await sessionManager.inspectSession(sid));
+    } catch (error) {
+      return formatToolError(error, "检视会话失败");
+    }
+  }
+  if (name === "search_sessions") {
+    if (!sessionManager) return "错误：会话检索工具不可用（缺少 sessionManager）。";
+    const limit = typeof args.limit === "number" ? Math.min(args.limit, 50) : 5;
+    try {
+      return JSON.stringify(await sessionManager.searchSessions(String(args.query ?? ""), limit));
+    } catch (error) {
+      return formatToolError(error, "跨会话检索失败");
+    }
+  }
+  if (name === "read_session") {
+    if (!sessionManager) return "错误：会话检索工具不可用（缺少 sessionManager）。";
+    try {
+      const sid = await resolveSessionId(String(args.id ?? ""), sessionManager, agentRegistry);
+      const from = Number(args.from ?? 1);
+      const to = Number(args.to ?? 0);
+      return await sessionManager.readSessionTranscript(sid, from, to);
+    } catch (error) {
+      return formatToolError(error, "读取会话区间失败");
+    }
+  }
+  if (name === "search_content") {
+    if (!sessionManager) return "错误：内容检索工具不可用（缺少 sessionManager）。";
+    try {
+      const idRaw = typeof args.id === "string" ? args.id : undefined;
+      const sid = idRaw ? await resolveSessionId(idRaw, sessionManager, agentRegistry) : undefined;
+      return JSON.stringify(await sessionManager.searchContentInSession(sid, String(args.query ?? "")));
+    } catch (error) {
+      return formatToolError(error, "内容检索失败");
+    }
+  }
+  if (name === "search_files") {
+    try {
+      return await searchFilesTool(workDir, String(args.query ?? ""), typeof args.scope === "string" ? args.scope : undefined);
+    } catch (error) {
+      return formatToolError(error, "文件检索失败");
+    }
   }
   if (name === "run_shell") {
     return await runShellTool({ workDir: targetWorkspace, tracePath, command: String(args.command ?? ""), approvalOrigin });
@@ -504,4 +637,46 @@ function formatToolError(error: unknown, fallback: string): string {
     return `错误：${message}`;
   }
   return `错误：${fallback} — ${message}`;
+}
+
+/** 把 &ses_<id> / &tile_<agentId> 句柄解析为真实 sessionId。 */
+async function resolveSessionId(ref: string, sessionManager: SessionManager, agentRegistry?: AgentRegistry): Promise<string> {
+  const id = ref.trim();
+  if (id.startsWith("tile_")) {
+    if (!agentRegistry) throw new Error("agent registry 不可用，无法解析 &tile_ 句柄");
+    const agent = await agentRegistry.getAgent(id.slice("tile_".length));
+    if (!agent) throw new Error(`Unknown agent: ${id}`);
+    return agent.sessionId;
+  }
+  return id; // ses_<id> 或原始 session id
+}
+
+/** everything 侧：按文件名/路径在工作目录内检索文件。 */
+async function searchFilesTool(workDir: string | undefined, query: string, scope?: string): Promise<string> {
+  if (!workDir) return "错误：未设置工作目录，文件检索已禁用。";
+  const base = path.resolve(workDir, scope && scope !== "." ? scope : "");
+  const needle = query.toLowerCase();
+  const matches: string[] = [];
+  let scanned = 0;
+  const maxScan = 4000;
+  async function walk(dir: string): Promise<void> {
+    if (matches.length > 200 || scanned > maxScan) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (scanned > maxScan || matches.length > 200) return;
+      scanned += 1;
+      const full = path.join(dir, entry.name);
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      if (entry.name.toLowerCase().includes(needle)) matches.push(full);
+      if (entry.isDirectory()) await walk(full);
+    }
+  }
+  await walk(base);
+  if (matches.length === 0) return `未找到匹配 "${query}" 的文件（已扫描 ${scanned} 项）。`;
+  return `匹配 "${query}" 的文件（${matches.length} 个）：\n${matches.slice(0, 200).map((match) => `- ${match}`).join("\n")}`;
 }

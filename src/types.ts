@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { SessionManager } from "./session-manager.js";
+import type { AgentRegistry } from "./agent-registry.js";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -55,6 +57,10 @@ export interface ModelRunContext {
   onEvent?: (event: StreamEvent) => void;
   /** 外部取消信号（客户端断开/超时） */
   signal?: AbortSignal;
+  /** 会话检索工具所需的会话管理器（引用资源句柄 &ses_ / &tile_） */
+  sessionManager?: SessionManager;
+  /** tile→session 解析所需的 Agent 注册表（&tile_<agentId> 别名） */
+  agentRegistry?: AgentRegistry;
 }
 
 export type MomokaRequestKind = ModelRunContext["requestKind"];

@@ -9,6 +9,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import { AgentStateMachine, type AgentStateEvent } from "./agent-state.js";
 import type { SessionRecord } from "./session-manager.js";
 import type { AgentRecord, ChatRequest, ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
+import { loadSettings, saveSettings } from "./settings-store.js";
 
 export interface AgentHttpOptions {
   /** 多 Agent 注册表；缺省时 /api/agents 系列返回 503 */
@@ -55,21 +56,73 @@ async function route(
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/config") {
-      const configured = Boolean(process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL);
+      const baseUrl = process.env.OPENAI_BASE_URL ?? "";
+      const isZen = /opencode\.ai\/zen/i.test(baseUrl);
+      const hasKey = Boolean(process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY);
+      const provider = process.env.ALIYUN_API_KEY ? "DashScope" : (isZen ? "OpenCode Zen" : (baseUrl || "OpenAI"));
+      const issues: string[] = [];
+      if (!hasKey) {
+        if (isZen) {
+          issues.push("OpenCode Zen 需要 API key。请前往 https://opencode.ai/auth 注册免费账号，获取 API key 后设置 OPENAI_API_KEY。");
+        } else if (process.env.ALIYUN_API_KEY || !baseUrl) {
+          issues.push("API key 未配置。请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY。");
+        }
+      }
       json(response, 200, {
         info: {
-          provider: process.env.ALIYUN_API_KEY ? "DashScope" : (process.env.OPENAI_BASE_URL ?? "OpenAI"),
+          provider,
           key_prefix: `${(process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
           model: process.env.MOMOKA_MODEL ?? "qwen-plus",
         },
-        issues: configured
-          ? []
-          : ["ALIYUN_API_KEY not configured. Set ALIYUN_API_KEY, OPENAI_API_KEY, or a free OPENAI_BASE_URL."],
+        issues,
       });
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/settings") {
-      json(response, 200, { sandbox_enabled: agent.getSandboxEnabled() });
+      const settings = await loadSettings();
+      const apiKey = settings.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+      const baseUrl = settings.baseUrl ?? process.env.OPENAI_BASE_URL ?? "";
+      const model = settings.model ?? process.env.MOMOKA_MODEL ?? "qwen-plus";
+      json(response, 200, {
+        sandbox_enabled: agent.getSandboxEnabled(),
+        apiKey_masked: apiKey ? `${apiKey.slice(0, 8)}...` : "",
+        baseUrl,
+        model,
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/settings") {
+      const body = await readJsonBody(request);
+      const patch: { apiKey?: string; baseUrl?: string; model?: string } = {};
+      if (typeof body.apiKey === "string") patch.apiKey = body.apiKey;
+      if (typeof body.baseUrl === "string") patch.baseUrl = body.baseUrl.replace(/\/+$/u, "");
+      if (typeof body.model === "string") patch.model = body.model;
+      await saveSettings(patch);
+      json(response, 200, { ok: true });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/models") {
+      const settings = await loadSettings();
+      const baseUrl = (
+        settings.baseUrl ?? process.env.OPENAI_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      ).replace(/\/+$/u, "");
+      const apiKey = settings.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+      try {
+        const upstream = await fetch(`${baseUrl}/models`, {
+          headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+        });
+        if (!upstream.ok) {
+          json(response, upstream.status, { error: `models 请求失败: HTTP ${upstream.status}`, models: [] });
+          return;
+        }
+        const data = (await upstream.json()) as { data?: Array<{ id?: string }> };
+        const models = (data.data ?? [])
+          .map((m) => m.id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        json(response, 200, { models });
+      } catch (error) {
+        json(response, 502, { error: error instanceof Error ? error.message : String(error), models: [] });
+      }
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/settings/sandbox") {
@@ -91,6 +144,41 @@ async function route(
       const body = await readJsonBody(request);
       const session = await agent.createSession(String(body.goal ?? ""), String(body.folder_path ?? ""));
       json(response, 200, { session: sessionToSnake(session) });
+      return;
+    }
+
+    // ---- 会话检索 / 检视 / 读取（Session-as-a-Resource）----
+    // 必须放在下方 sessionMatch 之前：否则 /api/sessions/search 会被当作 sessionId="search"，
+    // /inspect、/read 会被当作普通 GET 返回 session 元数据而非其语义。
+    if (request.method === "GET" && url.pathname === "/api/sessions/search") {
+      const query = url.searchParams.get("q") ?? "";
+      const rawLimit = Number(url.searchParams.get("limit") ?? "");
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50) : 20;
+      json(response, 200, { hits: await agent.sessionManager.searchSessions(query, limit) });
+      return;
+    }
+
+    const sessionInspectMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/inspect$/);
+    if (sessionInspectMatch && request.method === "GET") {
+      const sessionId = decodeURIComponent(sessionInspectMatch[1] ?? "");
+      if (!(await agent.sessionManager.getSession(sessionId))) {
+        throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
+      }
+      json(response, 200, { inspect: await agent.sessionManager.inspectSession(sessionId) });
+      return;
+    }
+
+    const sessionReadMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/read$/);
+    if (sessionReadMatch && request.method === "GET") {
+      const sessionId = decodeURIComponent(sessionReadMatch[1] ?? "");
+      if (!(await agent.sessionManager.getSession(sessionId))) {
+        throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
+      }
+      let from = Number(url.searchParams.get("from") ?? "");
+      let to = Number(url.searchParams.get("to") ?? "");
+      if (!Number.isFinite(from) || from <= 0) from = 1;
+      if (!Number.isFinite(to) || to <= 0) to = 0; // 0 = 末尾（由 readSessionTranscript 兜底）
+      json(response, 200, { transcript: await agent.sessionManager.readSessionTranscript(sessionId, from, to) });
       return;
     }
 
@@ -137,14 +225,30 @@ async function route(
       json(response, 200, { agents });
       return;
     }
+
+    // 孤儿 session（旧 chat.html 时代残留）—— 数据级清理入口，无 UI
+    const legacyMatch = url.pathname.match(/^\/api\/agents\/legacy-sessions$/);
+    if (legacyMatch && request.method === "GET") {
+      const runtime = ensureAgents(registry, machine);
+      const sessions = await runtime.registry.listLegacySessions();
+      json(response, 200, { sessions });
+      return;
+    }
+    if (legacyMatch && request.method === "DELETE") {
+      const runtime = ensureAgents(registry, machine);
+      const removed = await runtime.registry.cleanupLegacySessions();
+      json(response, 200, { removed });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/agents") {
       const runtime = ensureAgents(registry, machine);
       const body = await readJsonBody(request);
       const name = String(body.name ?? "").trim();
       const role = String(body.role ?? "").trim();
       const workspaceDir = String(body.workspace_dir ?? "").trim();
-      if (!name || !role || !workspaceDir) {
-        throw new MomokaHttpError(400, "name, role and workspace_dir are required");
+      // name 必填；role 与 workspace_dir 允许空，由 registry 补默认 system prompt / 默认 workspace。
+      if (!name) {
+        throw new MomokaHttpError(400, "name is required");
       }
       const record = await runtime.registry.createAgent({
         name,
@@ -186,6 +290,18 @@ async function route(
         agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)),
         messages: await agent.sessionManager.getMessages(record.sessionId),
       });
+      return;
+    }
+    if (agentMatch && request.method === "PUT") {
+      const runtime = ensureAgents(registry, machine);
+      const record = await requireAgent(runtime.registry, decodeURIComponent(agentMatch[1] ?? ""));
+      const body = await readJsonBody(request);
+      const newName = String(body.name ?? "").trim();
+      if (!newName) {
+        throw new MomokaHttpError(400, "name is required");
+      }
+      const updated = await runtime.registry.renameAgent(record.id, newName);
+      json(response, 200, { agent: agentToSnake(updated, await agent.sessionManager.getSession(updated.sessionId)) });
       return;
     }
     if (agentMatch && request.method === "DELETE") {

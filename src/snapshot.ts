@@ -1,5 +1,4 @@
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface RunSnapshotInput {
@@ -13,15 +12,8 @@ export interface SnapshotSummary {
   snapshotDir: string;
   runId: string;
   savedAt: string;
-  fileCount: number;
   pendingApprovalCount: number;
   finalReportPath: string;
-}
-
-export interface WorkspaceFileEntry {
-  path: string;
-  size: number;
-  sha256: string;
 }
 
 export interface FinalReportInput {
@@ -53,13 +45,10 @@ interface TraceLine {
   [key: string]: unknown;
 }
 
-const SNAPSHOT_EXCLUDED = new Set([".git", "node_modules", "snapshot", "runs"]);
-
 /**
  * 生成 snapshot/<runId>/，包含：
  * - trace.jsonl（本次运行的完整事件流）
  * - pending_approvals.json（审批队列快照）
- * - workspace-files.json（工作区文件清单：路径 + 大小 + sha256）
  * - final_report.md（最终报告：修改文件、验证命令、审批、越权）
  */
 export async function saveRunSnapshot(input: RunSnapshotInput): Promise<SnapshotSummary> {
@@ -81,9 +70,6 @@ export async function saveRunSnapshot(input: RunSnapshotInput): Promise<Snapshot
     pendingApprovalCount = 0;
   }
 
-  const files = await collectWorkspaceFiles(workspace);
-  await writeFile(path.join(snapshotDir, "workspace-files.json"), `${JSON.stringify(files, null, 2)}\n`, "utf8");
-
   const finalReportPath = path.join(snapshotDir, "final_report.md");
   const report = await buildFinalReport({ ...input, workDir: workspace });
   await writeFile(finalReportPath, report, "utf8");
@@ -92,7 +78,6 @@ export async function saveRunSnapshot(input: RunSnapshotInput): Promise<Snapshot
     snapshotDir,
     runId: input.runId,
     savedAt: new Date().toISOString(),
-    fileCount: files.length,
     pendingApprovalCount,
     finalReportPath,
   };
@@ -211,12 +196,11 @@ export async function resumeRunFromSnapshot(workDir: string, runId: string): Pro
     restoredApprovals = 0;
   }
 
-  const workspaceFiles = (await readWorkspaceFileManifest(snapshotDir)).map((entry) => entry.path);
   return {
     snapshotDir,
     runId,
     restoredApprovals,
-    workspaceFiles: workspaceFiles.slice(0, 20),
+    workspaceFiles: [],
     pendingApprovals: restoredApprovals,
   };
 }
@@ -248,32 +232,3 @@ function safeJsonParse(value: string): Record<string, unknown> | null {
   }
 }
 
-async function collectWorkspaceFiles(workspace: string, root = workspace): Promise<WorkspaceFileEntry[]> {
-  const entries: WorkspaceFileEntry[] = [];
-  const dirEntries = await readdir(workspace, { withFileTypes: true }).catch(() => []);
-  for (const entry of dirEntries) {
-    if (SNAPSHOT_EXCLUDED.has(entry.name)) continue;
-    const fullPath = path.join(workspace, entry.name);
-    const relative = path.relative(root, fullPath);
-    if (entry.isDirectory()) {
-      entries.push(...(await collectWorkspaceFiles(fullPath, root)));
-    } else if (entry.isFile()) {
-      const info = await stat(fullPath).catch(() => null);
-      if (!info) continue;
-      const hash = createHash("sha256");
-      hash.update(await readFile(fullPath));
-      entries.push({ path: relative, size: info.size, sha256: hash.digest("hex") });
-    }
-  }
-  return entries;
-}
-
-async function readWorkspaceFileManifest(snapshotDir: string): Promise<WorkspaceFileEntry[]> {
-  try {
-    const content = await readFile(path.join(snapshotDir, "workspace-files.json"), "utf8");
-    const parsed = JSON.parse(content) as unknown;
-    return Array.isArray(parsed) ? parsed as WorkspaceFileEntry[] : [];
-  } catch {
-    return [];
-  }
-}

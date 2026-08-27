@@ -1,7 +1,8 @@
 import { executeToolCall, TOOL_SPECS } from "./tools.js";
 import { loadSettings } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
-import type { ModelClient, ModelRunContext, ModelRunResult, StreamEvent, ToolCall } from "./types.js";
+import { normalizeUsage } from "./context-stats.js";
+import type { ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall } from "./types.js";
 
 type FetchLike = typeof fetch;
 
@@ -10,6 +11,7 @@ interface OpenAICompatibleModelClientOptions {
   baseUrl?: string;
   model?: string;
   fetch?: FetchLike;
+  /** 工具调用轮数上限（默认无限；模型不再请求工具时自然终止，requestTimeoutMs 兜底防死循环） */
   maxToolRounds?: number;
   /** 模型调用是否使用 SSE 流式（配合 context.onEvent 消费增量 token） */
   stream?: boolean;
@@ -36,6 +38,8 @@ interface ToolCallRequest {
 interface ModelRoundResult {
   content: string;
   toolCalls: ToolCallRequest[];
+  /** 本轮模型调用的 usage（服务商提供时） */
+  usage?: ModelUsage;
 }
 
 const APPROVAL_PATTERN = /pending approval/i;
@@ -47,7 +51,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   const baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
   const model = options.model ?? process.env.MOMOKA_MODEL ?? "qwen-plus";
   const fetchImpl = options.fetch ?? fetch;
-  const maxToolRounds = options.maxToolRounds ?? 4;
+  const maxToolRounds = options.maxToolRounds ?? Infinity;
   const stream = options.stream ?? false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
   const isZen = ZEN_BASE_PATTERN.test(baseUrl);
@@ -79,6 +83,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
       ];
       const toolCalls: ToolCall[] = [];
       const signal = mergeSignals([context.signal, AbortSignal.timeout(requestTimeoutMs)]);
+      let usagePeak: ModelUsage | undefined;
 
       for (let round = 0; round <= maxToolRounds; round += 1) {
         if (signal?.aborted) {
@@ -99,10 +104,17 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           stream,
           onDelta: (text) => context.onEvent?.({ type: "token", text }),
         });
+        // 归集 usage：多轮工具调用时取 prompt tokens 峰值轮（代表本次 run 使用过的最大上下文）
+        if (roundResult.usage && typeof roundResult.usage.promptTokens === "number") {
+          if (!usagePeak || (roundResult.usage.promptTokens ?? 0) > (usagePeak.promptTokens ?? 0)) {
+            usagePeak = roundResult.usage;
+          }
+        }
         if (roundResult.toolCalls.length === 0) {
           return {
             output: roundResult.content,
             toolCalls,
+            ...(usagePeak ? { usage: usagePeak } : {}),
           };
         }
 
@@ -149,7 +161,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
         }
       }
 
-      throw new Error(`模型工具调用超过最大轮数: ${maxToolRounds}`);
+      throw new Error(`模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`);
     },
   };
 }
@@ -201,11 +213,13 @@ async function callModelRound(options: {
           tool_calls?: ToolCallRequest[];
         };
       }>;
+      usage?: unknown;
     };
     const message = body.choices?.[0]?.message ?? {};
     return {
       content: message.content ?? "",
       toolCalls: message.tool_calls ?? [],
+      ...(body.usage ? { usage: normalizeUsage(body.usage) } : {}),
     };
   }
 
@@ -221,6 +235,7 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
   const accumulated = new Map<number, { id: string; name: string; args: string }>();
   let buffer = "";
   let done = false;
+  let lastUsage: ModelUsage | undefined;
 
   for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
     buffer += decoder.decode(chunk, { stream: true });
@@ -247,7 +262,13 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
                 }>;
               };
             }>;
+            usage?: unknown;
           };
+          // OpenAI 兼容流式：usage 通常在最后一个数据帧（[DONE] 前）以完整统计出现
+          if (parsed.usage) {
+            const usage = normalizeUsage(parsed.usage);
+            if (usage) lastUsage = usage;
+          }
           const delta = parsed.choices?.[0]?.delta ?? {};
           if (typeof delta.content === "string" && delta.content.length > 0) {
             contentParts.push(delta.content);
@@ -276,7 +297,7 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
       type: "function",
       function: { name: value.name, arguments: value.args },
     }));
-  return { content: contentParts.join(""), toolCalls };
+  return { content: contentParts.join(""), toolCalls, ...(lastUsage ? { usage: lastUsage } : {}) };
 }
 
 function mergeSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {

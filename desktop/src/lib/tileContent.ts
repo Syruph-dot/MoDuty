@@ -1,47 +1,7 @@
-import type { Agent, AgentPhase, AgentState } from "../types";
-
 /**
- * Agent 磁贴内容映射（设计稿 interactionv2：footer 一句话状态 + role 类标 + 大数字摘要）。
+ * Agent 磁贴内容映射（设计稿 interactionv2）。
  * 纯映射，不含组件逻辑，便于冒烟测试与常量复用。
  */
-
-/** phase → footer 动作文案（running 时优先展示"正在做什么"） */
-export const PHASE_FOOTER: Record<AgentPhase, string> = {
-  planning: "Planning…",
-  searching: "Searching sessions…",
-  reading: "Reading resources…",
-  executing: "Executing…",
-  verifying: "Verifying…",
-};
-
-/** state → footer 静态文案（无 phase 时） */
-export const STATE_FOOTER: Record<AgentState, string> = {
-  idle: "Standby",
-  running: "Running",
-  waiting_approval: "Awaiting approval",
-  completed: "Completed",
-  error: "Error · retry",
-};
-
-/** role → 顶部类标（设计稿 RESEARCH / AGENT · ACTIVE 标签）
- *  
- * agent.role 可能是完整 prompt（如 "你是一个有用的 AI 助手…"），
- * 截取前 12 字 + 省略号，保证类标紧凑。
- */
-export function roleLabel(role: string | undefined | null): string {
-  const trimmed = (role ?? "").trim();
-  if (!trimmed) return "AGENT";
-  const upper = trimmed.toUpperCase();
-  return upper.length > 12 ? upper.slice(0, 12) + "…" : upper;
-}
-
-/** 组装磁贴 footer 文案：running 且带 phase → phase 动作；否则用 state 静态文案 */
-export function tileFooter(agent: Pick<Agent, "state" | "phase">): string {
-  if (agent.state === "running" && agent.phase) {
-    return PHASE_FOOTER[agent.phase] ?? STATE_FOOTER.running;
-  }
-  return STATE_FOOTER[agent.state] ?? STATE_FOOTER.idle;
-}
 
 /** ISO 时间 → "MM-DD HH:mm" 短格式；无效输入返回 "—" */
 export function formatShortTime(iso: string | undefined | null): string {

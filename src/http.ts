@@ -6,9 +6,10 @@ import { assessmentToSnake, evolutionProposalToSnake, reflectionToSnake } from "
 import { LIKERT_LABELS } from "./config.js";
 import { MomokaAgentCore, MomokaHttpError } from "./agent.js";
 import { AgentRegistry } from "./agent-registry.js";
-import { AgentStateMachine, type AgentStateEvent } from "./agent-state.js";
+import { ApprovalStore } from "./approvals.js";
+import { AgentStateMachine, type AgentStateEvent, type ContextStatsSnake } from "./agent-state.js";
 import type { SessionRecord } from "./session-manager.js";
-import type { AgentRecord, ChatRequest, ChatResponse, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
+import type { AgentRecord, ChatRequest, ChatResponse, ContextStats, JudgeResponse, MomokaHttpHandler, RunRecord, StreamEvent } from "./types.js";
 import { loadSettings, saveSettings } from "./settings-store.js";
 
 export interface AgentHttpOptions {
@@ -336,6 +337,10 @@ async function route(
           const bound = (await registry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
           if (bound) {
             machine.decide(bound.id, decision);
+            // 第 2 周验收：批准后续跑（异步，不阻塞审批响应）
+            if (decision === "approved") {
+              void resumeAgentAfterApproval(agent, bound, machine);
+            }
           }
         }
       }
@@ -594,6 +599,7 @@ function agentToSnake(record: AgentRecord, session: SessionRecord | null): Recor
     session_id: record.sessionId,
     state: record.state,
     phase: record.phase ?? null,
+    ...(record.contextStats ? { context_stats: contextStatsToSnake(record.contextStats) } : {}),
     created_at: record.createdAt,
     last_active_at: record.lastActiveAt,
     session: session
@@ -604,6 +610,16 @@ function agentToSnake(record: AgentRecord, session: SessionRecord | null): Recor
           last_message_at: session.lastMessageAt,
         }
       : null,
+  };
+}
+
+/** 上下文占用指标（camel 内存）→ 对外 snake 结构 */
+function contextStatsToSnake(stats: ContextStats): ContextStatsSnake {
+  return {
+    prompt_tokens: stats.promptTokens,
+    context_window: stats.contextWindow,
+    cached_tokens: stats.cachedTokens,
+    updated_at: stats.updatedAt,
   };
 }
 
@@ -631,8 +647,12 @@ function openAgentEvents(response: ServerResponse, sseClients: Set<ServerRespons
 
 /** 状态转移 → 持久化注册表 + 广播给所有 /api/agents/events 客户端 */
 async function persistAgentState(registry: AgentRegistry, sseClients: Set<ServerResponse>, event: AgentStateEvent): Promise<void> {
-  await registry.updateAgentState(event.agent_id, event.state, event.phase);
-  const frame = `data: ${JSON.stringify(event)}\n\n`;
+  const updated = await registry.updateAgentState(event.agent_id, event.state, event.phase);
+  const payload: AgentStateEvent = {
+    ...event,
+    ...(updated?.contextStats ? { context_stats: contextStatsToSnake(updated.contextStats) } : {}),
+  };
+  const frame = `data: ${JSON.stringify(payload)}\n\n`;
   for (const client of [...sseClients]) {
     try {
       if (!client.writableEnded) {
@@ -641,6 +661,38 @@ async function persistAgentState(registry: AgentRegistry, sseClients: Set<Server
     } catch {
       // 客户端已断开，忽略
     }
+  }
+}
+
+/** 检查某 Agent 绑定的 workspace 是否有待决审批（第 2 周验收：pending_approval 时不 complete） */
+async function checkHasPendingApproval(record: AgentRecord): Promise<boolean> {
+  try {
+    const store = new ApprovalStore(record.workspaceDir);
+    const approvals = await store.list();
+    return approvals.some((approval) => approval.status === "pending");
+  } catch {
+    return false;
+  }
+}
+
+/** 审批通过后续跑：把工具结果交给模型继续推理（第 2 周验收：从断点继续，不是从头跑） */
+async function resumeAgentAfterApproval(
+  agent: MomokaAgentCore,
+  record: AgentRecord,
+  machine: AgentStateMachine,
+): Promise<void> {
+  try {
+    await agent.chat({
+      message: "审批已通过。请根据工具执行结果继续完成任务。",
+      sessionId: record.sessionId,
+      onEvent: (event) => {
+        machine.consumeEvent(record.id, event);
+      },
+    });
+    machine.complete(record.id);
+  } catch (error) {
+    console.error("[resume] 审批后续跑失败:", error);
+    machine.fail(record.id);
   }
 }
 
@@ -674,7 +726,11 @@ async function streamAgentChat(
       },
       signal: controller.signal,
     });
-    machine.complete(record.id);
+    // 第 2 周验收：pending_approval 时不 complete（保持等待，等审批通过后续跑）
+    const hasPendingApproval = await checkHasPendingApproval(record);
+    if (!hasPendingApproval) {
+      machine.complete(record.id);
+    }
     sseData(response, { type: "done", ...chatToSnake(result) });
   } catch (error) {
     machine.fail(record.id);

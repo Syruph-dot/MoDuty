@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { Agent, AgentState } from "../types";
-import { formatShortTime, roleLabel, tileFooter } from "../lib/tileContent";
+import { formatShortTime } from "../lib/tileContent";
 import { useTileThemeStore } from "../state/tileThemeStore";
 
 export const STATE_LABELS: Record<AgentState, string> = {
@@ -20,8 +20,12 @@ export const STATE_DOT_CLASS: Record<AgentState, string> = {
   error: "state-dot--error",
 };
 
-/** 页2（结果页）的轮播间隔：running 时周期性预览最近结果 */
-const ROTATE_MS = 8000;
+/** 两页轮播间隔（hover 浏览 / running 轮滚共用） */
+const PAGE_MS = 2700;
+
+/** running 时边框扫描两档速度：LLM 推理快、等待工具执行慢 */
+export const SCAN_FAST_MS = 1000;
+export const SCAN_SLOW_MS = 3200;
 
 interface AgentTileProps {
   agent: Agent;
@@ -35,14 +39,17 @@ interface AgentTileProps {
 }
 
 /**
- * Agent 磁贴（设计稿 interactionv2 改造版）：
- * - 表面保留玻璃拟态 + 顶部状态条（不改为实色块）
- * - 正面 2 页结构：
- *   页1 = 状态 + 数据合并（role 类标 / name / big 数字 / 摘要 meta）
- *   页2 = 最近结果页（LAST RESULT / goal 摘要）
- * - running 页1↔页2 轮播（hover 暂停）；completed 固定页2；waiting/error/idle 固定页1
- * - footer = dot + 一句话状态（phase/state 文案）+ 最近活跃时间
- * - hover 浮现黑色 utility 条（OPEN ↵，单击进会话；双击磁贴同样打开）
+ * Agent 磁贴（interactionv2 对齐版，两页结构）：
+ * - 名称常驻顶部（内联重命名在其上进行）；删除状态行
+ * - 2 页翻页结构（纵向 track 滚动）：
+ *   页1 = 最近结果（LAST RESULT / goal 摘要）
+ *   页2 = 上下文指标（上下文长度/窗口 + 占用率/缓存命中率）
+ * - 翻页行为：
+ *   running = 恒定轮滚 页1↔页2（hover 暂停）
+ *   其余状态（idle/waiting/completed/error）= 常态停在页2；hover 时轮滚两页，离开 hover 回页2
+ * - running 时磁贴边框显示 interactionv2 扫描动画：
+ *   LLM 推理（planning/verifying/无 phase）快档；等待工具执行（searching/reading/executing）慢档
+ * - footer = dot + 最近活跃时间；hover 浮现黑色 utility 条（OPEN ↵）
  * - 字号 / 字体家族由 tileThemeStore 配置，经 CSS 变量注入
  */
 export default function AgentTile({ agent, onOpen, renaming = false, onRenameCommit, onRenameCancel }: AgentTileProps) {
@@ -68,20 +75,30 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
     return undefined;
   }, [renaming, agent.name]);
 
-  // 数据驱动页切换：completed 停留结果页；running 轮播预览结果；其余固定页1
+  // 翻页驱动：
+  // - running：恒定轮滚（hover 暂停）
+  // - hover（非 running）：轮滚两页
+  // - 非 running 非 hover：先短暂展示页1（Last Result），随后翻到页2 停住
   useEffect(() => {
-    if (agent.state === "completed") {
-      setActivePage(1);
-      return undefined;
+    if (agent.state === "running") {
+      setActivePage(0);
+      const timer = window.setInterval(() => {
+        if (hoveringRef.current) return; // hover 时暂停翻页，避免阅读被打断
+        setActivePage((page) => (page === 1 ? 0 : 1));
+      }, PAGE_MS);
+      return () => window.clearInterval(timer);
+    }
+    if (hovering) {
+      setActivePage(0);
+      const timer = window.setInterval(() => {
+        setActivePage((page) => (page === 1 ? 0 : 1));
+      }, PAGE_MS);
+      return () => window.clearInterval(timer);
     }
     setActivePage(0);
-    if (agent.state !== "running") return undefined;
-    const timer = window.setInterval(() => {
-      if (hoveringRef.current) return; // hover 时暂停轮播，避免阅读被打断
-      setActivePage((page) => (page === 0 ? 1 : 0));
-    }, ROTATE_MS);
-    return () => window.clearInterval(timer);
-  }, [agent.state]);
+    const settle = window.setTimeout(() => setActivePage(1), PAGE_MS);
+    return () => window.clearTimeout(settle);
+  }, [agent.state, hovering]);
 
   // 字体主题 → CSS 变量（可配置项：字号 + 字体家族）
   const themeVars = {
@@ -101,14 +118,33 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
     onRenameCommit?.(trimmed);
   };
 
-  const messageCount = agent.session?.message_count ?? 0;
-  const lastActive = formatShortTime(agent.last_active_at);
-  const goal = agent.session?.goal?.trim();
+  const messageGoal = agent.session?.goal?.trim() ?? "";
+  const stats = agent.context_stats ?? null;
+
+  // 上下文两行指标：{长度 / 窗口} + {占用率 / 缓存命中率}
+  const nf = new Intl.NumberFormat("en-US");
+  const ctxLine1 = stats ? `${nf.format(stats.prompt_tokens)} / ${nf.format(stats.context_window)}` : "-- / --";
+  const usagePct = stats && stats.context_window > 0
+    ? `${((stats.prompt_tokens / stats.context_window) * 100).toFixed(1)}%`
+    : "--";
+  const hitPct = stats && typeof stats.cached_tokens === "number"
+    ? stats.prompt_tokens > 0
+      ? `${((stats.cached_tokens / stats.prompt_tokens) * 100).toFixed(1)}%`
+      : "0.0%"
+    : "--";
+  const ctxLine2 = `${usagePct} / ${hitPct}`;
+
+  // running 边框扫描档位：planning/verifying（或无 phase）= LLM 推理（快）；searching/reading/executing（及未知）= 等待工具（慢）
+  const scanKind = agent.state === "running"
+    ? agent.phase === "planning" || agent.phase === "verifying" || agent.phase == null
+      ? "fast"
+      : "slow"
+    : null;
 
   return (
     <button
       type="button"
-      className={`agent-tile agent-tile--${agent.state}`}
+      className={`agent-tile agent-tile--${agent.state}${scanKind ? ` agent-tile--scan-${scanKind}` : ""}`}
       style={themeVars}
       onDoubleClick={() => onOpen(agent)}
       onMouseEnter={() => {
@@ -122,68 +158,69 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
       aria-label={`Agent ${agent.name}，状态 ${STATE_LABELS[agent.state]}，OPEN 或双击进入对话`}
       title="双击打开对话"
     >
-      <div className="agent-tile__pages">
-        {/* 页1：状态 + 数据合并（role 类标 / name / big 数字 / 摘要） */}
-        <div
-          className={`agent-tile__page agent-tile__page--status${activePage === 0 ? " agent-tile__page--active" : ""}`}
-          aria-hidden={activePage !== 0}
-        >
-          <div className="agent-tile__role">{roleLabel(agent.role)}</div>
-          {renaming ? (
-            <input
-              ref={inputRef}
-              className="agent-tile__rename-input"
-              value={draft}
-              aria-label="重命名 Agent"
-              onChange={(event) => setDraft(event.target.value)}
-              // 阻止冒泡，避免点击输入框时触发磁贴拖拽
-              onMouseDown={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commit();
-                  // 提交后输入框多半会因关闭而卸载并触发 blur，压制该次 blur
-                  suppressBlurRef.current = true;
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  onRenameCancel?.();
-                }
-              }}
-              onBlur={() => {
-                // 失焦保存（资源管理器行为）；若刚由 Enter 提交则跳过这次 blur
-                if (suppressBlurRef.current) {
-                  suppressBlurRef.current = false;
-                  return;
-                }
+      {/* 名称常驻顶部（重命名在其上展开） */}
+      <div className="agent-tile__header">
+        {renaming ? (
+          <input
+            ref={inputRef}
+            className="agent-tile__rename-input"
+            value={draft}
+            aria-label="重命名 Agent"
+            onChange={(event) => setDraft(event.target.value)}
+            // 阻止冒泡，避免点击输入框时触发磁贴拖拽
+            onMouseDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
                 commit();
-              }}
-            />
-          ) : (
-            <span className="agent-tile__name">{agent.name}</span>
-          )}
-          <div className="agent-tile__big">{messageCount}</div>
-          <div className="agent-tile__sub">{messageCount === 0 ? "no messages yet" : "messages in session"}</div>
-        </div>
+                // 提交后输入框多半会因关闭而卸载并触发 blur，压制该次 blur
+                suppressBlurRef.current = true;
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                onRenameCancel?.();
+              }
+            }}
+            onBlur={() => {
+              // 失焦保存（资源管理器行为）；若刚由 Enter 提交则跳过这次 blur
+              if (suppressBlurRef.current) {
+                suppressBlurRef.current = false;
+                return;
+              }
+              commit();
+            }}
+          />
+        ) : (
+          <span className="agent-tile__name">{agent.name}</span>
+        )}
+      </div>
 
-        {/* 页2：最近结果（completed 停留；running 轮播预览） */}
-        <div
-          className={`agent-tile__page agent-tile__page--result${activePage === 1 ? " agent-tile__page--active" : ""}`}
-          aria-hidden={activePage !== 1}
-        >
-          <div className="agent-tile__role">LAST RESULT</div>
-          <div className="agent-tile__result">{goal || "No result yet"}</div>
+      <div className="agent-tile__pages">
+        {/* 翻页轨道：translateY 按页索引纵向滚动 */}
+        <div className="agent-tile__track" style={{ transform: `translateY(-${activePage * 100}%)` }}>
+          {/* 页1：最近结果 */}
+          <div className="agent-tile__page" aria-hidden={activePage !== 0}>
+            <div className="agent-tile__role">LAST RESULT</div>
+            <div className="agent-tile__result">{messageGoal || "No result yet"}</div>
+          </div>
+
+          {/* 页2：上下文指标（长度/窗口 + 占用率/缓存命中率） */}
+          <div className="agent-tile__page" aria-hidden={activePage !== 1}>
+            <div className="agent-tile__role">CONTEXT</div>
+            <div className="agent-tile__ctx-line">{ctxLine1}</div>
+            <div className="agent-tile__ctx-line agent-tile__ctx-line--dim">{ctxLine2}</div>
+          </div>
         </div>
       </div>
 
       <div className="agent-tile__footer">
         <span className={`state-dot ${STATE_DOT_CLASS[agent.state]}`} aria-hidden="true" />
-        <span className="agent-tile__footer-text" aria-live="polite">
-          {tileFooter(agent)}
-        </span>
-        <span className="agent-tile__footer-time">{lastActive}</span>
+        <span className="agent-tile__footer-time">{formatShortTime(agent.last_active_at)}</span>
       </div>
 
-      {/* hover 浮现的黑色 utility 条（设计稿 .utility 的磁贴版）：单击 OPEN 进会话 */}
+      {/* running 边框扫描层（interactionv2 .pre 边框滚动效果；快慢由 phase 驱动） */}
+      {scanKind ? <span className="agent-tile__scan" aria-hidden="true" /> : null}
+
+      {/* hover 浮现的黑色 utility 条：单击 OPEN 进会话 */}
       <div
         className={`agent-tile__utility${hovering ? " agent-tile__utility--visible" : ""}`}
         role="button"

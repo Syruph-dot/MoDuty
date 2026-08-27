@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { SessionManager } from "./session-manager.js";
-import type { AgentPhase, AgentRecord, AgentState } from "./types.js";
+import { modelContextWindow } from "./context-stats.js";
+import type { AgentPhase, AgentRecord, AgentState, ContextStats } from "./types.js";
 
 export interface CreateAgentInput {
   name: string;
@@ -68,6 +69,12 @@ export class AgentRegistry {
       workspaceDir,
       sessionId: session.id,
       state: "idle",
+      contextStats: {
+        promptTokens: 0,
+        contextWindow: modelContextWindow(input.model),
+        cachedTokens: null,
+        updatedAt: now,
+      },
       createdAt: now,
       lastActiveAt: now,
     };
@@ -100,6 +107,24 @@ export class AgentRegistry {
         return agent;
       }
       updated = { ...agent, state, phase, lastActiveAt: new Date().toISOString() };
+      return updated;
+    });
+    if (!updated) {
+      return null;
+    }
+    await this.writeAgents(next);
+    return updated;
+  }
+
+  /** 更新某 Agent 的上下文占用指标（每次模型调用后写入） */
+  async updateContextStats(agentId: string, stats: ContextStats): Promise<AgentRecord | null> {
+    const agents = await this.listAgents();
+    let updated: AgentRecord | null = null;
+    const next = agents.map((agent) => {
+      if (agent.id !== agentId) {
+        return agent;
+      }
+      updated = { ...agent, contextStats: stats };
       return updated;
     });
     if (!updated) {
@@ -159,11 +184,30 @@ export class AgentRegistry {
 
   private async writeAgents(agents: AgentRecord[]): Promise<void> {
     await mkdir(path.dirname(this.registryFile), { recursive: true });
-    // 原子写：先写临时文件再 rename，避免并发读方（多实例/中断）读到半截 JSON 而把注册表当成空列表。
-    const tmp = `${this.registryFile}.${process.pid}.${Date.now()}.tmp`;
     const payload = `${JSON.stringify(agents.map(agentToDisk), null, 2)}\n`;
-    await writeFile(tmp, payload, "utf8");
-    await rename(tmp, this.registryFile);
+    // Windows 上 rename 覆盖可能因防病毒/索引器锁报 EPERM，加重试 + fallback
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const tmp = `${this.registryFile}.${process.pid}.${Date.now()}.${attempt}.tmp`;
+      await writeFile(tmp, payload, "utf8");
+      try {
+        await rename(tmp, this.registryFile);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EPERM" && attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+          continue;
+        }
+        // fallback：直接 writeFile 覆盖（非原子，但对小文件可靠）
+        try {
+          await writeFile(this.registryFile, payload, "utf8");
+          return;
+        } catch {
+          // 最终失败，抛出原始 rename 错误
+          throw error;
+        }
+      }
+    }
   }
 }
 
@@ -177,6 +221,7 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
     sessionId: agent.sessionId,
     state: agent.state,
     ...(agent.phase ? { phase: agent.phase } : {}),
+    ...(agent.contextStats ? { contextStats: agent.contextStats } : {}),
     createdAt: agent.createdAt,
     lastActiveAt: agent.lastActiveAt,
   };
@@ -193,6 +238,18 @@ function agentFromDisk(value: unknown): AgentRecord {
     sessionId: String(raw.sessionId ?? ""),
     state: (typeof raw.state === "string" ? raw.state : "idle") as AgentState,
     ...(raw.phase ? { phase: String(raw.phase) as AgentPhase } : {}),
+    ...(typeof raw.contextStats === "object" && raw.contextStats !== null
+      ? {
+          contextStats: {
+            promptTokens: Number((raw.contextStats as Record<string, unknown>).promptTokens ?? 0),
+            contextWindow: Number((raw.contextStats as Record<string, unknown>).contextWindow ?? 0) || 131_072,
+            cachedTokens: typeof (raw.contextStats as Record<string, unknown>).cachedTokens === "number"
+              ? (raw.contextStats as Record<string, unknown>).cachedTokens as number
+              : null,
+            updatedAt: String((raw.contextStats as Record<string, unknown>).updatedAt ?? ""),
+          },
+        }
+      : {}),
     createdAt: String(raw.createdAt ?? ""),
     lastActiveAt: String(raw.lastActiveAt ?? ""),
   };

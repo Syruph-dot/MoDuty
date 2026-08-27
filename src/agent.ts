@@ -9,11 +9,12 @@ import type { AgentRegistry } from "./agent-registry.js";
 import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
 import { buildBoundedHistory } from "./context.js";
+import { buildContextStats } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
-import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, MomokaAgent } from "./types.js";
+import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent } from "./types.js";
 
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
@@ -91,6 +92,7 @@ export class MomokaAgentCore implements MomokaAgent {
       onEvent: request.onEvent, signal: request.signal,
       sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
+    await this.recordRunUsage(result, sessionId);
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });
@@ -118,6 +120,7 @@ export class MomokaAgentCore implements MomokaAgent {
       systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
       sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
+    await this.recordRunUsage(result, sessionId);
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId: continuationOutputId, prompt: output.prompt, response: result.output, topic: output.topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId: continuationOutputId, toolCalls: result.toolCalls ?? [] });
@@ -156,6 +159,14 @@ export class MomokaAgentCore implements MomokaAgent {
       throw error;
     }
   }
+  /** 把本轮 run 的 usage 记入绑定该 session 的 Agent（供磁贴上下文指标展示） */
+  private async recordRunUsage(result: ModelRunResult, sessionId: string | null | undefined): Promise<void> {
+    if (!this.options.agentRegistry || !sessionId || !result.usage?.promptTokens) return;
+    const agent = (await this.options.agentRegistry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
+    if (!agent) return;
+    await this.options.agentRegistry.updateContextStats(agent.id, buildContextStats(result.usage, agent.model));
+  }
+
   async createSession(goal: string, folderPath: string) {
     if (!goal.trim() || !folderPath.trim()) throw new MomokaHttpError(400, "Session goal and working directory are required");
     const details = await stat(folderPath).catch(() => null);

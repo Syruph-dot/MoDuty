@@ -221,6 +221,30 @@
   overflow-y: auto;
 }
 
+.tool-card__toggle {
+  margin-left: auto;
+  font-size: 10px;
+  color: rgba(232, 237, 247, 0.4);
+  flex: none;
+}
+
+.tool-card__body {
+  overflow: hidden;
+  max-height: 200px;
+  transition: max-height 320ms ease, opacity 200ms ease;
+  opacity: 1;
+}
+
+.tool-card--collapsed .tool-card__body {
+  max-height: 0;
+  opacity: 0;
+}
+
+.tool-card--collapsed,
+.tool-card:not(.tool-card--collapsed) {
+  cursor: pointer;
+}
+
 /* 输入区 */
 
 .agent-window__composer {

@@ -10,9 +10,30 @@ export interface ToolCall {
   result: string;
 }
 
+/** 单次模型调用的 token 统计（OpenAI 兼容 usage 字段） */
+export interface ModelUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedTokens?: number;
+  totalTokens?: number;
+}
+
+/** Agent 上下文占用指标（用于磁贴第二页展示） */
+export interface ContextStats {
+  /** 上下文长度（最近一次推理峰值 prompt tokens） */
+  promptTokens: number;
+  /** 上下文窗口（按模型标准，模型未知用通用默认） */
+  contextWindow: number;
+  /** 缓存命中 tokens；服务商未提供为 null */
+  cachedTokens: number | null;
+  updatedAt: string;
+}
+
 export interface ModelRunResult {
   output: string;
   toolCalls?: ToolCall[];
+  /** 本轮 run 的代表性 usage（多轮工具调用取 prompt tokens 峰值轮） */
+  usage?: ModelUsage;
 }
 
 export interface ModelClient {
@@ -40,6 +61,7 @@ export interface AgentRecord {
   sessionId: string; // 1:1 绑定的 session（上下文串）
   state: AgentState;
   phase?: AgentPhase; // running 时的子阶段
+  contextStats?: ContextStats; // 上下文占用指标（内存 + 落盘）
   createdAt: string;
   lastActiveAt: string;
 }

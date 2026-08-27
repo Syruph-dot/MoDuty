@@ -32,17 +32,18 @@ interface Mention {
 
 interface DisplayMessage {
   key: string;
-  role: "user" | "agent";
+  role: "user" | "agent" | "tool";
   content: string;
+  toolCard?: {
+    name: string;
+    args: string;
+    status: "running" | "done";
+    result?: string;
+    collapsed: boolean;
+  };
 }
 
-interface ToolCard {
-  id: string;
-  name: string;
-  args: string;
-  result?: string;
-  status: "running" | "done";
-}
+ 
 
 function shortArgs(args: string): string {
   if (!args || args === "{}") return "";
@@ -59,10 +60,9 @@ function shortArgs(args: string): string {
 /** 嵌入分屏窗口：作为展开磁贴内容（由 TileShell 定位），header 可拖拽，× 或拖到左坞收起 */
 export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [toolCards, setToolCards] = useState<ToolCard[]>([]);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [streamError, setStreamError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -192,7 +192,27 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages, toolCards, streaming]);
+  }, [messages, streaming]);
+
+  // 切换 tool card 折叠/展开
+  const toggleToolCollapsed = (key: string) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.key === key && m.toolCard ? { ...m, toolCard: { ...m.toolCard, collapsed: !m.toolCard.collapsed } } : m,
+      ),
+    );
+  };
+
+  // tool result 到达后 3 秒自动折叠
+  const collapseAfterDelay = (key: string) => {
+    setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.key === key && m.toolCard ? { ...m, toolCard: { ...m.toolCard, collapsed: true } } : m,
+        ),
+      );
+    }, 3000);
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -218,12 +238,28 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             setMessages((prev) => prev.map((message) => (message.key === key ? { ...message, content: message.content + chunk } : message)));
           },
           onToolStart: (name, args) => {
-            setToolCards((prev) => [...prev, { id: `tool-${Date.now()}`, name, args, status: "running" }]);
+            setMessages((prev) => [...prev, {
+              key: `tool-${Date.now()}-${name}`,
+              role: "tool" as const,
+              content: "",
+              toolCard: { name, args, status: "running" as const, collapsed: false },
+            }]);
           },
           onToolResult: (name, result) => {
-            setToolCards((prev) =>
-              prev.map((card) => (card.name === name && card.status === "running" ? { ...card, result, status: "done" } : card)),
-            );
+            setMessages((prev) => {
+              let found = false;
+              const next = prev.map((m) => {
+                if (!found && m.toolCard && m.toolCard.name === name && m.toolCard.status === "running") {
+                  found = true;
+                  const key = m.key;
+                  // 延迟折叠
+                  collapseAfterDelay(key);
+                  return { ...m, toolCard: { ...m.toolCard, result, status: "done" as const, collapsed: false } };
+                }
+                return m;
+              });
+              return next;
+            });
           },
           onApprovalRequested: () => {
             // 审批联动由 ApprovalPanel（ISS-09）处理；磁贴会经 agent_state 事件转 waiting_approval
@@ -272,25 +308,39 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (
-          messages.map((message) => (
-            <div key={message.key} className={`msg msg--${message.role}`}>
-              <div className="msg__bubble">{message.content}</div>
-            </div>
-          ))
+          messages.map((message) => {
+            if (message.role === "tool" && message.toolCard) {
+              const tc = message.toolCard;
+              return (
+                <div
+                  key={message.key}
+                  className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}`}
+                  onClick={() => toggleToolCollapsed(message.key)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleToolCollapsed(message.key); } }}
+                >
+                  <div className="tool-card__head">
+                    <span className={`tool-card__dot tool-card__dot--${tc.status}`} aria-hidden="true" />
+                    <span className="tool-card__name">{tc.name}</span>
+                    <span className="tool-card__args">{shortArgs(tc.args)}</span>
+                    <span className="tool-card__toggle" aria-hidden="true">{tc.collapsed ? "▶" : "▼"}</span>
+                  </div>
+                  <div className="tool-card__body">
+                    {tc.result ? (
+                      <pre className="tool-card__result">{tc.result.length > 500 ? `${tc.result.slice(0, 500)}…` : tc.result}</pre>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={message.key} className={`msg msg--${message.role}`}>
+                <div className="msg__bubble">{message.content}</div>
+              </div>
+            );
+          })
         )}
-
-        {toolCards.map((card) => (
-          <div key={card.id} className="tool-card">
-            <div className="tool-card__head">
-              <span className={`tool-card__dot tool-card__dot--${card.status}`} aria-hidden="true" />
-              <span className="tool-card__name">{card.name}</span>
-              <span className="tool-card__args">{shortArgs(card.args)}</span>
-            </div>
-            {card.result ? (
-              <pre className="tool-card__result">{card.result.length > 500 ? `${card.result.slice(0, 500)}…` : card.result}</pre>
-            ) : null}
-          </div>
-        ))}
 
         {streaming && messages.length > 0 && messages[messages.length - 1]?.content === "" ? (
           <div className="msg msg--agent">

@@ -1,10 +1,20 @@
 import type { AgentPhase, AgentState, StreamEvent } from "./types.js";
 
+/** 上下文指标对外 snake_case 结构（磁贴第二页数据） */
+export interface ContextStatsSnake {
+  prompt_tokens: number;
+  context_window: number;
+  cached_tokens: number | null;
+  updated_at: string;
+}
+
 export interface AgentStateEvent {
   type: "agent_state";
   agent_id: string;
   state: AgentState;
   phase?: AgentPhase;
+  /** 状态广播附带的最新上下文占用指标（snake 化，磁贴第二页用） */
+  context_stats?: ContextStatsSnake;
 }
 
 export type AgentStateListener = (event: AgentStateEvent) => void;

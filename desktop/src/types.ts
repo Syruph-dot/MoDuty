@@ -18,6 +18,14 @@ export interface SessionSummary {
   last_message_at: string;
 }
 
+/** 上下文占用指标（后端 contextStats 的 snake 化，磁贴第二页数据） */
+export interface ContextStats {
+  prompt_tokens: number;
+  context_window: number;
+  cached_tokens: number | null;
+  updated_at: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -27,6 +35,7 @@ export interface Agent {
   session_id: string;
   state: AgentState;
   phase: AgentPhase | null;
+  context_stats?: ContextStats | null;
   created_at: string;
   last_active_at: string;
   session: SessionSummary | null;
@@ -37,4 +46,5 @@ export interface AgentStateEvent {
   agent_id: string;
   state: AgentState;
   phase?: AgentPhase;
+  context_stats?: ContextStats | null;
 }

@@ -67,6 +67,16 @@ const MAX_W = 1200;
 const MAX_H = 900;
 const SCREEN_EDGE = 0;
 
+
+
+/**
+ * 根据拖拽模式把 delta 应用到原始 geometry 上：
+ * - move: 整块平移
+ * - resize-{dir}: 改边/角，根据方向调整 x/y/w/h
+ * - 含 w 的方向：x += dx, w -= dx；含 e 的方向：w += dx
+ * - 含 n 的方向：y += dy, h -= dy；含 s 的方向：h += dy
+ * - 最小尺寸 MIN_W × MIN_H：达到后停止收缩，x/y 也保持稳定
+ */
 const RESIZE_HANDLES: Array<{ dir: ResizeDirection; pos: CSSProperties; cursor: string }> = [
   { dir: "nw", pos: { top: 0, left: 0, width: 12, height: 12, cursor: "nwse-resize" }, cursor: "nwse-resize" },
   { dir: "n", pos: { top: 0, left: "50%", width: 24, height: 8, transform: "translateX(-50%)", cursor: "ns-resize" }, cursor: "ns-resize" },
@@ -78,14 +88,6 @@ const RESIZE_HANDLES: Array<{ dir: ResizeDirection; pos: CSSProperties; cursor: 
   { dir: "w", pos: { top: "50%", left: 0, width: 8, height: 24, transform: "translateY(-50%)", cursor: "ew-resize" }, cursor: "ew-resize" },
 ];
 
-/**
- * 根据拖拽模式把 delta 应用到原始 geometry 上：
- * - move: 整块平移
- * - resize-{dir}: 改边/角，根据方向调整 x/y/w/h
- * - 含 w 的方向：x += dx, w -= dx；含 e 的方向：w += dx
- * - 含 n 的方向：y += dy, h -= dy；含 s 的方向：h += dy
- * - 最小尺寸 MIN_W × MIN_H：达到后停止收缩，x/y 也保持稳定
- */
 function applyDelta(
   origin: TileGeometry,
   dx: number,

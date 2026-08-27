@@ -166,6 +166,7 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
               ...agent,
               state: event.state,
               phase: event.phase ?? null,
+              ...(event.context_stats ? { context_stats: event.context_stats } : {}),
               last_active_at: new Date().toISOString(),
             }
           : agent,

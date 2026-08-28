@@ -45,6 +45,11 @@ export function awaitApiBase(): Promise<string> {
   return _apiBasePromise;
 }
 
+/** 测试注入：强制固定 API base（供 node:test 直接打到临时后端）。仅测试使用，生产代码不要调。 */
+export function setApiBaseForTests(base: string): void {
+  _apiBasePromise = Promise.resolve(base);
+}
+
 /** 已弃用的同步兜底值：仅用于日志/UI 提示；不要用于实际 fetch。 */
 export const apiBaseHint = (() => {
   if (readEnvBase()) return readEnvBase();

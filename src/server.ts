@@ -8,6 +8,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import { AgentStateMachine } from "./agent-state.js";
 import { createMomokaHttpHandler } from "./http.js";
 import { createOpenAICompatibleModelClient } from "./model-client.js";
+import { WorkspaceManager } from "./workspace-manager.js";
 import { defaultPaths, loadLocalEnvSync, resolveProjectRoot } from "./config.js";
 
 export interface CreateMomokaServerOptions {
@@ -30,16 +31,18 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
     loadLocalEnvSync();
   }
   const projectRoot = resolveProjectRoot(options.projectRoot);
+  const workspaces = new WorkspaceManager();
   const agent = createMomokaAgent({
     projectRoot,
     modelClient: createOpenAICompatibleModelClient({ stream: true }),
+    workspaceManager: workspaces,
   });
   // Agent Desktop：多 Agent 注册表（1:1 绑定 session）+ 生命周期状态机
   const registry = new AgentRegistry(defaultPaths(projectRoot).memoryDir, agent.sessionManager);
   // 让 Agent 核心能解析 &tile_<agentId> 别名 → 其绑定的 session
   agent.agentRegistry = registry;
   const machine = new AgentStateMachine();
-  const server = createServer(createMomokaHttpHandler(agent, { registry, machine }));
+  const server = createServer(createMomokaHttpHandler(agent, { registry, machine, workspaces }));
   return {
     agent,
     registry,

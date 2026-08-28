@@ -5,8 +5,10 @@ import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore } from "./memory.js";
 import { SessionManager } from "./session-manager.js";
+import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
-import { ApprovalError, ApprovalStore, createApprovalExecutionEvent } from "./approvals.js";
+import { WorkspaceManager } from "./workspace-manager.js";
+import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
 import { buildBoundedHistory } from "./context.js";
 import { buildContextStats } from "./context-stats.js";
@@ -16,7 +18,7 @@ import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent } from "./types.js";
 
-interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; }
+interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; workspaceManager?: WorkspaceManager; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
@@ -24,6 +26,7 @@ export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
   readonly memoryStore: MemoryStore;
   readonly sessionManager: SessionManager;
+  readonly workspaces: WorkspaceManager;
   agentRegistry?: AgentRegistry;
 
   constructor(private readonly options: MomokaAgentOptions) {
@@ -31,6 +34,7 @@ export class MomokaAgentCore implements MomokaAgent {
     initSettings(this.projectRoot);
     this.memoryStore = new MemoryStore(defaultPaths(this.projectRoot).memoryDir);
     this.sessionManager = new SessionManager(defaultPaths(this.projectRoot).memoryDir);
+    this.workspaces = options.workspaceManager ?? new WorkspaceManager();
     this.agentRegistry = options.agentRegistry;
   }
 
@@ -130,11 +134,11 @@ export class MomokaAgentCore implements MomokaAgent {
     return { ...base, nextOutputId: continuationOutputId, nextResponse: result.output, nextAnnotationRuntimeContext: "", nextOutputAssessment: accept, nextToolCalls: result.toolCalls ?? [], nextSkillReasons: [] };
   }
 
-  async listApprovals(workDir: string) { return await (await this.approvalStore(workDir)).list(); }
+  async listApprovals(workDir: string) { return await (await this.workspaces.approvalStore(workDir)).list(); }
   getSandboxEnabled(): boolean { return getSandboxFlag(); }
   async setSandboxEnabled(enabled: boolean): Promise<boolean> { return await persistSandboxFlag(enabled); }
   async decideApproval(workDir: string, id: string, decision: "approved" | "rejected", operator: string) {
-    const store = await this.approvalStore(workDir);
+    const store = await this.workspaces.approvalStore(workDir);
     try {
       const approval = await store.decide(id, decision, operator);
       if (decision === "rejected") return { approval, event: null };
@@ -181,9 +185,8 @@ export class MomokaAgentCore implements MomokaAgent {
     const entries = (await readdir(current, { withFileTypes: true })).filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).map((entry) => ({ name: entry.name, path: path.join(current, entry.name), is_dir: true }));
     return { path: current, parent: path.dirname(current) === current ? null : path.dirname(current), entries };
   }
-  private async approvalStore(workDir: string) { const workspace = path.resolve(workDir); if (!(await stat(workspace).catch(() => null))?.isDirectory()) throw new MomokaHttpError(400, `Directory does not exist: ${workspace}`); return new ApprovalStore(workspace); }
 }
 
 async function listWindowsDrives() { const entries: Array<{ name: string; path: string; is_dir: true }> = []; for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") { const drive = `${letter}:\\`; try { await access(drive); entries.push({ name: drive.slice(0, -1), path: drive, is_dir: true }); } catch { /* absent */ } } return entries; }
-export class MomokaHttpError extends Error { constructor(readonly statusCode: number, message: string, readonly details: Record<string, unknown> = {}) { super(message); } }
+export { MomokaHttpError };
 export function createMomokaAgent(options: MomokaAgentOptions): MomokaAgentCore { return new MomokaAgentCore(options); }

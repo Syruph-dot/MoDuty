@@ -33,13 +33,23 @@ async function initChat() {
         await refreshApprovals();
         await initSandboxToggle();
 
-        // 如果会话没有消息，自动将核心目标作为首条消息发给 Agent
-        if (session.message_count === 0) {
-            await sendGoalAsFirstMessage();
-        }
+        // 双轨收束：遗留视图已只读——不再自动发送首条消息，禁用输入区
+        disableComposer();
     } catch (err) {
         showPageError('加载会话失败: ' + err.message);
     }
+}
+
+/** 只读降级：禁用输入框与发送按钮，提示改用桌面应用 */
+function disableComposer() {
+    const input = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    if (input) {
+        input.disabled = true;
+        input.placeholder = (typeof LEGACY_READ_ONLY_HINT !== 'undefined' && LEGACY_READ_ONLY_HINT)
+            || '遗留视图已只读，请使用 MOMOKA 桌面应用';
+    }
+    if (sendBtn) sendBtn.disabled = true;
 }
 
 // ── 会话头部 ──

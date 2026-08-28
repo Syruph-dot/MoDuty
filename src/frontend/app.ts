@@ -4,6 +4,11 @@
 
 const API_BASE = '/api';
 
+// 双轨收束：旧 web UI 已降级为只读遗留视图。
+// 新建/删除/对话一律走 MOMOKA 桌面应用（Agent Desktop）；写请求在客户端直接拦截。
+const LEGACY_READ_ONLY = true;
+const LEGACY_READ_ONLY_HINT = '遗留视图已只读：请使用 MOMOKA 桌面应用新建会话与对话';
+
 // --- 工具函数 ---
 function escapeHtml(str) {
     const div = document.createElement('div');
@@ -29,6 +34,7 @@ function formatDate(isoStr) {
 
 // --- API 封装 ---
 async function apiPost(path, body) {
+    if (LEGACY_READ_ONLY) throw new Error(LEGACY_READ_ONLY_HINT);
     const res = await fetch(`${API_BASE}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -47,6 +53,7 @@ async function apiGet(path) {
 }
 
 async function apiDelete(path) {
+    if (LEGACY_READ_ONLY) throw new Error(LEGACY_READ_ONLY_HINT);
     const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -55,6 +62,8 @@ async function apiDelete(path) {
 
 Object.assign(window, {
     API_BASE,
+    LEGACY_READ_ONLY,
+    LEGACY_READ_ONLY_HINT,
     escapeHtml,
     uid,
     formatTime,

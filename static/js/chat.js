@@ -27,12 +27,19 @@
       await loadMessages();
       await refreshApprovals();
       await initSandboxToggle();
-      if (session.message_count === 0) {
-        await sendGoalAsFirstMessage();
-      }
+      disableComposer();
     } catch (err) {
       showPageError("\u52A0\u8F7D\u4F1A\u8BDD\u5931\u8D25: " + err.message);
     }
+  }
+  function disableComposer() {
+    const input = document.getElementById("chatInput");
+    const sendBtn = document.getElementById("sendBtn");
+    if (input) {
+      input.disabled = true;
+      input.placeholder = typeof LEGACY_READ_ONLY_HINT !== "undefined" && LEGACY_READ_ONLY_HINT || "\u9057\u7559\u89C6\u56FE\u5DF2\u53EA\u8BFB\uFF0C\u8BF7\u4F7F\u7528 MOMOKA \u684C\u9762\u5E94\u7528";
+    }
+    if (sendBtn) sendBtn.disabled = true;
   }
   function renderSessionHeader() {
     document.getElementById("sessionName").textContent = session.name || "\u672A\u547D\u540D\u4F1A\u8BDD";

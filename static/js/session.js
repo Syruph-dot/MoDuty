@@ -37,7 +37,6 @@
                 <div class="session-card-side">
                     <div class="session-card-msgs">${msgCount} \u6761\u6D88\u606F</div>
                     <div class="session-card-time">${lastTime}</div>
-                    <button class="session-card-del" onclick="event.stopPropagation(); deleteSession('${s.id}')" title="\u5220\u9664\u4F1A\u8BDD">\u2715</button>
                 </div>
             </div>
         `;

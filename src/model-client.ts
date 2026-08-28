@@ -46,6 +46,80 @@ const APPROVAL_PATTERN = /pending approval/i;
 const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
 
+export interface ResolvedModelConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  isZen: boolean;
+}
+
+/** 凭证解析优先级：显式参数 > 环境变量 > settings.json（.momoka/settings.json）> 默认值。
+ *  供 HTTP 层（/api/settings、/api/models）与诊断展示使用；防腐边界：provider 细节不出本模块。 */
+export async function resolveModelConfig(
+  overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
+): Promise<ResolvedModelConfig> {
+  const settings = await loadSettings();
+  const apiKey = overrides.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || settings.apiKey || "";
+  const baseUrl = (
+    overrides.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
+  ).replace(/\/+$/u, "");
+  const model = overrides.model || process.env.MOMOKA_MODEL || settings.model || "qwen-plus";
+  return { apiKey, baseUrl, model, isZen: ZEN_BASE_PATTERN.test(baseUrl) };
+}
+
+export interface ProviderDiagnostics {
+  provider: string;
+  hasKey: boolean;
+  issues: string[];
+  /** key 前 8 位脱敏展示（无 key 为空串） */
+  keyPrefix: string;
+  model: string;
+}
+
+/** /api/config 的 provider 诊断（沿用环境变量视角，展示 DashScope / OpenAI / OpenCode Zen 探测结果） */
+export function describeEnvProviderDiagnostics(): ProviderDiagnostics {
+  const baseUrl = process.env.OPENAI_BASE_URL ?? "";
+  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+  const hasKey = Boolean(process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY);
+  const provider = process.env.ALIYUN_API_KEY ? "DashScope" : (isZen ? "OpenCode Zen" : (baseUrl || "OpenAI"));
+  const issues: string[] = [];
+  if (!hasKey) {
+    if (isZen) {
+      issues.push("OpenCode Zen 需要 API key。请前往 https://opencode.ai/auth 注册免费账号，获取 API key 后设置 OPENAI_API_KEY。");
+    } else if (process.env.ALIYUN_API_KEY || !baseUrl) {
+      issues.push("API key 未配置。请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY。");
+    }
+  }
+  return {
+    provider,
+    hasKey,
+    issues,
+    keyPrefix: `${(process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
+    model: process.env.MOMOKA_MODEL ?? "qwen-plus",
+  };
+}
+
+/** 上游非 2xx：保留 HTTP 状态码供路由层透传 */
+export class UpstreamHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+/** 拉取 OpenAI 兼容上游的 /models 列表（供 /api/models） */
+export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const upstream = await fetch(`${baseUrl}/models`, {
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+  });
+  if (!upstream.ok) {
+    throw new UpstreamHttpError(upstream.status, `models 请求失败: HTTP ${upstream.status}`);
+  }
+  const data = (await upstream.json()) as { data?: Array<{ id?: string }> };
+  return (data.data ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const apiKey = options.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || "";
   const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");

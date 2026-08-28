@@ -43,7 +43,6 @@ function renderSessionList() {
                 <div class="session-card-side">
                     <div class="session-card-msgs">${msgCount} 条消息</div>
                     <div class="session-card-time">${lastTime}</div>
-                    <button class="session-card-del" onclick="event.stopPropagation(); deleteSession('${s.id}')" title="删除会话">✕</button>
                 </div>
             </div>
         `;

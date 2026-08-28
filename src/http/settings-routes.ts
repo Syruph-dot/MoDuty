@@ -9,7 +9,7 @@ import type { RouteContext } from "./route-context.js";
  * 设置/诊断类路由：health、config、settings、models、sandbox、directories。
  * 这些是桌面端与遗留视图共用的基础设施，不属于任何一条业务轨道。
  *
- * 防腐边界：provider 探测（DashScope / OpenAI / Zen）与上游 models 拉取一律委托
+ * 防腐边界：provider 探测（OpenAI / Zen）与上游 models 拉取一律委托
  * model-client.ts 导出的辅助函数，本文件不出现 provider 细节。
  */
 export async function handleSettingsRoutes(

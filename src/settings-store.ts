@@ -17,7 +17,7 @@ import { promises as fs } from "node:fs";
 export interface MomokaSettings {
   /** API Key / Token（OpenAI 兼容鉴权） */
   apiKey?: string;
-  /** OpenAI 兼容 Base URL；留空=默认阿里云 DashScope */
+  /** OpenAI 兼容 Base URL；留空则回退到内置默认（OpenAI 兼容地址） */
   baseUrl?: string;
   /** 默认模型名 */
   model?: string;

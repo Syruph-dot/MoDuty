@@ -59,7 +59,7 @@ export async function resolveModelConfig(
   overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
 ): Promise<ResolvedModelConfig> {
   const settings = await loadSettings();
-  const apiKey = overrides.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || settings.apiKey || "";
+  const apiKey = overrides.apiKey || process.env.OPENAI_API_KEY || settings.apiKey || "";
   const baseUrl = (
     overrides.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
   ).replace(/\/+$/u, "");
@@ -76,25 +76,25 @@ export interface ProviderDiagnostics {
   model: string;
 }
 
-/** /api/config 的 provider 诊断（沿用环境变量视角，展示 DashScope / OpenAI / OpenCode Zen 探测结果） */
+/** /api/config 的 provider 诊断（沿用环境变量视角，展示 OpenAI / OpenCode Zen 探测结果） */
 export function describeEnvProviderDiagnostics(): ProviderDiagnostics {
   const baseUrl = process.env.OPENAI_BASE_URL ?? "";
   const isZen = ZEN_BASE_PATTERN.test(baseUrl);
-  const hasKey = Boolean(process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY);
-  const provider = process.env.ALIYUN_API_KEY ? "DashScope" : (isZen ? "OpenCode Zen" : (baseUrl || "OpenAI"));
+  const hasKey = Boolean(process.env.OPENAI_API_KEY);
+  const provider = isZen ? "OpenCode Zen" : (baseUrl ? "OpenAI (兼容)" : "未配置");
   const issues: string[] = [];
   if (!hasKey) {
     if (isZen) {
       issues.push("OpenCode Zen 需要 API key。请前往 https://opencode.ai/auth 注册免费账号，获取 API key 后设置 OPENAI_API_KEY。");
-    } else if (process.env.ALIYUN_API_KEY || !baseUrl) {
-      issues.push("API key 未配置。请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY。");
+    } else {
+      issues.push("API key 未配置。请设置 OPENAI_API_KEY 环境变量（或在本软件设置界面填写）。");
     }
   }
   return {
     provider,
     hasKey,
     issues,
-    keyPrefix: `${(process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
+    keyPrefix: `${(process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
     model: process.env.MOMOKA_MODEL ?? "qwen-plus",
   };
 }
@@ -121,7 +121,7 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
 }
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
-  const apiKey = options.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || "";
+  const apiKey = options.apiKey || process.env.OPENAI_API_KEY || "";
   const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
   const model = options.model || process.env.MOMOKA_MODEL || "qwen-plus";
   const fetchImpl = options.fetch ?? fetch;
@@ -136,7 +136,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
       // 这样软件内修改设置无需重启后端即可生效
       const settings = await loadSettings();
       const apiKey =
-        options.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || settings.apiKey || "";
+        options.apiKey || process.env.OPENAI_API_KEY || settings.apiKey || "";
       const baseUrl = (
         options.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
       ).replace(/\/+$/u, "");
@@ -149,7 +149,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             "OpenCode Zen 需要 API key：请前往 https://opencode.ai/auth 注册免费账号并获取 API key，然后设置 OPENAI_API_KEY 环境变量。"
           );
         }
-        throw new Error("API key 未配置：请设置 ALIYUN_API_KEY 或 OPENAI_API_KEY，或提供无需鉴权的 OPENAI_BASE_URL");
+        throw new Error("API key 未配置：请设置 OPENAI_API_KEY 环境变量，或提供无需鉴权的 OPENAI_BASE_URL");
       }
       const messages: ChatMessage[] = [
         { role: "system", content: context.systemPrompt },

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { awaitApiBase } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
+import { renderMarkdown } from "../lib/markdown";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -347,7 +348,10 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             }
             return (
               <div key={message.key} className={`msg msg--${message.role}`}>
-                <div className="msg__bubble">{message.content}</div>
+                <div
+                  className="msg__bubble"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+                />
               </div>
             );
           })

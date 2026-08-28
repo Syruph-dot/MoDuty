@@ -18,6 +18,7 @@
     "build:frontend": "tsx scripts/build-frontend.ts",
     "test": "tsx --test --test-concurrency=1 \"tests-ts/**/*.test.ts\"",
     "start": "node dist/server.js",
+    "dev": "node scripts/dev-all.mjs",
     "desktop:dev": "npm run dev --prefix desktop",
     "desktop:build": "npm run build --prefix desktop",
     "desktop:preview": "npm run preview --prefix desktop"

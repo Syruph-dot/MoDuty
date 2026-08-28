@@ -15,7 +15,7 @@ interface OpenAICompatibleModelClientOptions {
   maxToolRounds?: number;
   /** 模型调用是否使用 SSE 流式（配合 context.onEvent 消费增量 token） */
   stream?: boolean;
-  /** 单轮模型请求超时（毫秒），默认 120_000 */
+  /** 单轮模型请求超时（毫秒），默认不限制；为防死循环设为较大值 */
   requestTimeoutMs?: number;
 }
 
@@ -47,13 +47,13 @@ const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
-  const apiKey = options.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
-  const baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
-  const model = options.model ?? process.env.MOMOKA_MODEL ?? "qwen-plus";
+  const apiKey = options.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || "";
+  const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
+  const model = options.model || process.env.MOMOKA_MODEL || "qwen-plus";
   const fetchImpl = options.fetch ?? fetch;
   const maxToolRounds = options.maxToolRounds ?? Infinity;
   const stream = options.stream ?? false;
-  const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
   const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
   return {
@@ -62,11 +62,11 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
       // 这样软件内修改设置无需重启后端即可生效
       const settings = await loadSettings();
       const apiKey =
-        options.apiKey ?? process.env.ALIYUN_API_KEY ?? process.env.OPENAI_API_KEY ?? settings.apiKey ?? "";
+        options.apiKey || process.env.ALIYUN_API_KEY || process.env.OPENAI_API_KEY || settings.apiKey || "";
       const baseUrl = (
-        options.baseUrl ?? process.env.OPENAI_BASE_URL ?? settings.baseUrl ?? DEFAULT_DASHSCOPE
+        options.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
       ).replace(/\/+$/u, "");
-      const model = options.model ?? process.env.MOMOKA_MODEL ?? settings.model ?? "qwen-plus";
+      const model = options.model || process.env.MOMOKA_MODEL || settings.model || "qwen-plus";
       const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
       if (!apiKey && (baseUrl === DEFAULT_DASHSCOPE || isZen)) {

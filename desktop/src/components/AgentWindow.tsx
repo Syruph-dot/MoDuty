@@ -90,9 +90,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
 
   useEffect(() => {
     void reloadMessages();
-    return () => {
-      abortRef.current?.abort();
-    };
+    // 组件卸载时不再 abort 后端 chat 流（避免从展开态切回磁贴态时中止正在进行的任务）
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
@@ -223,10 +222,10 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     setStreamError(null);
     setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: text }]);
     setStreaming(true);
-    const key = `agent-${Date.now()}`;
-    setMessages((prev) => [...prev, { key, role: "agent", content: "" }]);
     const controller = new AbortController();
     abortRef.current = controller;
+    let currentAgentKey = `agent-${Date.now()}`;
+    setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
     try {
       const base = await awaitApiBase();
       await runChatStream(
@@ -235,15 +234,25 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         text,
         {
           onToken: (chunk) => {
-            setMessages((prev) => prev.map((message) => (message.key === key ? { ...message, content: message.content + chunk } : message)));
+            setMessages((prev) => prev.map((m) => (m.key === currentAgentKey ? { ...m, content: m.content + chunk } : m)));
           },
           onToolStart: (name, args) => {
-            setMessages((prev) => [...prev, {
-              key: `tool-${Date.now()}-${name}`,
-              role: "tool" as const,
-              content: "",
-              toolCard: { name, args, status: "running" as const, collapsed: false },
-            }]);
+            // 先结束当前 agent 消息（如果只有空 content 则删掉）
+            setMessages((prev) => {
+              const cleaned = prev.filter((m) => !(m.key === currentAgentKey && m.role === "agent" && m.content === ""));
+              return [
+                ...cleaned,
+                {
+                  key: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`,
+                  role: "tool" as const,
+                  content: "",
+                  toolCard: { name, args, status: "running" as const, collapsed: false },
+                },
+              ];
+            });
+            // 开始新的 agent 消息（用于 tool call 后的 token）
+            currentAgentKey = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`;
+            setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
           },
           onToolResult: (name, result) => {
             setMessages((prev) => {
@@ -251,9 +260,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
               const next = prev.map((m) => {
                 if (!found && m.toolCard && m.toolCard.name === name && m.toolCard.status === "running") {
                   found = true;
-                  const key = m.key;
-                  // 延迟折叠
-                  collapseAfterDelay(key);
+                  collapseAfterDelay(m.key);
                   return { ...m, toolCard: { ...m.toolCard, result, status: "done" as const, collapsed: false } };
                 }
                 return m;
@@ -278,7 +285,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setStreamError(error instanceof Error ? error.message : String(error));
-        setMessages((prev) => prev.filter((message) => message.key !== key || message.content !== ""));
+        setMessages((prev) => prev.filter((message) => message.key !== currentAgentKey || message.content !== ""));
       }
     } finally {
       setStreaming(false);
@@ -309,6 +316,10 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (
           messages.map((message) => {
+            // 跳过 tool call 之间创建的空 agent 消息（占位用，不应渲染）
+            if (message.role === "agent" && message.content === "") {
+              return null;
+            }
             if (message.role === "tool" && message.toolCard) {
               const tc = message.toolCard;
               return (

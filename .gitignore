@@ -29,3 +29,19 @@ memory/*.md
 
 memory/.agents/
 
+
+# Runtime logs & build outputs (local only)
+*.log
+logs/
+build-output.txt
+output.txt
+process-check.txt
+kill-port-output.txt
+tsc-output.txt
+clock.html
+runs/
+snapshot/
+
+# Desktop smoke-test artifacts
+desktop/scripts/*.json
+server-output.txt

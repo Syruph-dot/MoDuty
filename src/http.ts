@@ -711,11 +711,8 @@ async function streamAgentChat(
     ...corsHeaders(),
   });
   const controller = new AbortController();
-  response.on("close", () => {
-    if (!response.writableEnded) {
-      controller.abort();
-    }
-  });
+  // 不在 response close 时 abort：前端断开（如切回磁贴态）不应中止后端 chat 流
+  // 后端 chat 流会在 response.end()（finally 块）时自然结束
   try {
     const result = await agent.chat({
       message,

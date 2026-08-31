@@ -31,6 +31,16 @@ interface DialogStore {
   settingsOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
+  /** 「Add widget」通用选择器卡片是否打开（非前景、非阻挡式） */
+  widgetPickerOpen: boolean;
+  /** 打开选择器时记录的光标相对磁贴墙坐标（选完落位用） */
+  widgetPickerSpawn: { x: number; y: number } | null;
+  openWidgetPicker: (spawn?: { x: number; y: number }) => void;
+  closeWidgetPicker: () => void;
+  /** 重命名 widget 弹窗目标 id（null 表示未打开） */
+  renameWidgetTarget: string | null;
+  openRenameWidget: (id: string) => void;
+  closeRenameWidget: () => void;
 }
 
 /** 顶层弹窗开关：右键菜单触发 → 任何地方都能监听 */
@@ -51,4 +61,11 @@ export const useDialogStore = create<DialogStore>((set) => ({
   settingsOpen: false,
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  widgetPickerOpen: false,
+  widgetPickerSpawn: null,
+  openWidgetPicker: (spawn) => set({ widgetPickerOpen: true, widgetPickerSpawn: spawn ?? null }),
+  closeWidgetPicker: () => set({ widgetPickerOpen: false, widgetPickerSpawn: null }),
+  renameWidgetTarget: null,
+  openRenameWidget: (id) => set({ renameWidgetTarget: id }),
+  closeRenameWidget: () => set({ renameWidgetTarget: null }),
 }));

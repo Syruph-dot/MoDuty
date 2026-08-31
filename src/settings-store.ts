@@ -2,6 +2,8 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
+import { atomicWrite, withFileLock } from "./write-queue.js";
+
 /**
  * 软件内凭证/模型配置的持久化层。
  *
@@ -52,6 +54,5 @@ export async function saveSettings(patch: Partial<MomokaSettings>): Promise<void
   if (typeof patch.apiKey === "string") next.apiKey = patch.apiKey;
   if (typeof patch.baseUrl === "string") next.baseUrl = patch.baseUrl;
   if (typeof patch.model === "string") next.model = patch.model;
-  await fs.mkdir(SETTINGS_DIR, { recursive: true });
-  await fs.writeFile(SETTINGS_PATH, JSON.stringify(next, null, 2), "utf8");
+  await withFileLock(SETTINGS_PATH, () => atomicWrite(SETTINGS_PATH, `${JSON.stringify(next, null, 2)}\n`));
 }

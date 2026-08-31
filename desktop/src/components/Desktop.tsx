@@ -8,20 +8,21 @@ import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { DEFAULT_TILE_GEOMETRY } from "../lib/persistTiles";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { useAgentsStore } from "../state/agentsStore";
-import { useContextMenuStore } from "../state/contextMenuStore";
+import { useWidgetStore } from "../state/widgetStore";
+import { useContextMenuStore, type ContextMenuItem } from "../state/contextMenuStore";
 import { useDialogStore } from "../state/dialogStore";
 import { useSnapGuideStore } from "../state/snapGuideStore";
+import { getWidgetDef } from "../state/widgetRegistry";
 import type { Agent } from "../types";
 
 /**
  * 全屏磁贴墙桌面（支持双几何分屏）。
- * - 挂载时加载 agents + 从 localStorage 还原磁贴几何
+ * - 挂载时加载 agents + 从 localStorage 还原磁贴几何（含 widget 几何）
  * - 订阅实时状态 SSE，磁贴实时反映 Agent 状态
- * - 空白处右键 → 右键菜单（仅 New Agent 一项）
+ * - 空白处右键 → 右键菜单（New Agent / Add widget / Refresh / Change wallpaper）
  * - 双击 Agent 磁贴 → 打开（进入 open 分屏模式）
- * - 无打开：磁贴自由摆放（idle geometry，持久化）
- * - 有打开：未打开磁贴收缩进左半屏坞，打开磁贴在右半屏舞台按 2n/2n+1 展开；
- *   展开窗口拖到左坞松手 → 收起；× 关闭 → 右上角收起
+ * - Agent 磁贴：无打开时自由摆放（idle geometry，持久化）；有打开时收缩进左坞 / 右舞台
+ * - Widget 磁贴：永远 free 态、无 opened 生命周期、无 back，仅自由摆放 + 右键移除/改名
  */
 export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) {
   const agents = useAgentsStore((state) => state.agents);
@@ -35,12 +36,22 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const commitTile = useAgentsStore((state) => state.commitTile);
   const closeAgent = useAgentsStore((state) => state.closeAgent);
   const renameAgent = useAgentsStore((state) => state.renameAgent);
+
+  // widget 磁贴状态
+  const widgets = useWidgetStore((state) => state.widgets);
+  const hydrateWidgets = useWidgetStore((state) => state.hydrate);
+  const moveWidget = useWidgetStore((state) => state.moveWidget);
+  const commitWidget = useWidgetStore((state) => state.commitWidget);
+  const removeWidget = useWidgetStore((state) => state.removeWidget);
+
   const renameTarget = useDialogStore((state) => state.renameTarget);
   const closeRename = useDialogStore((state) => state.closeRename);
   const showContextMenu = useContextMenuStore((state) => state.show);
   const openNewAgent = useDialogStore((state) => state.openNewAgent);
+  const openWidgetPicker = useDialogStore((state) => state.openWidgetPicker);
   const openWallpaper = useDialogStore((state) => state.openWallpaper);
   const openSettings = useDialogStore((state) => state.openSettings);
+  const openRenameWidget = useDialogStore((state) => state.openRenameWidget);
   const snapGuides = useSnapGuideStore((state) => state.guides);
 
   // 父容器尺寸，用于 clamp（用 state 才能在 ResizeObserver 触发后让 TileShell 重新 clamp）
@@ -66,6 +77,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       try {
         await load();
         if (cancelled) return;
+        hydrateWidgets();
+        if (cancelled) return;
         const base = await awaitApiBase();
         if (cancelled) return;
         stream = startAgentEventStream(base, {
@@ -74,16 +87,16 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             // 降级轮询：状态仍会经 applyAgentEvent 反映到磁贴
           },
         });
-      } catch (error) {
+      } catch (err) {
         // 端口解析 / load 失败：状态由 agentsStore.error 体现，事件流可由下次 mount 重试
-        console.error("[desktop] init failed:", error);
+        console.error("[desktop] init failed:", err);
       }
     })();
     return () => {
       cancelled = true;
       stream?.stop();
     };
-  }, [load, applyAgentEvent]);
+  }, [load, applyAgentEvent, hydrateWidgets]);
 
   // ---- 打开态布局：未打开磁贴 → 左坞；打开磁贴 → 右舞台 ----
   const openMode = openAgentIds.length > 0;
@@ -92,7 +105,13 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return computeOpenLayout(bounds, openAgentIds, agents.map((agent) => agent.id));
   }, [openMode, openAgentIds, agents, bounds]);
 
-  // 桌面空白处右键 → 弹出菜单（New Agent / Refresh / Change wallpaper）
+  // widget 磁贴不参与 open 分屏布局，它们永远自由摆放
+  const widgetGeoms = useMemo(
+    () => widgets.map((widget) => widget.geometry),
+    [widgets],
+  );
+
+  // 桌面空白处右键 → 弹出菜单（New Agent / Add widget / Refresh / Change wallpaper）
   const onContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
       // 点在磁贴上不响应（按你定的"仅空白桌面"）
@@ -100,13 +119,23 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         return;
       }
       event.preventDefault();
-      const items: Parameters<typeof showContextMenu>[1] = [
+      const wallRect = wallRef.current?.getBoundingClientRect();
+      const spawn = wallRect
+        ? { x: event.clientX - wallRect.left, y: event.clientY - wallRect.top }
+        : undefined;
+      const items: ContextMenuItem[] = [
         {
           id: "new-agent",
           label: "New Agent",
           onClick: () => {
-            const rect = wallRef.current?.getBoundingClientRect();
-            openNewAgent({ x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) });
+            openNewAgent(spawn);
+          },
+        },
+        {
+          id: "add-widget",
+          label: "Add widget",
+          onClick: () => {
+            openWidgetPicker(spawn);
           },
         },
         {
@@ -135,7 +164,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       ];
       showContextMenu({ x: event.clientX, y: event.clientY }, items);
     },
-    [showContextMenu, openNewAgent, openWallpaper, openSettings, load],
+    [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load],
   );
 
   return (
@@ -161,7 +190,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         // 双几何：无打开 → idle（用户摆放）；有打开 → 布局引擎计算（dock / stage）
         const geometry = openMode && layout ? layout.geometryOf[agent.id] ?? DEFAULT_TILE_GEOMETRY : tiles[agent.id] ?? DEFAULT_TILE_GEOMETRY;
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : "dock";
-        const others = tileMode === "free" ? buildOthers(tiles, agent.id) : [];
+        // free 模式下吸附：其它 agent 磁贴 + 所有 widget 磁贴
+        const others = tileMode === "free" ? [...buildOthers(tiles, agent.id), ...widgetGeoms] : [];
 
         return (
           <TileShell
@@ -185,14 +215,57 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
               agent={agent}
               onOpen={onOpen}
               renaming={renameTarget === agent.id}
-              onRenameCommit={(name) => {
+              onRenameCommit={(agentName) => {
                 // 成功才退出内联编辑；失败保持编辑态，错误已写入 store.error（桌面顶部展示）
-                void renameAgent(agent.id, name)
+                void renameAgent(agent.id, agentName)
                   .then(() => closeRename())
                   .catch(() => undefined);
               }}
               onRenameCancel={() => closeRename()}
             />
+          </TileShell>
+        );
+      })}
+
+      {/* Widget 磁贴：永远 free、无 opened 生命周期、无 back */}
+      {widgets.map((widget) => {
+        const def = getWidgetDef(widget.kind);
+        if (!def) return null;
+        // free 模式下吸附：其它 agent 磁贴 + 其它 widget 磁贴
+        const otherWidgetGeoms = widgets
+          .filter((candidate) => candidate.id !== widget.id)
+          .map((candidate) => candidate.geometry);
+        const others = [...buildOthers(tiles, widget.id), ...otherWidgetGeoms];
+        const widgetMenuItems: ContextMenuItem[] = [
+          {
+            id: "rename-widget",
+            label: "重命名 Widget",
+            onClick: () => openRenameWidget(widget.id),
+          },
+          {
+            id: "remove-widget",
+            label: "移除 Widget",
+            onClick: () => removeWidget(widget.id),
+          },
+        ];
+        const title = widget.title;
+        return (
+          <TileShell
+            key={widget.id}
+            id={widget.id}
+            geometry={widget.geometry}
+            bounds={bounds}
+            others={others}
+            mode="free"
+            zIndex={1}
+            contextMenuItems={widgetMenuItems}
+            onMove={(next) => moveWidget(widget.id, next)}
+            onCommit={(next) => commitWidget(widget.id, next)}
+          >
+            <div className="widget-tile">
+              <div className="widget-tile__title">{title}</div>
+              <div className="widget-tile__body">{def.renderBody()}</div>
+            </div>
           </TileShell>
         );
       })}

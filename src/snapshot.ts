@@ -1,6 +1,8 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { atomicWriteJson, withFileLock } from "./write-queue.js";
+
 export interface RunSnapshotInput {
   runId: string;
   workDir: string;
@@ -188,7 +190,9 @@ export async function resumeRunFromSnapshot(workDir: string, runId: string): Pro
       const existingIds = new Set(workspaceRecords.map((record) => record.id));
       const missing = snapshotRecords.filter((record) => record.id && !existingIds.has(record.id));
       if (missing.length > 0) {
-        await writeFile(workspaceApprovalsPath, `${JSON.stringify([...workspaceRecords, ...missing], null, 2)}\n`, "utf8");
+        await withFileLock(workspaceApprovalsPath, () =>
+          atomicWriteJson(workspaceApprovalsPath, [...workspaceRecords, ...missing]),
+        );
         restoredApprovals = missing.length;
       }
     }

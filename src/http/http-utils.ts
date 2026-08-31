@@ -25,7 +25,14 @@ export function json(response: ServerResponse, status: number, payload: unknown)
 }
 
 export function sseData(response: ServerResponse, data: unknown): void {
-  response.write(`data: ${JSON.stringify(data)}\n\n`);
+  // 客户端可能已断开（关窗/刷新/取消）：对已销毁或已结束的响应 write 会抛错，静默忽略。
+  try {
+    if (!response.writableEnded && !response.destroyed) {
+      response.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+  } catch {
+    // 已断开，忽略
+  }
 }
 
 export async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {

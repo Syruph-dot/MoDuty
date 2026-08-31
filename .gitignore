@@ -45,3 +45,7 @@ snapshot/
 # Desktop smoke-test artifacts
 desktop/scripts/*.json
 server-output.txt
+
+# runtime artifacts (not source)
+.omo/
+pending_approvals.json

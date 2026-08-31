@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { SessionManager } from "./session-manager.js";
 import { modelContextWindow } from "./context-stats.js";
+import { atomicWriteJson, withFileLock } from "./write-queue.js";
 import type { AgentPhase, AgentRecord, AgentState, ContextStats } from "./types.js";
 
 export interface CreateAgentInput {
@@ -78,76 +79,85 @@ export class AgentRegistry {
       createdAt: now,
       lastActiveAt: now,
     };
-    const agents = await this.listAgents();
-    agents.unshift(record);
-    await this.writeAgents(agents);
-    return record;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      agents.unshift(record);
+      await this.writeAgents(agents);
+      return record;
+    });
   }
 
   async getAgent(agentId: string): Promise<AgentRecord | null> {
     return (await this.listAgents()).find((agent) => agent.id === agentId) ?? null;
   }
-
   async deleteAgent(agentId: string): Promise<boolean> {
-    const agents = await this.listAgents();
-    const target = agents.find((agent) => agent.id === agentId);
-    if (!target) {
-      return false;
-    }
-    await this.writeAgents(agents.filter((agent) => agent.id !== agentId));
-    await this.sessions.deleteSession(target.sessionId).catch(() => undefined);
-    return true;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const target = agents.find((agent) => agent.id === agentId);
+      if (!target) {
+        return false;
+      }
+      await this.writeAgents(agents.filter((agent) => agent.id !== agentId));
+      await this.sessions.deleteSession(target.sessionId).catch(() => undefined);
+      return true;
+    });
   }
 
   async updateAgentState(agentId: string, state: AgentState, phase?: AgentPhase): Promise<AgentRecord | null> {
-    const agents = await this.listAgents();
-    let updated: AgentRecord | null = null;
-    const next = agents.map((agent) => {
-      if (agent.id !== agentId) {
-        return agent;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      let updated: AgentRecord | null = null;
+      const next = agents.map((agent) => {
+        if (agent.id !== agentId) {
+          return agent;
+        }
+        updated = { ...agent, state, phase, lastActiveAt: new Date().toISOString() };
+        return updated;
+      });
+      if (!updated) {
+        return null;
       }
-      updated = { ...agent, state, phase, lastActiveAt: new Date().toISOString() };
+      await this.writeAgents(next);
       return updated;
     });
-    if (!updated) {
-      return null;
-    }
-    await this.writeAgents(next);
-    return updated;
   }
 
   /** 更新某 Agent 的上下文占用指标（每次模型调用后写入） */
   async updateContextStats(agentId: string, stats: ContextStats): Promise<AgentRecord | null> {
-    const agents = await this.listAgents();
-    let updated: AgentRecord | null = null;
-    const next = agents.map((agent) => {
-      if (agent.id !== agentId) {
-        return agent;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      let updated: AgentRecord | null = null;
+      const next = agents.map((agent) => {
+        if (agent.id !== agentId) {
+          return agent;
+        }
+        updated = { ...agent, contextStats: stats };
+        return updated;
+      });
+      if (!updated) {
+        return null;
       }
-      updated = { ...agent, contextStats: stats };
+      await this.writeAgents(next);
       return updated;
     });
-    if (!updated) {
-      return null;
-    }
-    await this.writeAgents(next);
-    return updated;
   }
 
   async renameAgent(id: string, name: string): Promise<AgentRecord> {
     const trimmed = name.trim();
     if (!trimmed) throw new Error("Agent name cannot be empty");
-    const agents = await this.listAgents();
-    const index = agents.findIndex((candidate) => candidate.id === id);
-    if (index === -1) throw new Error("Agent not found");
-    const updated: AgentRecord = {
-      ...agents[index],
-      name: trimmed,
-      lastActiveAt: new Date().toISOString(),
-    };
-    agents[index] = updated;
-    await this.writeAgents(agents);
-    return updated;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((candidate) => candidate.id === id);
+      if (index === -1) throw new Error("Agent not found");
+      const updated: AgentRecord = {
+        ...agents[index],
+        name: trimmed,
+        lastActiveAt: new Date().toISOString(),
+      };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
   }
 
   /**
@@ -183,31 +193,7 @@ export class AgentRegistry {
   }
 
   private async writeAgents(agents: AgentRecord[]): Promise<void> {
-    await mkdir(path.dirname(this.registryFile), { recursive: true });
-    const payload = `${JSON.stringify(agents.map(agentToDisk), null, 2)}\n`;
-    // Windows 上 rename 覆盖可能因防病毒/索引器锁报 EPERM，加重试 + fallback
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const tmp = `${this.registryFile}.${process.pid}.${Date.now()}.${attempt}.tmp`;
-      await writeFile(tmp, payload, "utf8");
-      try {
-        await rename(tmp, this.registryFile);
-        return;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "EPERM" && attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-          continue;
-        }
-        // fallback：直接 writeFile 覆盖（非原子，但对小文件可靠）
-        try {
-          await writeFile(this.registryFile, payload, "utf8");
-          return;
-        } catch {
-          // 最终失败，抛出原始 rename 错误
-          throw error;
-        }
-      }
-    }
+    await atomicWriteJson(this.registryFile, agents.map(agentToDisk));
   }
 }
 

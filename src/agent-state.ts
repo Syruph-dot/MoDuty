@@ -137,6 +137,11 @@ export class AgentStateMachine {
     return this.transition(agentId, "error", undefined);
   }
 
+  /** 用户取消 / 连接断开：直接回到 idle（不留 error、不触发 completed 轮转） */
+  cancel(agentId: string): AgentStateEvent | null {
+    return this.transition(agentId, "idle", undefined);
+  }
+
   /** 审批决策：approved → running；rejected → idle */
   decide(agentId: string, decision: "approved" | "rejected"): AgentStateEvent | null {
     if (this.getState(agentId)?.state !== "waiting_approval") {

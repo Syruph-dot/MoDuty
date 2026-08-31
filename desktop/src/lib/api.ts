@@ -88,6 +88,22 @@ export async function deleteAgent(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`${base}/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }), "DELETE /api/agents/:id");
 }
 
+/**
+ * 显式取消该 agent 正在进行的 chat 流（停止按钮）。返回是否命中活跃流。
+ * 任务被中止后，会话里对应的流式消息会标记为 stopped。
+ */
+export async function cancelAgentChat(agentId: string): Promise<boolean> {
+  try {
+    const base = await awaitApiBase();
+    const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/chat/cancel`, { method: "POST" });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { cancelled?: boolean };
+    return Boolean(data.cancelled);
+  } catch {
+    return false; // 后端不可达时静默：前端已本地 abort，连接会随 fetch 取消而释放
+  }
+}
+
 export async function renameAgent(id: string, name: string): Promise<Agent> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(

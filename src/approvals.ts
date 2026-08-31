@@ -1,8 +1,9 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+import { atomicWriteJson, withFileLock } from "./write-queue.js";
 import { appendTraceEvent, sanitizeDisplayText, sha256 } from "./trace.js";
 
 /** 并发防护：同一审批同时被多个请求决定时，只允许一个通过读-写窗口 */
@@ -99,9 +100,11 @@ export class ApprovalStore {
   }
 
   async runApproved(command: string, cwd: string): Promise<ShellRunResult> {
-    const parsed = parseExecutableCommand(command);
-    if (!parsed) throw new ApprovalError("Approved command contains unsupported shell control syntax");
-    return await this.run(parsed.command, parsed.args, cwd);
+    // 人工批准的命令原样经系统 shell 执行（测试期：不限制控制语法 / PowerShell）。
+    // 仍走 this.run（沙箱开启时即为沙箱执行器），确保在沙箱内运行。
+    const rawCommand = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
+    const rawArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
+    return await this.run(rawCommand, rawArgs, cwd);
   }
 
   async decide(id: string, decision: "approved" | "rejected", operator: string): Promise<PendingApproval> {
@@ -147,7 +150,9 @@ export class ApprovalStore {
   }
 
   private filePath(): string { return path.join(this.workspace, "pending_approvals.json"); }
-  private async save(records: PendingApproval[]): Promise<void> { await writeFile(this.filePath(), `${JSON.stringify(records, null, 2)}\n`, "utf8"); }
+  private async save(records: PendingApproval[]): Promise<void> {
+    await withFileLock(this.filePath(), () => atomicWriteJson(this.filePath(), records));
+  }
 }
 
 export function createApprovalExecutionEvent(record: PendingApproval): ApprovalExecutionEvent {

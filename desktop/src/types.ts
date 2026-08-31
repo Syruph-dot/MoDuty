@@ -48,3 +48,38 @@ export interface AgentStateEvent {
   phase?: AgentPhase;
   context_stats?: ContextStats | null;
 }
+
+/* ============================================================
+   桌面 widget（HTML 组件磁贴）：RingClock 等
+   - 与 agent 磁贴平级，但永远 free 态、无 opened 生命周期、无 back
+   - 几何复用 persistTiles（key 用 widget: 前缀）
+   ============================================================ */
+
+/** 已注册的 widget 种类 id */
+export type WidgetKind = "ringclock";
+
+/** 单个 widget 实例（磁贴墙上的一个具体卡片） */
+export interface WidgetInstance {
+  id: string;
+  kind: WidgetKind;
+  title: string;
+  geometry: TileGeometry;
+}
+
+/** widget 静态定义（注册表条目）：展示用 metadata + 渲染器工厂 */
+export interface WidgetDefinition {
+  kind: WidgetKind;
+  /** 选择卡上显示的名字 */
+  name: string;
+  /** 选择卡上显示的一行描述 */
+  description: string;
+  /** 新建实例的默认标题（可被用户改名） */
+  defaultTitle: string;
+  /** 默认几何（首次落位用） */
+  defaultGeometry: TileGeometry;
+  /** 渲染「磁贴正面内容」的工厂（返回 React 节点） */
+  renderBody: () => import("react").ReactNode;
+}
+
+/** kind → WidgetDefinition 的注册表 */
+export type WidgetRegistry = Record<WidgetKind, WidgetDefinition>;

@@ -585,6 +585,15 @@
   background: rgba(255, 255, 255, 0.07);
 }
 
+.btn--stop {
+  background: #e85a5a;
+  color: #fff;
+}
+
+.btn--stop:hover {
+  background: #f06a6a;
+}
+
 /* ---- 壁纸选择弹窗 ---- */
 
 .wallpaper-dialog {
@@ -956,4 +965,141 @@
 .tile-font-reset {
   flex: none;
   align-self: flex-end;
+}
+
+/* ================================================================
+   Widget 磁贴（RingClock 等 HTML 组件卡片）
+   - 永远 free 态，无 opened 生命周期、无 back
+   - 与 agent 磁贴共用 .tile-shell 壳与 resize 把手
+   ================================================================ */
+
+.widget-tile {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  color: #e8edf7;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 10px 24px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.widget-tile__title {
+  flex: none;
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(232, 237, 247, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-tile__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px 10px;
+}
+
+/* ---- RingClock 组件 ---- */
+
+.clock-widget {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.clock-widget__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.clock-widget__bg {
+  fill: none;
+  stroke: #222b45;
+}
+
+.clock-widget__value {
+  fill: none;
+  stroke-linecap: round;
+}
+
+/* ================================================================
+   Widget 选择器卡片（Add widget）
+   - 非前景：无全屏 backdrop，不拦截桌面点击
+   - 非阻挡式：浮在光标附近，桌面磁贴仍可拖拽 / 右键
+   ================================================================ */
+
+.widget-picker {
+  position: fixed;
+  z-index: 1150;
+  width: 240px;
+  padding: 10px;
+  background: rgba(22, 28, 42, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.widget-picker__title {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(232, 237, 247, 0.55);
+  padding: 2px 4px;
+}
+
+.widget-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.widget-picker__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 10px;
+  font: inherit;
+  text-align: left;
+  color: #e8edf7;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.widget-picker__item:hover {
+  background: rgba(79, 140, 255, 0.16);
+  border-color: rgba(79, 140, 255, 0.4);
+}
+
+.widget-picker__name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.widget-picker__desc {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
 }

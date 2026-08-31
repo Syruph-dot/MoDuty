@@ -5,6 +5,7 @@ import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
 import { checkHasPendingApproval, orchestrationOf } from "./agent-orchestration.js";
+import { abortChatStreamByAgent, registerChatStream, unregisterChatStream } from "./chat-streams.js";
 import { agentToSnake, chatToSnake } from "./serialization.js";
 
 /**
@@ -90,6 +91,16 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // 显式取消该 agent 的活跃 chat 流（前端停止按钮调用）
+  const agentChatCancelMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/chat\/cancel$/);
+  if (agentChatCancelMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentChatCancelMatch[1] ?? ""));
+    const cancelled = abortChatStreamByAgent(record.id);
+    json(response, 200, { cancelled });
+    return true;
+  }
+
   const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
   if (agentMatch && request.method === "GET") {
     const runtime = ensureAgents(ctx);
@@ -142,8 +153,12 @@ async function streamAgentChat(
     ...corsHeaders(),
   });
   const controller = new AbortController();
-  // 不在 response close 时 abort：前端断开（如切回磁贴态）不应中止后端 chat 流
-  // 后端 chat 流会在 response.end()（finally 块）时自然结束
+  const streamId = `chat-${record.id}-${Date.now()}`;
+  registerChatStream(streamId, { agentId: record.id, controller, response });
+  // 连接只是在线投影：agent 输出已由 agent.chat 流式写入会话日志，
+  // 客户端断开/收起磁贴**不中止任务**（任务与连接解耦）。
+  // 显式停止走 POST /api/agents/:id/chat/cancel（abort）或服务退出。
+  // 任务结束（finally）时才从注册表移除，保证 cancel/退出仍能找到它。
   try {
     const result = await agent.chat({
       message,
@@ -160,9 +175,19 @@ async function streamAgentChat(
     }
     sseData(response, { type: "done", ...chatToSnake(result) });
   } catch (error) {
-    machine.fail(record.id);
-    sseData(response, { type: "error", error: error instanceof Error ? error.message : String(error) });
+    if (error instanceof Error && error.name === "AbortError") {
+      // 显式停止：回 idle（agent.chat 已把流式消息标记为 stopped）
+      machine.cancel(record.id);
+    } else {
+      machine.fail(record.id);
+      sseData(response, { type: "error", error: error instanceof Error ? error.message : String(error) });
+    }
   } finally {
-    response.end();
+    unregisterChatStream(streamId);
+    try {
+      response.end();
+    } catch {
+      // 响应已关闭，忽略
+    }
   }
 }

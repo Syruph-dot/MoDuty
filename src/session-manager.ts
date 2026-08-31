@@ -1,6 +1,8 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { atomicWrite, atomicWriteJson, withFileLock } from "./write-queue.js";
+
 export interface SessionRecord {
   id: string;
   name: string;
@@ -53,11 +55,13 @@ export class SessionManager {
       messageCount: 0,
       lastMessageAt: now,
     };
-    const sessions = await this.listSessions();
-    sessions.unshift(session);
-    await this.writeSessions(sessions);
-    await this.writeMessages(session.id, []);
-    return session;
+    return await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions();
+      sessions.unshift(session);
+      await this.writeSessions(sessions);
+      await this.writeMessages(session.id, []);
+      return session;
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
@@ -65,14 +69,16 @@ export class SessionManager {
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const sessions = await this.listSessions();
-    const filtered = sessions.filter((session) => session.id !== sessionId);
-    if (filtered.length === sessions.length) {
-      return false;
-    }
-    await this.writeSessions(filtered);
-    await rm(path.dirname(this.messagesPath(sessionId)), { recursive: true, force: true });
-    return true;
+    return await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions();
+      const filtered = sessions.filter((session) => session.id !== sessionId);
+      if (filtered.length === sessions.length) {
+        return false;
+      }
+      await this.writeSessions(filtered);
+      await rm(path.dirname(this.messagesPath(sessionId)), { recursive: true, force: true });
+      return true;
+    });
   }
 
   async addMessage(sessionId: string, role: string, content: string, extra: Record<string, unknown> = {}): Promise<SessionMessage> {
@@ -85,14 +91,104 @@ export class SessionManager {
       ...extra,
     };
     messages.push(message);
-    await this.writeMessages(sessionId, messages);
-    await this.updateSession(sessionId, {
-      messageCount: messages.length,
-      lastMessageAt: message.timestamp,
+    return await withFileLock(this.messagesPath(sessionId), async () => {
+      const all = await this.getMessages(sessionId, null);
+      all.push(message);
+      await this.writeMessages(sessionId, all);
+      await this.updateSession(sessionId, {
+        messageCount: all.length,
+        lastMessageAt: message.timestamp,
+      });
+      // 自包含明文 transcript 随消息增量重写，供 rg 检索与 read_session 区间读取。
+      await this.regenerateTranscript(sessionId).catch(() => undefined);
+      return message;
     });
-    // 自包含明文 transcript 随消息增量重写，供 rg 检索与 read_session 区间读取。
-    await this.regenerateTranscript(sessionId).catch(() => undefined);
+  }
+
+  // ===== 流式消息（agent 输出随 token 增量落盘；连接只是在线投影）=====
+  // 防抖缓冲：避免每个 token 都全量读写一次磁盘。
+  private readonly streamTimers = new Map<string, NodeJS.Timeout>();
+  private readonly streamPending = new Map<string, { messageId: string; pending: string }>();
+
+  /** 开始一条流式 agent 消息：先落盘空消息（status=streaming），返回消息 id */
+  async beginStreamingMessage(sessionId: string): Promise<SessionMessage> {
+    const message: SessionMessage = {
+      id: shortId("msg"),
+      role: "agent",
+      content: "",
+      timestamp: new Date().toISOString(),
+      status: "streaming",
+    };
+    await withFileLock(this.messagesPath(sessionId), async () => {
+      const messages = await this.getMessages(sessionId, null);
+      messages.push(message);
+      await this.writeMessages(sessionId, messages);
+    });
     return message;
+  }
+
+  /** 增量追加流式内容（防抖合并写；调用方按 token 回调即可，无需关心频率） */
+  appendStreamingMessage(sessionId: string, messageId: string, delta: string): void {
+    const entry = this.streamPending.get(sessionId) ?? { messageId, pending: "" };
+    entry.pending += delta;
+    this.streamPending.set(sessionId, entry);
+    if (this.streamTimers.has(sessionId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void this.flushStreamingBuffer(sessionId);
+    }, 200);
+    this.streamTimers.set(sessionId, timer);
+  }
+
+  private async flushStreamingBuffer(sessionId: string): Promise<void> {
+    const timer = this.streamTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.streamTimers.delete(sessionId);
+    }
+    const entry = this.streamPending.get(sessionId);
+    if (!entry) {
+      return;
+    }
+    this.streamPending.delete(sessionId);
+    if (!entry.pending) {
+      return;
+    }
+    await withFileLock(this.messagesPath(sessionId), () =>
+      this.flushStreamingBufferLocked(sessionId, entry.messageId, entry.pending),
+    );
+  }
+
+  /** flush 的锁内实现（假定调用方已持有 messagesPath 锁） */
+  private async flushStreamingBufferLocked(sessionId: string, messageId: string, pending: string): Promise<void> {
+    const messages = await this.getMessages(sessionId, null);
+    const message = messages.find((m) => m.id === messageId);
+    if (!message) {
+      return;
+    }
+    message.content += pending;
+    await this.writeMessages(sessionId, messages);
+  }
+
+  /** 收尾流式消息：落完整段、更新会话元数据与 transcript。status 默认 done，可传 stopped/error */
+  async finishStreamingMessage(sessionId: string, messageId: string, extra: Record<string, unknown> = {}): Promise<void> {
+    await this.flushStreamingBuffer(sessionId);
+    await withFileLock(this.messagesPath(sessionId), async () => {
+      const messages = await this.getMessages(sessionId, null);
+      const message = messages.find((m) => m.id === messageId);
+      if (!message) {
+        return;
+      }
+      Object.assign(message, extra);
+      message.status = (extra.status as string | undefined) ?? "done";
+      await this.writeMessages(sessionId, messages);
+      await this.updateSession(sessionId, {
+        messageCount: messages.length,
+        lastMessageAt: message.timestamp,
+      });
+      await this.regenerateTranscript(sessionId).catch(() => undefined);
+    });
   }
 
   async getMessages(sessionId: string, limit: number | null = 200): Promise<SessionMessage[]> {
@@ -149,8 +245,7 @@ export class SessionManager {
       lines.push("");
     });
     const filePath = this.transcriptPath(sessionId);
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, lines.join("\n"), "utf8");
+    await withFileLock(filePath, () => atomicWrite(filePath, lines.join("\n")));
   }
 
   /** 检视会话元数据（句柄层，不返回历史内容）。 */
@@ -267,9 +362,11 @@ export class SessionManager {
   }
 
   private async updateSession(sessionId: string, updates: Partial<SessionRecord>): Promise<void> {
-    const sessions = await this.listSessions();
-    const updated = sessions.map((session) => session.id === sessionId ? { ...session, ...updates } : session);
-    await this.writeSessions(updated);
+    await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions();
+      const updated = sessions.map((session) => session.id === sessionId ? { ...session, ...updates } : session);
+      await this.writeSessions(updated);
+    });
   }
 
   private messagesPath(sessionId: string): string {
@@ -278,13 +375,11 @@ export class SessionManager {
 
   private async writeMessages(sessionId: string, messages: SessionMessage[]): Promise<void> {
     const filePath = this.messagesPath(sessionId);
-    await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, `${JSON.stringify(messages.map(messageToDisk), null, 2)}\n`, "utf8");
+    await atomicWriteJson(filePath, messages.map(messageToDisk));
   }
 
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {
-    await mkdir(this.sessionsDir, { recursive: true });
-    await writeFile(this.sessionsFile, `${JSON.stringify(sessions.map(sessionToDisk), null, 2)}\n`, "utf8");
+    await atomicWriteJson(this.sessionsFile, sessions.map(sessionToDisk));
   }
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { awaitApiBase } from "../lib/api";
+import { awaitApiBase, cancelAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
 import { useAgentsStore } from "../state/agentsStore";
@@ -10,6 +10,8 @@ interface StoredMessage {
   role: string;
   content: string;
   timestamp: string;
+  /** 流式消息状态：streaming / done / stopped / error（缺省 = 已完成的旧消息） */
+  status?: string;
   toolCalls?: Array<{ tool: string; args: string; result: string }>;
 }
 
@@ -35,6 +37,7 @@ interface DisplayMessage {
   key: string;
   role: "user" | "agent" | "tool";
   content: string;
+  status?: string;
   toolCard?: {
     name: string;
     args: string;
@@ -65,6 +68,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  /** 后台流式任务的轮询刷新器（重开窗口时跟随流式落盘） */
+  const pollTimerRef = useRef<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const mirrorRef = useRef<HTMLSpanElement>(null);
@@ -73,26 +78,64 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [mentionX, setMentionX] = useState(0);
   const load = useAgentsStore((state) => state.load);
 
-  const reloadMessages = async () => {
-    const base = await awaitApiBase();
-    const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/messages`);
-    if (!res.ok) {
+  const reloadMessages = async (): Promise<StoredMessage[]> => {
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/messages`);
+      if (!res.ok) {
+        return [];
+      }
+      const data = (await res.json()) as { messages: StoredMessage[] };
+      setMessages(
+        data.messages.map((message) => ({
+          key: `${message.timestamp}-${message.role}`,
+          role: message.role === "user" ? "user" : "agent",
+          content: message.content,
+          status: message.status,
+        })),
+      );
+      return data.messages;
+    } catch {
+      return [];
+    }
+  };
+
+  const stopPolling = (): void => {
+    if (pollTimerRef.current !== null) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  /** 若有流式消息：显示停止按钮 + 开启轻量轮询，跟随后台流式写日志 */
+  const followBackgroundStream = async (): Promise<void> => {
+    const msgs = await reloadMessages();
+    if (!msgs.some((message) => message.status === "streaming")) {
       return;
     }
-    const data = (await res.json()) as { messages: StoredMessage[] };
-    setMessages(
-      data.messages.map((message) => ({
-        key: `${message.timestamp}-${message.role}`,
-        role: message.role === "user" ? "user" : "agent",
-        content: message.content,
-      })),
-    );
+    setStreaming(true);
+    if (pollTimerRef.current !== null) {
+      return;
+    }
+    pollTimerRef.current = window.setInterval(() => {
+      void (async () => {
+        const latest = await reloadMessages();
+        if (!latest.some((message) => message.status === "streaming")) {
+          stopPolling();
+          setStreaming(false);
+        }
+      })();
+    }, 2500);
   };
 
   useEffect(() => {
-    void reloadMessages();
-    // 组件卸载时不再 abort 后端 chat 流（避免从展开态切回磁贴态时中止正在进行的任务）
-    return undefined;
+    void followBackgroundStream();
+    // 收起磁贴（卸载）= 只释放本地连接，task 在服务端继续流式写日志、后台跑完；
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      stopPolling();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
@@ -214,6 +257,15 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     }, 3000);
   };
 
+  /** 中止当前 chat（■ 停止按钮）：本地释放连接 + 通知后端停掉任务本体 */
+  const cancelCurrent = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    stopPolling();
+    void cancelAgentChat(agent.id);
+    setStreaming(false);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || streaming) {
@@ -223,8 +275,11 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     setStreamError(null);
     setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: text }]);
     setStreaming(true);
+    stopPolling(); // 有后台轮询时先停掉，由 SSE 接管实时更新
     const controller = new AbortController();
     abortRef.current = controller;
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无响应视为超时
+    const combinedSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     let currentAgentKey = `agent-${Date.now()}`;
     setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
     try {
@@ -281,15 +336,21 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             setMessages((prev) => prev.filter((m) => !(m.role === "agent" && m.content === "")));
           },
         },
-        controller.signal,
+        combinedSignal,
       );
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        setStreamError("请求超时（5 分钟无响应），已取消");
+        void cancelAgentChat(agent.id);
+      } else if (!(error instanceof DOMException && error.name === "AbortError")) {
         setStreamError(error instanceof Error ? error.message : String(error));
         setMessages((prev) => prev.filter((message) => message.key !== currentAgentKey || message.content !== ""));
       }
     } finally {
       setStreaming(false);
+      stopPolling();
+      // 若连接异常但后端任务仍在流式落盘，重新接入轮询跟随（后台恢复场景）
+      void followBackgroundStream();
     }
   };
 
@@ -403,8 +464,15 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           disabled={streaming}
           aria-label="消息输入"
         />
-        <button type="button" className="btn btn--primary" onClick={() => void send()} disabled={streaming || !input.trim()}>
-          {streaming ? "…" : "发送"}
+        <button
+          type="button"
+          className={streaming ? "btn btn--stop" : "btn btn--primary"}
+          onClick={streaming ? cancelCurrent : () => void send()}
+          disabled={!streaming && !input.trim()}
+          aria-label={streaming ? "停止生成" : "发送"}
+          title={streaming ? "停止本次生成" : "发送"}
+        >
+          {streaming ? "■ 停止" : "发送"}
         </button>
       </footer>
     </div>

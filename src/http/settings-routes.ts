@@ -23,7 +23,7 @@ export async function handleSettingsRoutes(
     return true;
   }
   if (request.method === "GET" && url.pathname === "/api/config") {
-    const diagnostics = describeEnvProviderDiagnostics();
+    const diagnostics = await describeEnvProviderDiagnostics();
     json(response, 200, {
       info: {
         provider: diagnostics.provider,

@@ -4,7 +4,7 @@ import path from "node:path";
 import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore } from "./memory.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
@@ -16,7 +16,7 @@ import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
-import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent } from "./types.js";
+import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; workspaceManager?: WorkspaceManager; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
@@ -91,15 +91,47 @@ export class MomokaAgentCore implements MomokaAgent {
     }
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const topic = request.topic?.trim() || message.slice(0, 80);
-    const result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
-      systemPrompt: await this.buildSystemPrompt({ workDir, topic, message, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
-      onEvent: request.onEvent, signal: request.signal,
-      sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
-    });
+    // 流式落盘：agent 输出随 token 增量写入会话日志。
+    // 连接只是在线投影——前端断开/收起磁贴不影响写入，重开窗口即读到进行中内容。
+    let streamingMessage: SessionMessage | null = null;
+    if (sessionId) {
+      streamingMessage = await this.sessionManager.beginStreamingMessage(sessionId);
+    }
+    const onEvent = (event: StreamEvent): void => {
+      if (event.type === "token" && streamingMessage && sessionId) {
+        this.sessionManager.appendStreamingMessage(sessionId, streamingMessage.id, event.text);
+      }
+      request.onEvent?.(event);
+    };
+    let result: ModelRunResult;
+    try {
+      result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
+        systemPrompt: await this.buildSystemPrompt({ workDir, topic, message, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+        onEvent, signal: request.signal,
+        sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
+      });
+    } catch (error) {
+      // 收尾标记：主动停止→stopped，其他异常→error（原异常继续抛给路由层）
+      if (sessionId && streamingMessage) {
+        await this.sessionManager
+          .finishStreamingMessage(sessionId, streamingMessage.id, {
+            status: error instanceof Error && error.name === "AbortError" ? "stopped" : "error",
+          })
+          .catch(() => undefined);
+      }
+      throw error;
+    }
     await this.recordRunUsage(result, sessionId);
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
-    if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });
+    if (sessionId && streamingMessage) {
+      await this.sessionManager.finishStreamingMessage(sessionId, streamingMessage.id, {
+        outputId,
+        toolCalls: result.toolCalls ?? [],
+      });
+    } else if (sessionId) {
+      await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });
+    }
     await saveRunSnapshot({ runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
       await appendTraceEvent(tracePath, "snapshot_failed", { message: error instanceof Error ? error.message : String(error) });
     });

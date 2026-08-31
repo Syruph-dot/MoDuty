@@ -201,13 +201,8 @@ export async function runShellTool(
   approvals = createDefaultApprovalStore(requireWorkspace(input.workDir)),
 ): Promise<string> {
   const workspace = requireWorkspace(input.workDir);
-  if (isPowerShellCommand(input.command)) {
-    return "Error: PowerShell commands are not allowed. Use cmd.exe-compatible command syntax.";
-  }
-  if (hasUnsafeCommandPath(input.command)) {
-    return "Error: Use the workspace field for target directories; command must not contain absolute paths or traversal.";
-  }
   if (!parseWhitelistedCommand(input.command)) {
+    // 白名单之外一律人工审批（测试期：不对语法/路径形式做硬拒绝）
     const approval = await approvals.request({
       targetWorkspace: workspace,
       toolName: "run_shell",
@@ -337,7 +332,7 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "run_shell",
-      description: "Run a cmd.exe-compatible allow-listed command or request human approval for another command. PowerShell and pwsh commands are not allowed.",
+      description: "Run an allow-listed command automatically (npm test / dir / pytest / rg / ls), or have any other command executed after human approval once an approval is granted.",
       parameters: {
         type: "object",
         properties: { command: { type: "string", minLength: 1 }, workspace: { type: "string", minLength: 1 } },
@@ -463,12 +458,6 @@ export async function executeToolCall(
   }
   const sourceWorkspace = requireWorkspace(workDir);
   const targetWorkspace = resolveTargetWorkspace(sourceWorkspace, typeof args.workspace === "string" ? args.workspace : undefined);
-  if (name === "run_shell" && isPowerShellCommand(String(args.command ?? ""))) {
-    return "Error: PowerShell commands are not allowed. Use cmd.exe-compatible command syntax.";
-  }
-  if (name === "run_shell" && hasUnsafeCommandPath(String(args.command ?? ""))) {
-    return "Error: Use the workspace field for target directories; command must not contain absolute paths or traversal.";
-  }
   const toolName = name as ApprovalToolName;
   if (isApprovalTool(toolName) && targetWorkspace !== sourceWorkspace) {
     return await deferCrossWorkspaceTool(toolName, args, sourceWorkspace, targetWorkspace, tracePath, approvalOrigin);
@@ -576,16 +565,6 @@ function resolveTargetWorkspace(sourceWorkspace: string, requestedWorkspace: str
 
 function isApprovalTool(value: string): value is ApprovalToolName {
   return ["read_file", "list_files", "write_file", "append_file", "run_shell"].includes(value);
-}
-
-function isPowerShellCommand(command: string): boolean {
-  const executable = command.trim().split(/\s+/u, 1)[0] ?? "";
-  return /^(?:powershell|powershell\.exe|pwsh|pwsh\.exe)$/iu.test(executable);
-}
-
-function hasUnsafeCommandPath(command: string): boolean {
-  return command.trim().split(/\s+/u).some((token) => /^(?:[a-z]:|\\\\)/iu.test(token)
-    || /(?:^|[\\/])\.\.(?:[\\/]|$)/u.test(token));
 }
 
 async function deferCrossWorkspaceTool(

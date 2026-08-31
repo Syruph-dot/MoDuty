@@ -53,17 +53,18 @@ export interface ResolvedModelConfig {
   isZen: boolean;
 }
 
-/** 凭证解析优先级：显式参数 > 环境变量 > settings.json（.momoka/settings.json）> 默认值。
- *  供 HTTP 层（/api/settings、/api/models）与诊断展示使用；防腐边界：provider 细节不出本模块。 */
+/** 凭证解析优先级：显式参数 > settings.json（~/.momoka/settings.json）> 环境变量 > 默认值。
+ * settings 是用户在软件内配置的真相源（release/dev 一致）；环境变量仅作未配置时的开发兕底。
+ * 供 HTTP 层（/api/settings、/api/models）与诊断展示使用；防腐边界：provider 细节不出本模块。 */
 export async function resolveModelConfig(
   overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
 ): Promise<ResolvedModelConfig> {
   const settings = await loadSettings();
-  const apiKey = overrides.apiKey || process.env.OPENAI_API_KEY || settings.apiKey || "";
+  const apiKey = overrides.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
   const baseUrl = (
-    overrides.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
+    overrides.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
   ).replace(/\/+$/u, "");
-  const model = overrides.model || process.env.MOMOKA_MODEL || settings.model || "qwen-plus";
+  const model = overrides.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
   return { apiKey, baseUrl, model, isZen: ZEN_BASE_PATTERN.test(baseUrl) };
 }
 
@@ -76,26 +77,22 @@ export interface ProviderDiagnostics {
   model: string;
 }
 
-/** /api/config 的 provider 诊断（沿用环境变量视角，展示 OpenAI / OpenCode Zen 探测结果） */
-export function describeEnvProviderDiagnostics(): ProviderDiagnostics {
-  const baseUrl = process.env.OPENAI_BASE_URL ?? "";
-  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
-  const hasKey = Boolean(process.env.OPENAI_API_KEY);
-  const provider = isZen ? "OpenCode Zen" : (baseUrl ? "OpenAI (兼容)" : "未配置");
+/** /api/config 的 provider 诊断（基于最终生效配置：settings 优先、env 兕底） */
+export async function describeEnvProviderDiagnostics(): Promise<ProviderDiagnostics> {
+  const config = await resolveModelConfig();
+  const isZen = ZEN_BASE_PATTERN.test(config.baseUrl);
+  const hasKey = Boolean(config.apiKey);
+  const provider = isZen ? "OpenCode Zen" : (config.baseUrl ? "OpenAI (兼容)" : "未配置");
   const issues: string[] = [];
   if (!hasKey) {
-    if (isZen) {
-      issues.push("OpenCode Zen 需要 API key。请前往 https://opencode.ai/auth 注册免费账号，获取 API key 后设置 OPENAI_API_KEY。");
-    } else {
-      issues.push("API key 未配置。请设置 OPENAI_API_KEY 环境变量（或在本软件设置界面填写）。");
-    }
+    issues.push("API key 未配置。请在软件设置界面填写（保存在 ~/.momoka/settings.json），或临时设置 OPENAI_API_KEY 环境变量。");
   }
   return {
     provider,
     hasKey,
     issues,
-    keyPrefix: `${(process.env.OPENAI_API_KEY ?? "").slice(0, 8)}...`,
-    model: process.env.MOMOKA_MODEL ?? "qwen-plus",
+    keyPrefix: `${config.apiKey.slice(0, 8)}...`,
+    model: config.model,
   };
 }
 
@@ -132,15 +129,15 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
 
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
-      // 每次对话重新解析凭证：参数 > 环境变量 > 配置文件(.momoka/settings.json) > 默认值
+      // 每次对话重新解析凭证：参数 > 配置文件(.momoka/settings.json，软件内设置的真相源) > 环境变量 > 默认值
       // 这样软件内修改设置无需重启后端即可生效
       const settings = await loadSettings();
       const apiKey =
-        options.apiKey || process.env.OPENAI_API_KEY || settings.apiKey || "";
+        options.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
       const baseUrl = (
-        options.baseUrl || process.env.OPENAI_BASE_URL || settings.baseUrl || DEFAULT_DASHSCOPE
+        options.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
       ).replace(/\/+$/u, "");
-      const model = options.model || process.env.MOMOKA_MODEL || settings.model || "qwen-plus";
+      const model = options.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
       const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
       if (!apiKey && (baseUrl === DEFAULT_DASHSCOPE || isZen)) {

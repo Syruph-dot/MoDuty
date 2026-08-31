@@ -7,6 +7,7 @@ import { createMomokaAgent } from "./agent.js";
 import { AgentRegistry } from "./agent-registry.js";
 import { AgentStateMachine } from "./agent-state.js";
 import { createMomokaHttpHandler } from "./http.js";
+import { abortAllChatStreams } from "./http/chat-streams.js";
 import { createOpenAICompatibleModelClient } from "./model-client.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { defaultPaths, loadLocalEnvSync, resolveProjectRoot } from "./config.js";
@@ -83,7 +84,7 @@ function listenWithFallback(
           reject(
             new Error(
               `Port ${port} is already in use. Another MOMOKA server instance may still be running. ` +
-                `Stop the existing instance first (run-all.ps1 cleans port ${basePort}, or kill the process bound to ${port}) ` +
+                `Stop the existing instance first (run-all.ps1 / npm run dev cleans port ${basePort}, or kill the process bound to ${port}) ` +
                 `before starting a new one.`,
             ),
           );
@@ -103,20 +104,22 @@ function listenWithFallback(
             console.warn(`  警告: 写 port file 失败: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
           }
         }
-        // 注册进程退出时清理 port file
+        // 注册进程退出时清理 port file + 中止所有活跃 chat 流
         const cleanup = () => {
           if (!portFile) return;
           unlink(portFile).catch(() => undefined);
         };
+        const shutdown = () => {
+          const aborted = abortAllChatStreams();
+          if (aborted > 0) {
+            console.log(`已中止 ${aborted} 个活跃 chat 流`);
+          }
+          cleanup();
+          process.exit(0);
+        };
         process.once("exit", cleanup);
-        process.once("SIGINT", () => {
-          cleanup();
-          process.exit(0);
-        });
-        process.once("SIGTERM", () => {
-          cleanup();
-          process.exit(0);
-        });
+        process.once("SIGINT", shutdown);
+        process.once("SIGTERM", shutdown);
         resolve({ port, host });
       };
       server.once("error", onError);

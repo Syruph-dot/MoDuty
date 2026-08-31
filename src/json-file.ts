@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { readFile } from "node:fs/promises";
+
+import { atomicWriteJson, withFileLock } from "./write-queue.js";
 
 export async function readJsonList(filePath: string): Promise<Record<string, unknown>[]> {
   try {
@@ -22,13 +23,11 @@ export async function readJsonObject(filePath: string, fallback: Record<string, 
 }
 
 export async function writeJsonList(filePath: string, records: Record<string, unknown>[]): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(records, null, 2)}\n`, "utf8");
+  await withFileLock(filePath, () => atomicWriteJson(filePath, records));
 }
 
 export async function writeJsonObject(filePath: string, payload: Record<string, unknown>): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await withFileLock(filePath, () => atomicWriteJson(filePath, payload));
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

@@ -8,7 +8,7 @@ import {
 import { snapGeometry, type SnapGuide } from "../lib/snapController";
 import type { TileGeometry } from "../types";
 import { useSnapGuideStore } from "../state/snapGuideStore";
-import { useContextMenuStore } from "../state/contextMenuStore";
+import { useContextMenuStore, type ContextMenuItem } from "../state/contextMenuStore";
 import { useDialogStore } from "../state/dialogStore";
 import { useAgentsStore } from "../state/agentsStore";
 
@@ -54,6 +54,8 @@ interface TileShellProps {
   back?: ReactNode;
   /** 是否处于展开态 → 双面翻转 rotateY 0→180°（0~90° 显第一态，90~180° 显第二态） */
   flipped?: boolean;
+  /** 自定义右键菜单项；传入时覆盖默认（agent）菜单。用于 widget 等非 agent 磁贴。 */
+  contextMenuItems?: ContextMenuItem[];
 }
 
 /** 开合动画统一速度曲线：无加速仅减速（先快后慢） */
@@ -147,6 +149,7 @@ export default function TileShell({
   children,
   back,
   flipped = false,
+  contextMenuItems,
 }: TileShellProps) {
   const showContextMenu = useContextMenuStore((state) => state.show);
   const openRename = useDialogStore((state) => state.openRename);
@@ -257,7 +260,12 @@ export default function TileShell({
     if (mode === "expanded") return;
     event.preventDefault();
     event.stopPropagation();
-    const items: Parameters<typeof showContextMenu>[1] = [
+    // 调用方自定义菜单优先（widget 等非 agent 磁贴）
+    if (contextMenuItems) {
+      showContextMenu({ x: event.clientX, y: event.clientY }, contextMenuItems);
+      return;
+    }
+    const items: ContextMenuItem[] = [
       {
         id: "rename-agent",
         label: "重命名 Agent",

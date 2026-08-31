@@ -122,6 +122,26 @@ export class AgentRegistry {
     });
   }
 
+  /** 更新某 Agent 的最近一次运行耗时（每次 chat 结束时写入） */
+  async updateLastRun(agentId: string, durationMs: number): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      let updated: AgentRecord | null = null;
+      const next = agents.map((agent) => {
+        if (agent.id !== agentId) {
+          return agent;
+        }
+        updated = { ...agent, lastRunDurationMs: durationMs, lastActiveAt: new Date().toISOString() };
+        return updated;
+      });
+      if (!updated) {
+        return null;
+      }
+      await this.writeAgents(next);
+      return updated;
+    });
+  }
+
   /** 更新某 Agent 的上下文占用指标（每次模型调用后写入） */
   async updateContextStats(agentId: string, stats: ContextStats): Promise<AgentRecord | null> {
     return await withFileLock(this.registryFile, async () => {
@@ -207,6 +227,7 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
     sessionId: agent.sessionId,
     state: agent.state,
     ...(agent.phase ? { phase: agent.phase } : {}),
+    ...(typeof agent.lastRunDurationMs === "number" ? { lastRunDurationMs: agent.lastRunDurationMs } : {}),
     ...(agent.contextStats ? { contextStats: agent.contextStats } : {}),
     createdAt: agent.createdAt,
     lastActiveAt: agent.lastActiveAt,
@@ -224,6 +245,9 @@ function agentFromDisk(value: unknown): AgentRecord {
     sessionId: String(raw.sessionId ?? ""),
     state: (typeof raw.state === "string" ? raw.state : "idle") as AgentState,
     ...(raw.phase ? { phase: String(raw.phase) as AgentPhase } : {}),
+    ...(typeof raw.lastRunDurationMs === "number"
+      ? { lastRunDurationMs: Number(raw.lastRunDurationMs) }
+      : {}),
     ...(typeof raw.contextStats === "object" && raw.contextStats !== null
       ? {
           contextStats: {

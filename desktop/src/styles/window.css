@@ -111,7 +111,7 @@
 .msg__bubble {
   max-width: min(660px, 78%);
   padding: 11px 15px;
-  border-radius: 12px 12px 12px 4px;
+  border-radius: 0;
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -123,7 +123,7 @@
 .msg--user .msg__bubble {
   background: rgba(47, 111, 224, 0.7);
   border-color: rgba(79, 140, 255, 0.4);
-  border-radius: 12px 12px 4px 12px;
+  border-radius: 0;
 }
 
 /* agent 气泡渲染 Markdown：交给标记自己控制换行/段落 */
@@ -421,6 +421,35 @@
 
 .agent-window__input:disabled {
   opacity: 0.6;
+}
+
+/* ---- 非运行态输出操作条（重试 / 运行时间 / 复制输出） ---- */
+
+.agent-window__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 14px 12px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+}
+
+.btn--sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.agent-window__run-time {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.55);
+  white-space: nowrap;
+}
+
+.agent-window__actions-spacer {
+  flex: 1;
 }
 
 /* ---- 审批面板 ---- */

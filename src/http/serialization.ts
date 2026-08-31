@@ -91,6 +91,7 @@ export function agentToSnake(record: AgentRecord, session: SessionRecord | null)
     session_id: record.sessionId,
     state: record.state,
     phase: record.phase ?? null,
+    last_run_duration_ms: record.lastRunDurationMs ?? null,
     ...(record.contextStats ? { context_stats: contextStatsToSnake(record.contextStats) } : {}),
     created_at: record.createdAt,
     last_active_at: record.lastActiveAt,

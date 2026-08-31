@@ -104,6 +104,21 @@ export async function cancelAgentChat(agentId: string): Promise<boolean> {
   }
 }
 
+/**
+ * 显式复位非运行态（窗口"重试"第一步）：error / waiting_approval / completed → idle。
+ * running 时后端忽略（返回 success），前端不依赖返回值。
+ */
+export async function resetAgentChat(agentId: string): Promise<boolean> {
+  try {
+    const base = await awaitApiBase();
+    const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/chat/reset`, { method: "POST" });
+    if (!res.ok) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function renameAgent(id: string, name: string): Promise<Agent> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
@@ -151,11 +166,15 @@ export async function updateSettings(input: {
   );
 }
 
-/** 按当前 Base URL + Key 从官方拉取模型列表（走后端代理，避免 webview CORS） */
-export async function fetchModels(): Promise<string[]> {
+/** 按当前 Base URL + Key 从官方拉取模型列表；overrides 用当前表单未保存的新值覆盖（走后端代理，避免 webview CORS） */
+export async function fetchModels(overrides?: { baseUrl?: string; apiKey?: string }): Promise<string[]> {
   const base = await awaitApiBase();
+  const params = new URLSearchParams();
+  if (overrides?.baseUrl?.trim()) params.set("base_url", overrides.baseUrl.trim());
+  if (overrides?.apiKey?.trim()) params.set("api_key", overrides.apiKey.trim());
+  const qs = params.toString();
   const data = (await jsonOrThrow(
-    await fetch(`${base}/api/models`),
+    await fetch(`${base}/api/models${qs ? `?${qs}` : ""}`),
     "GET /api/models",
   )) as { models: string[] };
   return data.models ?? [];

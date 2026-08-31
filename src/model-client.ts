@@ -256,14 +256,11 @@ async function callModelRound(options: {
   };
   if (stream) payload.stream = true;
 
-  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
   const headers: Record<string, string> = { "content-type": "application/json" };
+  // 统一 OpenAI 兼容鉴权：opencode Zen 的 /zen/v1/chat/completions 也是 openai-compatible
+  // （x-api-key 不会被识别，会回 Missing API key）。
   if (apiKey) {
-    if (isZen) {
-      headers["x-api-key"] = apiKey;
-    } else {
-      headers["authorization"] = `Bearer ${apiKey}`;
-    }
+    headers["authorization"] = `Bearer ${apiKey}`;
   }
 
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {

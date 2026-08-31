@@ -101,6 +101,16 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // 显式复位（窗口"重试"第一步）：error / waiting_approval / completed → idle；running 不动。
+  const agentChatResetMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/chat\/reset$/);
+  if (agentChatResetMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentChatResetMatch[1] ?? ""));
+    runtime.machine.reset(record.id); // 转移经 wireAgentStatePersistence 自动落盘 state=idle
+    json(response, 200, { success: true });
+    return true;
+  }
+
   const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
   if (agentMatch && request.method === "GET") {
     const runtime = ensureAgents(ctx);
@@ -146,6 +156,7 @@ async function streamAgentChat(
   message: string,
 ): Promise<void> {
   const { agent, machine, workspaces } = orchestrationOf(ctx);
+  const startedAt = Date.now(); // 运行耗时：无论正常结束/异常/取消都记一次
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
@@ -184,6 +195,8 @@ async function streamAgentChat(
     }
   } finally {
     unregisterChatStream(streamId);
+    // 记录本次运行耗时（不阻塞响应；写队列串行落盘）
+    void orchestrationOf(ctx).registry.updateLastRun(record.id, Date.now() - startedAt).catch(() => undefined);
     try {
       response.end();
     } catch {

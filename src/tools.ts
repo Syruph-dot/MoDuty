@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from "./approvals.js";
+import { isFullyAutomatic } from "./permission-mode.js";
 import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
 import { isSandboxEnabled } from "./settings.js";
@@ -202,6 +203,15 @@ export async function runShellTool(
 ): Promise<string> {
   const workspace = requireWorkspace(input.workDir);
   if (!parseWhitelistedCommand(input.command)) {
+    // 完全自动模式：非白名单命令直接放行执行（不再产生人工审批）
+    if (isFullyAutomatic()) {
+      try {
+        const autoResult = await approvals.runApproved(input.command, workspace);
+        return [autoResult.stdout, autoResult.stderr].filter(Boolean).join("\n") || `Command exited with code ${autoResult.code}`;
+      } catch (error) {
+        return formatToolError(error, "执行命令失败");
+      }
+    }
     // 白名单之外一律人工审批（测试期：不对语法/路径形式做硬拒绝）
     const approval = await approvals.request({
       targetWorkspace: workspace,
@@ -580,6 +590,10 @@ async function deferCrossWorkspaceTool(
   const args = Object.fromEntries(Object.entries(rawArgs)
     .filter(([key]) => key !== "workspace")
     .map(([key, value]) => [key, String(value)]));
+  // 完全自动模式：跨工作区操作直接执行（不再产生人工审批）
+  if (isFullyAutomatic()) {
+    return await executeApprovedToolCall(toolName, args, targetWorkspace);
+  }
   const approval = await new ApprovalStore(sourceWorkspace).request({ targetWorkspace, toolName, args, tracePath, ...approvalOrigin });
   return `Cross-workspace operation pending approval: ${approval.id}`;
 }

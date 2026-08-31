@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
+import { decodeCommandOutput } from "./exec-encoding.js";
 import type { ShellRunResult, ShellRunner } from "./approvals.js";
 import type { WorkspaceManifest } from "./tools.js";
 
@@ -124,8 +125,8 @@ function runInSandbox(command: string, args: string[], cwd: string, timeoutMs: n
       child.kill("SIGKILL");
       resolve({
         code: 124,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: `${Buffer.concat(stderr).toString("utf8")}\n[timeout after ${timeoutMs}ms]`,
+        stdout: decodeCommandOutput(Buffer.concat(stdout)),
+        stderr: `${decodeCommandOutput(Buffer.concat(stderr))}\n[timeout after ${timeoutMs}ms]`,
       });
     }, timeoutMs);
 
@@ -143,8 +144,8 @@ function runInSandbox(command: string, args: string[], cwd: string, timeoutMs: n
       clearTimeout(timer);
       resolve({
         code: code ?? 1,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
+        stdout: decodeCommandOutput(Buffer.concat(stdout)),
+        stderr: decodeCommandOutput(Buffer.concat(stderr)),
       });
     });
   });

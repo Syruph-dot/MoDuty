@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+import { decodeCommandOutput } from "./exec-encoding.js";
 import { atomicWriteJson, withFileLock } from "./write-queue.js";
 import { appendTraceEvent, sanitizeDisplayText, sha256 } from "./trace.js";
 
@@ -209,7 +210,7 @@ function runAllowedCommand(command: string, args: string[], cwd: string): Promis
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.once("error", reject);
-    child.once("close", (code) => resolve({ code: code ?? 1, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
+    child.once("close", (code) => resolve({ code: code ?? 1, stdout: decodeCommandOutput(Buffer.concat(stdout)), stderr: decodeCommandOutput(Buffer.concat(stderr)) }));
   });
 }
 

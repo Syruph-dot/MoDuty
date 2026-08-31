@@ -35,6 +35,7 @@ export interface Agent {
   session_id: string;
   state: AgentState;
   phase: AgentPhase | null;
+  last_run_duration_ms?: number | null;
   context_stats?: ContextStats | null;
   created_at: string;
   last_active_at: string;

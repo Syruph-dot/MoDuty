@@ -61,6 +61,8 @@ export interface AgentRecord {
   sessionId: string; // 1:1 绑定的 session（上下文串）
   state: AgentState;
   phase?: AgentPhase; // running 时的子阶段
+  /** 最近一次运行的耗时（ms），chat 结束时更新（输出区"运行时间"用） */
+  lastRunDurationMs?: number;
   contextStats?: ContextStats; // 上下文占用指标（内存 + 落盘）
   createdAt: string;
   lastActiveAt: string;

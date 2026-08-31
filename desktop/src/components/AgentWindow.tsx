@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { awaitApiBase, cancelAgentChat } from "../lib/api";
+import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
 import { useAgentsStore } from "../state/agentsStore";
@@ -67,6 +67,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [copied, setCopied] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** 后台流式任务的轮询刷新器（重开窗口时跟随流式落盘） */
   const pollTimerRef = useRef<number | null>(null);
@@ -266,14 +267,23 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     setStreaming(false);
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || streaming) {
+  const send = () => {
+    const t = input.trim();
+    if (!t || streaming) {
       return;
     }
     setInput("");
+    void sendText(t);
+  };
+
+  /** 无输入框依赖的发送入口（输入框 send 与重试按钮共用） */
+  const sendText = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || streaming) {
+      return;
+    }
     setStreamError(null);
-    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: text }]);
+    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed }]);
     setStreaming(true);
     stopPolling(); // 有后台轮询时先停掉，由 SSE 接管实时更新
     const controller = new AbortController();
@@ -287,7 +297,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       await runChatStream(
         base,
         agent.id,
-        text,
+        trimmed,
         {
           onToken: (chunk) => {
             setMessages((prev) => prev.map((m) => (m.key === currentAgentKey ? { ...m, content: m.content + chunk } : m)));
@@ -354,6 +364,60 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     }
   };
 
+  /** 重试：先显式复位非运行态（error/waiting/completed → idle），再重发最后一条用户消息 */
+  const retry = async () => {
+    if (streaming) {
+      return;
+    }
+    const lastUser = [...messages].reverse().find((m) => m.role === "user" && m.content.trim());
+    if (!lastUser) {
+      return;
+    }
+    setStreamError(null);
+    if (agent.state === "error" || agent.state === "waiting_approval" || agent.state === "completed") {
+      await resetAgentChat(agent.id);
+      await load();
+    }
+    void sendText(lastUser.content);
+  };
+
+  /** 复制窗口内最后一条 agent 输出（渲染后的纯文本） */
+  const copyOutput = async () => {
+    const lastAgent = [...messages].reverse().find((m) => m.role === "agent" && m.content.trim());
+    if (!lastAgent) {
+      return;
+    }
+    let text = lastAgent.content;
+    try {
+      const div = document.createElement("div");
+      div.innerHTML = renderMarkdown(lastAgent.content);
+      text = div.textContent ?? lastAgent.content;
+    } catch {
+      // 渲染异常时回落原始文本
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用（非安全上下文等）时静默
+    }
+  };
+
+  const formatDuration = (ms: number): string => {
+    if (!Number.isFinite(ms) || ms < 0) {
+      return "";
+    }
+    if (ms < 1000) {
+      return `${ms}ms`;
+    }
+    const s = Math.round(ms / 1000);
+    if (s < 60) {
+      return `${s}s`;
+    }
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
   return (
     <div className="agent-window" role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
       <header className="agent-window__header" title="拖动标题栏到左栏可收起">
@@ -407,6 +471,15 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
                 </div>
               );
             }
+            // 用户消息 = 纯文本（保留换行，由 .msg__bubble 的 white-space: pre-wrap 呈现），
+            // 不走 markdown：避免纯文本被 marked 包成 <p> 段落 + 尾随换行造成前后空行。
+            if (message.role === "user") {
+              return (
+                <div key={message.key} className={`msg msg--${message.role}`}>
+                  <div className="msg__bubble">{message.content}</div>
+                </div>
+              );
+            }
             return (
               <div key={message.key} className={`msg msg--${message.role}`}>
                 <div
@@ -425,6 +498,24 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
               <span className="typing-dot" />
               <span className="typing-dot" />
             </div>
+          </div>
+        ) : null}
+
+        {/* 非运行态操作条：重试 + 运行时间 + 复制输出（仅在有 agent 输出时显示） */}
+        {!streaming && agent.state !== "running" && messages.some((m) => m.role === "agent" && m.content.trim()) ? (
+          <div className="agent-window__actions" aria-label="输出操作">
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => void retry()} aria-label="重试上一次任务">
+              ⟳ 重试
+            </button>
+            <span className="agent-window__run-time">
+              {typeof agent.last_run_duration_ms === "number" && agent.last_run_duration_ms > 0
+                ? `运行时间 ${formatDuration(agent.last_run_duration_ms)}`
+                : ""}
+            </span>
+            <span className="agent-window__actions-spacer" />
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => void copyOutput()} aria-label="复制输出内容">
+              {copied ? "✓ 已复制" : "⧉ 复制输出"}
+            </button>
           </div>
         ) : null}
 

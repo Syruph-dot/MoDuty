@@ -57,7 +57,11 @@ export default function SettingsDialog() {
     setLoadingModels(true);
     setError(null);
     try {
-      const list = await fetchModels();
+      // 用当前表单填写的（未保存）Base URL / API Key 覆盖拉取；留空字段回落已保存配置
+      const list = await fetchModels({
+        baseUrl: form.baseUrl.trim() || undefined,
+        apiKey: form.apiKey.trim() || undefined,
+      });
       setModels(list);
       if (list.length === 0) {
         setError("未拉取到模型列表（请确认 Base URL 与 API Key 正确）");
@@ -91,12 +95,9 @@ export default function SettingsDialog() {
     }
   };
 
-  const onBackdropClick = () => {
-    if (!saving) close();
-  };
-
   return (
-    <div className="dialog-backdrop" onClick={onBackdropClick}>
+    // 设置弹窗不响应遮罩点击（避免误触丢未保存内容）；仅可显式 Cancel / 保存后自动关闭
+    <div className="dialog-backdrop">
       <form
         className="dialog"
         role="dialog"

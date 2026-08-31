@@ -110,40 +110,34 @@ export default function ApprovalPanel() {
         <span className="approval-panel__count">{approvals.length} pending</span>
       </header>
 
-      {approvals.length === 0 ? (
-        <p className="approval-panel__hint" role="status">
-          正在加载审批…（状态由 Agent 实时事件驱动）
-        </p>
-      ) : (
-        <ul className="approval-panel__list">
-          {approvals.map((approval) => (
-            <li key={approval.id} className="approval-card">
-              <div className="approval-card__row">
-                <span className="approval-card__tool">{toolName(approval)}</span>
-                <code className="approval-card__args">{argsText(approval)}</code>
-              </div>
-              <div className="approval-card__actions">
-                <button
-                  type="button"
-                  className="btn btn--ghost approval-card__reject"
-                  disabled={deciding === approval.id}
-                  onClick={() => void decide(approval.id, "rejected")}
-                >
-                  拒绝
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--primary"
-                  disabled={deciding === approval.id}
-                  onClick={() => void decide(approval.id, "approved")}
-                >
-                  {deciding === approval.id ? "提交中…" : "批准"}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="approval-panel__list">
+        {approvals.map((approval) => (
+          <li key={approval.id} className="approval-card">
+            <div className="approval-card__row">
+              <span className="approval-card__tool">{toolName(approval)}</span>
+              <code className="approval-card__args">{argsText(approval)}</code>
+            </div>
+            <div className="approval-card__actions">
+              <button
+                type="button"
+                className="btn btn--ghost approval-card__reject"
+                disabled={deciding === approval.id}
+                onClick={() => void decide(approval.id, "rejected")}
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                disabled={deciding === approval.id}
+                onClick={() => void decide(approval.id, "approved")}
+              >
+                {deciding === approval.id ? "提交中…" : "批准"}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
 
       {error ? <p className="approval-panel__error" role="alert">{error}</p> : null}
     </aside>

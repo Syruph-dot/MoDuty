@@ -55,7 +55,12 @@ export async function handleSettingsRoutes(
     return true;
   }
   if (request.method === "GET" && url.pathname === "/api/models") {
-    const config = await resolveModelConfig();
+    // 支持用当前表单未保存的 Base URL / API Key 覆盖拉取（?base_url=&api_key=），
+    // 便于用户在设置页粘贴新配置后直接验证；缺省回落已保存配置。
+    const config = await resolveModelConfig({
+      baseUrl: url.searchParams.get("base_url") ?? undefined,
+      apiKey: url.searchParams.get("api_key") ?? undefined,
+    });
     try {
       json(response, 200, { models: await fetchUpstreamModels(config.baseUrl, config.apiKey) });
     } catch (error) {

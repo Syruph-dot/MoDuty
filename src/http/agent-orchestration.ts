@@ -5,6 +5,7 @@ import type { WorkspaceManager } from "../workspace-manager.js";
 import type { AgentRecord } from "../types.js";
 import type { RouteContext } from "./route-context.js";
 import { ensureAgents } from "./route-context.js";
+import { isFullyAutomatic } from "../permission-mode.js";
 import { contextStatsToSnake } from "./serialization.js";
 import type { AgentEventBroadcaster } from "./sse.js";
 
@@ -53,6 +54,10 @@ async function persistAgentState(deps: OrchestrationDeps, event: AgentStateEvent
 
 /** 检查某 Agent 绑定的 workspace 是否有待决审批（pending_approval 时不 complete） */
 export async function checkHasPendingApproval(workspaces: WorkspaceManager, record: AgentRecord): Promise<boolean> {
+  // 完全自动模式：不产生人工审批，遗留 pending 也不阻塞任务完结
+  if (isFullyAutomatic()) {
+    return false;
+  }
   return await workspaces.hasPendingApproval(record.workspaceDir);
 }
 

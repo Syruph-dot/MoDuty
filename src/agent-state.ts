@@ -150,6 +150,18 @@ export class AgentStateMachine {
     return this.transition(agentId, decision === "approved" ? "running" : "idle", undefined);
   }
 
+  /**
+   * 显式复位（窗口"重试"第一步）：非运行态的人工清理入口。
+   * error / waiting_approval / completed → idle；running 与 idle 不动（running 正在执行不可复位）。
+   */
+  reset(agentId: string): AgentStateEvent | null {
+    const current = this.getState(agentId);
+    if (!current || current.state === "idle" || current.state === "running") {
+      return null;
+    }
+    return this.transition(agentId, "idle", undefined);
+  }
+
   dispose(): void {
     for (const timer of this.holdTimers.values()) {
       clearTimeout(timer);

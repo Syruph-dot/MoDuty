@@ -34,9 +34,8 @@ export default function ClockWidget() {
       if (!el) return;
       const total = 2 * Math.PI * r;
       const prev = prevRef.current[key] ?? val;
-      // 月份保留 12→1 跳变：当发生大幅回退（环绕）时，直接采用目标值，不平滑过渡
-      const wrapped = prev - val > max * 0.5;
-      const smoothed = wrapped ? val : (1 - SMOOTHING_PARAM) * prev + SMOOTHING_PARAM * val;
+      // 已修复无平滑问题
+      const smoothed = (1 - SMOOTHING_PARAM) * prev + SMOOTHING_PARAM * val;
       prevRef.current[key] = smoothed;
       el.style.strokeDasharray = `${total}`;
       el.style.strokeDashoffset = `${total - (smoothed / max) * total}`;
@@ -53,7 +52,7 @@ export default function ClockWidget() {
       const hourFrac = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600 + ms / 3600000;
       const minFrac = now.getMinutes() + now.getSeconds() / 60 + ms / 60000;
       const secFrac = now.getSeconds() + ms / 1000;
-
+      
       setRing("month", 210, 12, month);
       setRing("day", 168, 31, dayFrac);
       setRing("hour", 134.4, 24, hourFrac);
@@ -73,13 +72,6 @@ export default function ClockWidget() {
         <g transform={`rotate(-90 ${CENTER} ${CENTER})`}>
           {RINGS.map((ring) => (
             <g key={ring.key}>
-              <circle
-                className="clock-widget__bg"
-                cx={CENTER}
-                cy={CENTER}
-                r={ring.r}
-                style={{ strokeWidth: STROKE_W }}
-              />
               <circle
                 ref={(el) => {
                   ringRefs.current[ring.key] = el;

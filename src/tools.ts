@@ -1,12 +1,16 @@
 import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from "./approvals.js";
+import { decodeCommandOutput } from "./exec-encoding.js";
 import { isFullyAutomatic } from "./permission-mode.js";
 import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
 import { isSandboxEnabled } from "./settings.js";
+import { browserService, toBrowserFriendlyError } from "./browser-service.js";
 import type { SessionManager } from "./session-manager.js";
 import type { AgentRegistry } from "./agent-registry.js";
 
@@ -230,6 +234,71 @@ export async function runShellTool(
   }
 }
 
+/**
+ * MOMOKA CLI 工具：让 Agent 通过 CLI 驱动/管理其它 Agent 应用（Agent 用 Agent 应用）。
+ * 白名单校验只放行文档化子命令；执行走参数化 spawn（无 shell 注入面），有超时与输出截断。
+ */
+const MOMOKA_CLI_PATH = fileURLToPath(new URL("../bin/momoka.mjs", import.meta.url));
+const MOMOKA_CLI_COMMANDS: Record<string, Set<string>> = {
+  agent: new Set(["list", "create", "chat", "reset", "stop"]),
+  session: new Set(["list", "inspect"]),
+};
+
+export function validateMomokaCliArgs(args: string[]): string | null {
+  if (args.length === 0 || args.length > 64) return "参数数量非法（0 或超过 64 项）";
+  const [cmd, sub, ...rest] = args;
+  const allowed = MOMOKA_CLI_COMMANDS[cmd];
+  if (!allowed) return `未知命令 '${cmd}'（仅允许 ${Object.keys(MOMOKA_CLI_COMMANDS).join("/")}）`;
+  if (!allowed.has(sub)) return `未知子命令 '${sub}'（${cmd} 允许 ${[...allowed].join("/")}）`;
+  if (cmd === "agent" && sub === "create") {
+    const nameIdx = rest.indexOf("--name");
+    if (nameIdx === -1 || !rest[nameIdx + 1]?.trim()) return "agent create 必须提供 --name <名称>";
+  }
+  if (cmd === "agent" && ["chat", "reset", "stop"].includes(sub) && rest.length === 0) {
+    return `${sub} 需要 agentId`;
+  }
+  if (cmd === "session" && sub === "inspect" && rest.length === 0) return "inspect 需要会话句柄（ses_<id>）";
+  for (const a of args) {
+    if (typeof a !== "string" || a.includes("\0")) return "包含非法控制字符";
+  }
+  return null;
+}
+
+export async function runMomokaCliTool(input: {
+  args: string[];
+  workDir?: string;
+  commandTimeoutMs?: number;
+}): Promise<string> {
+  const invalid = validateMomokaCliArgs(input.args);
+  if (invalid) return `MOMOKA CLI 调用被拒绝：${invalid}`;
+  const timeoutMs = input.commandTimeoutMs ?? 60_000;
+  return await new Promise<string>((resolve) => {
+    const child = spawn(process.execPath, [MOMOKA_CLI_PATH, "--mono", ...input.args], {
+      cwd: input.workDir ?? process.cwd(),
+      shell: false,
+      windowsHide: true,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      resolve(`MOMOKA CLI 启动失败：${error.message}`);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      const output = [Buffer.concat(stdout), Buffer.concat(stderr)]
+        .map((buffer) => decodeCommandOutput(buffer))
+        .filter(Boolean)
+        .join("\n");
+      const trimmed = output.length > 12_000 ? `${output.slice(0, 12_000)}\n…(输出过长已截断，共 ${output.length} 字符)` : output;
+      resolve(trimmed || `MOMOKA CLI 退出码 ${code}`);
+    });
+  });
+}
+
 const TOOL_ARGUMENT_SCHEMAS = {
   get_current_time: z.object({}).strict(),
   read_file: z.object({ path: z.string().min(1), workspace: z.string().min(1).optional() }).strict(),
@@ -238,6 +307,19 @@ const TOOL_ARGUMENT_SCHEMAS = {
   append_file: z.object({ path: z.string().min(1), content: z.string(), workspace: z.string().min(1).optional() }).strict(),
   run_command_echo_only: z.object({ command: z.string().min(1) }).strict(),
   run_shell: z.object({ command: z.string().min(1), workspace: z.string().min(1).optional() }).strict(),
+  run_momoka_cli: z.object({ args: z.array(z.string()).min(1).max(64) }).strict(),
+  browse_create: z.object({ name: z.string().min(1).optional(), mode: z.enum(["persistent", "incognito"]).optional() }).strict(),
+  browse_list: z.object({}).strict(),
+  browse_navigate: z.object({ browser_id: z.string().min(1), url: z.string().min(1), wait_until: z.enum(["load", "domcontentloaded", "commit"]).optional() }).strict(),
+  browse_observe: z.object({ browser_id: z.string().min(1) }).strict(),
+  browse_click: z.object({ browser_id: z.string().min(1), selector: z.string().min(1).optional(), ref: z.string().min(1).optional() }).strict(),
+  browse_fill: z.object({ browser_id: z.string().min(1), selector: z.string().min(1), text: z.string() }).strict(),
+  browse_press: z.object({ browser_id: z.string().min(1), key: z.string().min(1) }).strict(),
+  browse_dom_action: z.object({ browser_id: z.string().min(1), action: z.enum(["focus", "fill", "click", "inspect"]), selector: z.string().min(1), text: z.string().optional() }).strict(),
+  browse_wait_for: z.object({ browser_id: z.string().min(1), kind: z.enum(["url", "text", "selector"]), value: z.string().min(1), timeout_ms: z.number().int().positive().max(60_000).optional() }).strict(),
+  browse_execute_js: z.object({ browser_id: z.string().min(1), script: z.string().min(1) }).strict(),
+  browse_screenshot: z.object({ browser_id: z.string().min(1) }).strict(),
+  browse_close: z.object({ browser_id: z.string().min(1) }).strict(),
   inspect_session: z.object({ id: z.string().min(1) }).strict(),
   search_sessions: z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).strict(),
   read_session: z.object({ id: z.string().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() }).strict(),
@@ -354,6 +436,25 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      name: "run_momoka_cli",
+      description:
+        "调用 MOMOKA CLI 驱动/管理其它 Agent 应用（让 Agent 用 Agent 应用）。" +
+        "参数 args 是参数数组，首个元素为命令族（agent | session），第二个为子命令：" +
+        "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（消息可含 &ses_<id> 句柄链接相关会话）/ agent reset <agentId> / agent stop <agentId>；" +
+        "session list / session inspect <ses_<id>>。只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",
+      parameters: {
+        type: "object",
+        properties: {
+          args: { type: "array", items: { type: "string" } },
+        },
+        required: ["args"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "inspect_session",
       description: "检视一个历史会话的元数据（标题/目标/主题/turn 数/时间范围）。把 &ses_<id> 或 &tile_<agentId> 当作资源句柄，不要整段读取。",
       parameters: {
@@ -429,7 +530,198 @@ export const TOOL_SPECS = [
       },
     },
   },
-];
+  {
+    type: "function",
+    function: {
+      name: "browse_create",
+      description: "创建并启动一个受控浏览器（独立于 Agent 的浏览器磁贴）。mode=persistent 持久化登录/Cookie（正常模式）；mode=incognito 无痕（默认）。返回浏览器 id，后续 browse_* 用 browser_id 引用。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "可选：浏览器名称（磁贴标题）" },
+          mode: { type: "string", enum: ["persistent", "incognito"], description: "persistent=持久化登录（默认）；incognito=无痕" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_list",
+      description: "列出所有受控浏览器实例（id/名称/模式/状态/当前地址）。",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_navigate",
+      description: "导航浏览器到指定 URL（未提供协议时自动补 https://）。wait_until 可选 load/domcontentloaded/commit。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          url: { type: "string" },
+          wait_until: { type: "string", enum: ["load", "domcontentloaded", "commit"] },
+        },
+        required: ["browser_id", "url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_observe",
+      description: "观察浏览器当前页面：返回可交互元素快照（ref [i] + role + 名称 + CSS 选择器）。点击/填写可用 ref 或 selector。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+        },
+        required: ["browser_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_click",
+      description: "点击页面元素。selector（CSS）或 ref（来自 browse_observe 的 [i]）二选一。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          selector: { type: "string" },
+          ref: { type: "string" },
+        },
+        required: ["browser_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_fill",
+      description: "清空并填入输入框文本（input/textarea/contenteditable）。selector 必填。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          selector: { type: "string" },
+          text: { type: "string" },
+        },
+        required: ["browser_id", "selector", "text"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_press",
+      description: "发送键盘按键（Enter/Tab/Escape/箭头等）；非导航键文本将作为输入插入。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          key: { type: "string", description: "如 Enter、Tab、Escape、ArrowDown" },
+        },
+        required: ["browser_id", "key"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_dom_action",
+      description: "针对动态/Shadow DOM 元素的固定 DOM 操作：focus/fill/click/inspect（inspect 返回元素信息）。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          action: { type: "string", enum: ["focus", "fill", "click", "inspect"] },
+          selector: { type: "string", minLength: 1 },
+          text: { type: "string", description: "fill 时必填" },
+        },
+        required: ["browser_id", "action", "selector"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_wait_for",
+      description: "等待页面出现指定条件：url（URL 包含片段）、text（可见文本）、selector（CSS）。返回是否在超时内匹配。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          kind: { type: "string", enum: ["url", "text", "selector"] },
+          value: { type: "string" },
+          timeout_ms: { type: "number", description: "默认 10000，最大 60000" },
+        },
+        required: ["browser_id", "kind", "value"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_execute_js",
+      description: "在浏览器页面执行最小 JS 脚本（仅用于固定 DOM 操作无法满足的目标；只写自己为实现目标编写的代码）。返回序列化结果。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+          script: { type: "string", description: "JS 语句/表达式" },
+        },
+        required: ["browser_id", "script"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_screenshot",
+      description: "截取浏览器当前页面（JPEG），返回 data URL 摘要与尺寸信息（Agent 不宜回显完整 base64）。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+        },
+        required: ["browser_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_close",
+      description: "关闭浏览器实例（无痕模式同时销毁临时 profile 与登录态；persistent 保留登录信息供下次使用）。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string" },
+        },
+        required: ["browser_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+]
 
 export async function executeToolCall(
   name: string,
@@ -465,6 +757,9 @@ export async function executeToolCall(
   }
   if (name === "run_command_echo_only") {
     return runCommandEchoOnlyTool({ command: String(args.command ?? "") });
+  }
+  if (name.startsWith("browse_")) {
+    return await executeBrowserTool(name, args as Record<string, unknown>);
   }
   const sourceWorkspace = requireWorkspace(workDir);
   const targetWorkspace = resolveTargetWorkspace(sourceWorkspace, typeof args.workspace === "string" ? args.workspace : undefined);
@@ -529,6 +824,12 @@ export async function executeToolCall(
     } catch (error) {
       return formatToolError(error, "文件检索失败");
     }
+  }
+  if (name === "run_momoka_cli") {
+    return await runMomokaCliTool({
+      args: Array.isArray(args.args) ? args.args.map(String) : [],
+      workDir: targetWorkspace,
+    });
   }
   if (name === "run_shell") {
     return await runShellTool({ workDir: targetWorkspace, tracePath, command: String(args.command ?? ""), approvalOrigin });
@@ -672,4 +973,87 @@ async function searchFilesTool(workDir: string | undefined, query: string, scope
   await walk(base);
   if (matches.length === 0) return `未找到匹配 "${query}" 的文件（已扫描 ${scanned} 项）。`;
   return `匹配 "${query}" 的文件（${matches.length} 个）：\n${matches.slice(0, 200).map((match) => `- ${match}`).join("\n")}`;
+}
+
+/**
+ * browse_* 工具统一分发：浏览器是独立实体（BrowserService 全局单例），
+ * Agent 只经 browser_id 引用——浏览器与 Agent 本质解耦。
+ */
+async function executeBrowserTool(name: string, args: Record<string, unknown>): Promise<string> {
+  const id = (args.browser_id as string | undefined) ?? "";
+  try {
+    switch (name) {
+      case "browse_create": {
+        const info = await browserService.createInstance({
+          name: typeof args.name === "string" ? args.name : undefined,
+          mode: args.mode === "persistent" ? "persistent" : args.mode === "incognito" ? "incognito" : undefined,
+        });
+        const launched = await browserService.launch(info.id);
+        return `浏览器已创建并启动：id=${launched.id} 名称=${launched.name} 模式=${launched.mode === "persistent" ? "持久化（正常模式）" : "无痕（incognito）"}\n后续操作请用 browse_navigate / browse_observe 等，参数 browser_id=${launched.id}`;
+      }
+      case "browse_list": {
+        const browsers = await browserService.list();
+        if (browsers.length === 0) return "当前没有受控浏览器实例。可用 browse_create 创建（mode=persistent 正常模式 / incognito 无痕）。";
+        return `受控浏览器（${browsers.length} 个）：\n${browsers
+          .map((b) => `- ${b.id} | ${b.name} | ${b.mode === "persistent" ? "持久化" : "无痕"} | ${b.state} | ${b.url ?? "(未导航)"}`)
+          .join("\n")}`;
+      }
+      case "browse_navigate": {
+        const info = await browserService.getInfo(id);
+        if (!info) return `错误: 浏览器实例不存在 ${id}（可先 browse_list）`;
+        if (info.state !== "ready") {
+          await browserService.launch(id);
+        }
+        const result = await browserService.navigate(id, String(args.url ?? ""), args.wait_until as "load" | "domcontentloaded" | "commit" | undefined);
+        return result ? `已导航: ${result.title || "(无标题)"}\nURL: ${result.url}` : "浏览器未就绪";
+      }
+      case "browse_observe": {
+        const snapshot = await browserService.snapshot(id);
+        if (!snapshot) return `错误: 浏览器实例未启动或不存在 ${id}`;
+        return `页面快照（共 ${Object.keys(snapshot.refs).length} 个元素，格式: ref role 名称 <selector>）:\n${snapshot.tree}`;
+      }
+      case "browse_click": {
+        const ok = await browserService.click(id, String(args.selector ?? ""), typeof args.ref === "string" ? args.ref : undefined);
+        return ok ? "已点击" : "错误: 浏览器未就绪或找不到元素";
+      }
+      case "browse_fill": {
+        const ok = await browserService.fill(id, String(args.selector ?? ""), String(args.text ?? ""));
+        return ok ? "已填写（覆盖原内容）" : "错误: 浏览器未就绪";
+      }
+      case "browse_press": {
+        const ok = await browserService.press(id, String(args.key ?? ""));
+        return ok ? `已按键: ${args.key}` : "错误: 浏览器未就绪";
+      }
+      case "browse_dom_action": {
+        const result = await browserService.domAction(
+          id,
+          String(args.action ?? "") as "focus" | "fill" | "click" | "inspect",
+          String(args.selector ?? ""),
+          typeof args.text === "string" ? args.text : undefined,
+        );
+        return typeof result === "string" ? result : `DOM 操作完成: ${JSON.stringify(result) ?? args.action}`;
+      }
+      case "browse_wait_for": {
+        const matched = await browserService.waitFor(id, String(args.kind ?? "text") as "url" | "text" | "selector", String(args.value ?? ""), Number(args.timeout_ms ?? 10_000));
+        return matched ? `条件已满足: ${args.kind}=${args.value}` : `等待超时（${args.timeout_ms ?? 10000}ms）: 未匹配 ${args.kind}=${args.value}`;
+      }
+      case "browse_execute_js": {
+        const result = await browserService.executeJS(id, String(args.script ?? ""));
+        return `JS 结果: ${JSON.stringify(result)?.slice(0, 300) ?? "undefined"}`;
+      }
+      case "browse_screenshot": {
+        const dataUrl = await browserService.screenshot(id);
+        if (!dataUrl) return "错误: 浏览器未就绪";
+        return `截图完成（JPEG ${Math.round((dataUrl.length * 3) / 4 / 1024)}KB），请通过 /api/browsers/${id}/screenshot 获取（Agent 不直接回显 base64）。`;
+      }
+      case "browse_close": {
+        await browserService.closeInstance(id);
+        return `浏览器 ${id} 已关闭（${(await browserService.getInfo(id))?.mode === "incognito" ? "无痕数据已销毁" : "登录信息已保存，可下次复用"}）。`;
+      }
+      default:
+        return `未知浏览器工具: ${name}`;
+    }
+  } catch (error) {
+    return `浏览器工具失败: ${toBrowserFriendlyError(error, name)}`;
+  }
 }

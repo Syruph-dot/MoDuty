@@ -6,9 +6,34 @@
   position: relative;
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  /* 去自由化：横向滚动容器（上滚=左、下滚=右） */
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 0;
   box-sizing: border-box;
+}
+
+/* 网格内容撑宽器：让横向滚动区感知磁贴实际列宽（磁贴本身 absolute 不参与文档流） */
+.tile-wall__sizer {
+  display: block;
+  min-width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 磁贴墙横向滚动条（细而轻） */
+.tile-wall::-webkit-scrollbar {
+  height: 8px;
+}
+.tile-wall::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tile-wall::-webkit-scrollbar-thumb {
+  background: rgba(232, 237, 247, 0.22);
+  border-radius: 4px;
+}
+.tile-wall::-webkit-scrollbar-thumb:hover {
+  background: rgba(232, 237, 247, 0.4);
 }
 
 .tile-wall__error {
@@ -175,7 +200,7 @@
 .tile-shell--dragging {
   cursor: grabbing;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
-  opacity: 0.96;
+  opacity: 0.65;
 }
 
 .tile-shell--dragging * {
@@ -188,6 +213,18 @@
 .tile-shell:active:not(.tile-shell--dragging) {
   outline: 1px solid rgba(79, 140, 255, 0.35);
   outline-offset: 2px;
+}
+
+/* ---- 量化灰色提示框（Win8 ghost）：拖动/缩放时松手落点预览 ---- */
+
+.tile-ghost {
+  position: absolute;
+  border: 2px dashed rgba(232, 237, 247, 0.55);
+  background: rgba(120, 130, 150, 0.28);
+  border-radius: 10px;
+  pointer-events: none;
+  z-index: 1001;
+  box-sizing: border-box;
 }
 
 /* ---- 对齐辅助线覆盖层 ---- */
@@ -1102,4 +1139,353 @@
 .widget-picker__desc {
   font-size: 11px;
   color: rgba(232, 237, 247, 0.55);
+}
+
+/* ---- 受控浏览器磁贴 ---- */
+
+.tile-shell .browser-tile {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+.browser-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 168px;
+  padding: 16px;
+  text-align: left;
+  color: #e8edf7;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 10px 24px rgba(0, 0, 0, 0.22);
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.browser-tile__accent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 10px 10px 0 0;
+  background: #7d8796;
+}
+
+.browser-tile--ready .browser-tile__accent {
+  background: linear-gradient(90deg, #4f8cff, #7ab0ff);
+}
+
+.browser-tile--error .browser-tile__accent {
+  background: #e85a5a;
+}
+
+.browser-tile:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.browser-tile__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.browser-tile__mode {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.65);
+  letter-spacing: 0.4px;
+}
+
+.browser-tile__name {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tile__url {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.75);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.browser-tile__title {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.browser-tile__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.5);
+}
+
+.browser-tile__open {
+  color: #4f8cff;
+}
+
+/* ================================================================
+   值日生（Duty Girl）：调度者 Agent 磁贴（固定 2×3）+ 旁侧对话框
+   ================================================================ */
+
+.duty-girl {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.duty-girl__hit {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: #e8edf7;
+}
+
+.duty-girl__portrait {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.duty-girl__fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: rgba(232, 237, 247, 0.7);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+}
+
+.duty-girl__badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #ffffff;
+  background: rgba(23, 34, 58, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+}
+
+/* ---- 旁侧对话框（portal 到 body，脱离磁贴 overflow 裁剪） ---- */
+.duty-dialog {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  background: rgba(16, 24, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: hidden;
+  color: #e8edf7;
+}
+
+.duty-dialog__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(232, 237, 247, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.duty-dialog__close {
+  border: none;
+  background: transparent;
+  color: rgba(232, 237, 247, 0.7);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.duty-dialog__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.duty-dialog__welcome {
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(232, 237, 247, 0.7);
+}
+
+.duty-dialog__msg {
+  max-width: 92%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.duty-dialog__msg--user {
+  align-self: flex-end;
+  background: #2f6bff;
+  color: #ffffff;
+  border-bottom-right-radius: 3px;
+}
+
+.duty-dialog__msg--agent {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8edf7;
+  border-bottom-left-radius: 3px;
+}
+
+.duty-dialog__typing {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
+  animation: duty-blink 1.1s ease-in-out infinite;
+}
+
+.duty-dialog__error {
+  font-size: 12px;
+  color: #ff8fa3;
+}
+
+.duty-dialog__composer {
+  flex: none;
+  position: relative;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.duty-dialog__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8edf7;
+  font-size: 13px;
+  outline: none;
+}
+
+.duty-dialog__input:focus {
+  border-color: #4f8cff;
+}
+
+.duty-dialog__input::placeholder {
+  color: rgba(232, 237, 247, 0.42);
+}
+
+.duty-dialog__send {
+  flex: none;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #2f6bff;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.duty-dialog__send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.duty-dialog__mention {
+  position: absolute;
+  left: 12px;
+  right: 74px;
+  bottom: calc(100% - 6px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: rgba(12, 18, 34, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.duty-dialog__mention-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.duty-dialog__mention-item--active {
+  background: rgba(47, 107, 255, 0.28);
+}
+
+.duty-dialog__mention-name {
+  font-size: 13px;
+  color: #e8edf7;
+}
+
+.duty-dialog__mention-goal {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@keyframes duty-blink {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }

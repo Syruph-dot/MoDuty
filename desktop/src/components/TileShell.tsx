@@ -6,15 +6,24 @@ import {
   type ResizeDirection,
 } from "../lib/dragController";
 import { snapGeometry, type SnapGuide } from "../lib/snapController";
-import type { TileGeometry } from "../types";
+import {
+  gridToPixels,
+  displaceTiles,
+  quantizeResize,
+  type GridMetrics,
+  type TileGridMap,
+} from "../lib/gridLayout";
+import type { TileGeometry, TileGrid } from "../types";
+import { GRID_ROWS, GRID_START_ROW } from "../types";
 import { useSnapGuideStore } from "../state/snapGuideStore";
+import { useGhostStore } from "../state/ghostStore";
 import { useContextMenuStore, type ContextMenuItem } from "../state/contextMenuStore";
 import { useDialogStore } from "../state/dialogStore";
 import { useAgentsStore } from "../state/agentsStore";
 
 /**
  * 磁贴壳的交互模式：
- * - free     —— 无磁贴打开时：自由拖拽 + 8 方向 resize（现状）
+ * - free     —— 无磁贴打开时：Win8 网格拖动 + 量化缩放（现状自由态已去自由化）
  * - dock     —— 打开态左坞小磁贴：位置由布局引擎决定，禁拖禁 resize
  * - expanded —— 打开态右舞台窗口：仅拖拽把手（header）可拖、禁 resize；
  *               拖入左坞松手 → onDropToDock（收起），否则回弹到布局位置
@@ -26,19 +35,25 @@ interface TileShellProps {
   id: string;
   /** Agent 名称（卡片右键删除确认时用） */
   agentName?: string;
-  /** 当前几何（由 store 传入；拖动中是高频更新的值） */
+  /** 当前像素几何（free 模式由 gridToPixels 派生；open 模式由布局引擎计算） */
   geometry: TileGeometry;
-  /** 拖动中持续触发（仅改 store，不写 localStorage） */
-  onMove: (next: TileGeometry) => void;
-  /** 拖动结束 / 第一次挂载时触发（落盘 localStorage） */
-  onCommit: (next: TileGeometry) => void;
-  /** 父容器尺寸（用于 clamp，防止磁贴被拖出可见区） */
+  /** 当前网格几何（free 模式交互的事实来源） */
+  grid?: TileGrid;
+  /** 全量磁贴网格（free 模式冲突/量化用；含自身，引擎会排除 selfId） */
+  gridMap?: TileGridMap;
+  /** 网格度量（free 模式像素↔网格换算用） */
+  metrics?: GridMetrics;
+  /** 拖动结束 / 第一次落盘（写 localStorage）：free 模式提交网格几何 */
+  onMove: (next: TileGrid) => void;
+  /** 拖动结束 / 第一次落盘（写 localStorage）：free 模式提交网格几何 */
+  onCommit: (next: TileGrid) => void;
+  /** 父容器尺寸（用于 clamp，防止磁贴被拖出可见区；expanded 模式用） */
   bounds?: { width: number; height: number };
   /** z-index（用于选中置顶） */
   zIndex?: number;
-  /** 其它磁贴的几何（用于边缘吸附） */
+  /** 其它磁贴的像素几何（expanded 模式的边吸附用） */
   others?: TileGeometry[];
-  /** 是否禁用 resize（用于未来只读场景） */
+  /** 是否禁用 resize */
   disableResize?: boolean;
   /** 交互模式（默认 free） */
   mode?: TileShellMode;
@@ -48,6 +63,8 @@ interface TileShellProps {
   dockRightEdgeX?: number;
   /** expanded 模式：拖到左坞松手后触发（关闭该磁贴） */
   onDropToDock?: (id: string) => void;
+  /** 统一打开回调（Tile 抽象）：双击磁贴（非拖动）触发；agent/browser 传入，widget 不传 */
+  onOpenTile?: () => void;
   /** 第一显示态内容（未展开的小卡片正面） */
   children: ReactNode;
   /** 第二显示态内容（展开窗口背面，仅打开时挂载） */
@@ -56,12 +73,18 @@ interface TileShellProps {
   flipped?: boolean;
   /** 自定义右键菜单项；传入时覆盖默认（agent）菜单。用于 widget 等非 agent 磁贴。 */
   contextMenuItems?: ContextMenuItem[];
+  /** 灰框让位预览中：让位/恢复过渡用 240ms 快速动画（2.25×） */
+  displacedPreview?: boolean;
+  /** 松手时提交“被排斥（让位）磁贴”的最终网格（id → grid）；由父级落盘，使它们定格在临时位置 */
+  onCommitDisplaced?: (map: Record<string, TileGrid>) => void;
 }
 
 /** 开合动画统一速度曲线：无加速仅减速（先快后慢） */
 const ANIM_EASE = "cubic-bezier(0, 0, 0.2, 1)";
 /** 开合动画统一时长（320ms → 速度降为 60% ≈ 533ms，取整 540） */
 const ANIM_DURATION_MS = 540;
+/** 灰框让位过渡：加速到 2.25 倍（540 / 2.25 = 240） */
+const DISPLACE_DURATION_MS = 240;
 
 const MIN_W = 200;
 const MIN_H = 120;
@@ -69,15 +92,10 @@ const MAX_W = 1200;
 const MAX_H = 900;
 const SCREEN_EDGE = 0;
 
-
-
 /**
- * 根据拖拽模式把 delta 应用到原始 geometry 上：
+ * 根据拖拽模式把 delta 应用到原始 geometry 上（像素跟手；free+resize 时仅用于视觉）：
  * - move: 整块平移
  * - resize-{dir}: 改边/角，根据方向调整 x/y/w/h
- * - 含 w 的方向：x += dx, w -= dx；含 e 的方向：w += dx
- * - 含 n 的方向：y += dy, h -= dy；含 s 的方向：h += dy
- * - 最小尺寸 MIN_W × MIN_H：达到后停止收缩，x/y 也保持稳定
  */
 const RESIZE_HANDLES: Array<{ dir: ResizeDirection; pos: CSSProperties; cursor: string }> = [
   { dir: "nw", pos: { top: 0, left: 0, width: 12, height: 12, cursor: "nwse-resize" }, cursor: "nwse-resize" },
@@ -126,16 +144,23 @@ function applyDelta(
 }
 
 /**
- * 可拖拽 + 8 方向 resize + 实时吸附的磁贴壳。
- * - 拖动中本地 state 暂存位移，松手时把累积位移合并到 x/y
- * - clamp 到父容器内（至少留 32px 在屏内），避免磁贴被拖丢
- * - 实时 snap：与其它磁贴的边/中心吸附，按住 Shift 时只走网格吸附
- * - 松手 → onCommit 落盘 + 清辅助线
+ * 可拖拽 + 8 方向量化缩放 + Win8 网格吸附的磁贴壳。
+ *
+ * free 模式（去自由化）：
+ * - 拖动中：磁贴本体**像素跟手**（无量化、无 transition），同时计算“量化落点”
+ *   （移动 → findDropTarget；缩放 → quantizeResize），经 ghost 提示框显示
+ * - 松手：提交 ghost 网格 → store 更新 → 恢复 transition，本体自动动画过渡到落点
+ * - 不支持自由像素位置：所有落点都在网格上、尺寸都在 TILE_SIZES 内
+ *
+ * expanded 模式沿用旧像素逻辑（snap + 左坞收起回弹）。
  */
 export default function TileShell({
   id,
   agentName,
   geometry,
+  grid,
+  gridMap,
+  metrics,
   onMove,
   onCommit,
   bounds,
@@ -146,17 +171,35 @@ export default function TileShell({
   dragHandleSelector,
   dockRightEdgeX,
   onDropToDock,
+  onOpenTile,
   children,
   back,
   flipped = false,
   contextMenuItems,
+  displacedPreview = false,
+  onCommitDisplaced,
 }: TileShellProps) {
   const showContextMenu = useContextMenuStore((state) => state.show);
   const openRename = useDialogStore((state) => state.openRename);
   const openConfirm = useDialogStore((state) => state.openConfirm);
   const deleteAgent = useAgentsStore((state) => state.deleteAgent);
   const originRef = useRef<TileGeometry | null>(null);
+  const originGridRef = useRef<TileGrid | null>(null);
+  const ghostRef = useRef<TileGrid | null>(null);
   const shiftRef = useRef(false);
+  // 拖动/点击抑制：真实拖动（位移超阈值）后短暂抑制 click/双击，
+  // 避免“拖一下没到位→松手”被浏览器合成 click/双击而意外打开磁贴
+  const suppressClock = useRef<{ active: boolean; timer: number | null }>({ active: false, timer: null });
+  const armSuppressClick = () => {
+    suppressClock.current.active = true;
+    if (suppressClock.current.timer !== null) {
+      window.clearTimeout(suppressClock.current.timer);
+    }
+    suppressClock.current.timer = window.setTimeout(() => {
+      suppressClock.current.active = false;
+      suppressClock.current.timer = null;
+    }, 500);
+  };
   // 拖拽中的视觉偏移（四维：x/y 平移 + w/h 尺寸增量）——resize 时壳尺寸也要实时跟随鼠标
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0, w: 0, h: 0 });
   // expanded 模式：拖拽进入左坞区域时的反馈标志
@@ -181,8 +224,12 @@ export default function TileShell({
   }, [flipped]);
   const setSnapGuides = useSnapGuideStore((s) => s.setGuides);
   const clearSnapGuides = useSnapGuideStore((s) => s.clear);
+  const setGhost = useGhostStore((s) => s.setGhost);
+  const clearGhost = useGhostStore((s) => s.clearGhost);
+  const setDisplaced = useGhostStore((s) => s.setDisplaced);
+  const clearDisplaced = useGhostStore((s) => s.clearDisplaced);
 
-  // 全局 shift 状态：拖动期间按 Shift = 强制网格吸附（不吸边）
+  // 全局 shift 状态：expanded 拖动期间按 Shift = 强制网格吸附（不吸边）
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Shift") shiftRef.current = event.shiftKey;
@@ -195,9 +242,19 @@ export default function TileShell({
     };
   }, []);
 
+  // 卸载时清理点击抑制计时器
+  useEffect(() => {
+    return () => {
+      if (suppressClock.current.timer !== null) {
+        window.clearTimeout(suppressClock.current.timer);
+      }
+    };
+    // 仅挂载/卸载时执行一次
+  }, []);
+
   const otherGeoms = useMemo(() => others ?? [], [others]);
 
-  const computeNext = (
+  const computeSnap = (
     next: TileGeometry,
     shift: boolean,
   ): { snapped: TileGeometry; guides: SnapGuide[] } => {
@@ -205,29 +262,103 @@ export default function TileShell({
     return { snapped: result.geometry, guides: result.guides };
   };
 
+  /** free 模式：由鼠标 delta 计算量化 ghost 落点（网格）。移动采用“灰框滞回”：
+   *  磁贴中心越过当前灰框（吸附矩形）边缘才更新到相邻格，避免过线即跳（round/floor 感）。 */
+  const computeGhost = (dx: number, dy: number, dragMode: DragMode): TileGrid | null => {
+    if (!originGridRef.current || !metrics || !gridMap) return null;
+    const originGrid = originGridRef.current;
+    if (dragMode === "move") {
+      const originPx = gridToPixels(originGrid, metrics);
+      const centerX = originPx.x + originPx.w / 2 + dx;
+      const centerY = originPx.y + originPx.h / 2 + dy;
+      // 当前吸附目标（拖动初始 = 磁贴原位置）
+      const current = ghostRef.current ?? originGrid;
+      const ghostPx = gridToPixels(current, metrics);
+      const inside =
+        centerX >= ghostPx.x && centerX <= ghostPx.x + ghostPx.w &&
+        centerY >= ghostPx.y && centerY <= ghostPx.y + ghostPx.h;
+      if (inside) {
+        return current;
+      }
+      // 越过边缘 → 相邻格推进（x/y 独立判定）：ghost 允许与其它磁贴重叠，
+      // 重叠磁贴由 displaceTiles 临时让位（拖动中预览），松手时再合法化落点
+      let nextCol = current.col;
+      let nextRow = current.row;
+      if (centerX < ghostPx.x) nextCol -= 1;
+      else if (centerX > ghostPx.x + ghostPx.w) nextCol += 1;
+      if (centerY < ghostPx.y) nextRow -= 1;
+      else if (centerY > ghostPx.y + ghostPx.h) nextRow += 1;
+      nextCol = Math.max(0, nextCol);
+      nextRow = Math.max(GRID_START_ROW, Math.min(nextRow, GRID_ROWS - originGrid.h));
+      return { ...originGrid, col: nextCol, row: nextRow };
+    }
+    const dir = dragMode.slice("resize-".length) as ResizeDirection;
+    return quantizeResize(gridMap, id, dir, originGrid, dx, dy, metrics);
+  };
+
   const { onMouseDown, isDragging, mode: dragMode } = useDrag({
     onMove: (dx, dy, dragMode) => {
+      if (mode === "free") {
+        if (!originRef.current || !metrics) return;
+        const originPx = originRef.current;
+        // 本体像素跟手（无量化）→ 视觉即时响应鼠标
+        const nextPx = applyDelta(originPx, dx, dy, dragMode);
+        setDragOffset({
+          x: nextPx.x - originPx.x,
+          y: nextPx.y - originPx.y,
+          w: nextPx.w - originPx.w,
+          h: nextPx.h - originPx.h,
+        });
+        // 量化落点 → 灰色提示框
+        const ghost = computeGhost(dx, dy, dragMode);
+        ghostRef.current = ghost;
+        if (ghost && metrics) {
+          setGhost(gridToPixels(ghost, metrics));
+          // 灰框临时让位：被波及磁贴预览布局（离开后自动恢复）
+          if (gridMap) {
+            setDisplaced(displaceTiles(gridMap, ghost, id));
+          }
+        }
+        return;
+      }
+      // expanded：沿用旧像素 snap + 左坞检测
       if (!originRef.current) return;
       const next = applyDelta(originRef.current, dx, dy, dragMode);
-      const { snapped, guides } = computeNext(next, shiftRef.current);
+      const { snapped, guides } = computeSnap(next, shiftRef.current);
       setSnapGuides(guides);
-      // 拖动中只更新视觉偏移（四维：位置 + 尺寸）
       setDragOffset({
         x: snapped.x - geometry.x,
         y: snapped.y - geometry.y,
         w: snapped.w - geometry.w,
         h: snapped.h - geometry.h,
       });
-      // expanded：检测是否进入左坞（中心 x < 分界）→ 给高亮反馈
       if (mode === "expanded") {
         const centerX = snapped.x + snapped.w / 2;
         setOverDock(dockRightEdgeX !== undefined && centerX < dockRightEdgeX);
       }
     },
     onEnd: (dx, dy, didMove, dragMode) => {
-      if (didMove && originRef.current) {
+      // 真实拖动过：短暂抑制 click/双击，避免误打开
+      if (didMove) {
+        armSuppressClick();
+      }
+      if (mode === "free") {
+        if (didMove && ghostRef.current) {
+          // 松手先把“被排斥磁贴”定格在临时让位位置（若存在），再清空预览 → 由父级落盘
+          if (onCommitDisplaced) {
+            const displacedNow = useGhostStore.getState().displaced;
+            if (displacedNow && Object.keys(displacedNow).length > 0) {
+              onCommitDisplaced(displacedNow);
+            }
+          }
+          // 按用户要求：松手直接落到灰框位置（不做冲突合法化回跳）
+          const final = ghostRef.current;
+          onMove(final);
+          onCommit(final);
+        }
+      } else if (didMove && originRef.current) {
         const next = applyDelta(originRef.current, dx, dy, dragMode);
-        const { snapped } = computeNext(next, shiftRef.current);
+        const { snapped } = computeSnap(next, shiftRef.current);
         const finalGeom = clamp(snapped, bounds);
         if (mode === "expanded") {
           // 拖入左坞 → 收起；否则视觉回弹（不落盘、不污染 idle tiles）
@@ -235,15 +366,16 @@ export default function TileShell({
           if (dockRightEdgeX !== undefined && centerX < dockRightEdgeX) {
             onDropToDock?.(id);
           }
-        } else if (mode === "free") {
-          onMove(finalGeom);
-          onCommit(finalGeom);
         }
       }
       originRef.current = null;
+      originGridRef.current = null;
+      ghostRef.current = null;
       setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       setOverDock(false);
       clearSnapGuides();
+      clearGhost();
+      clearDisplaced();
     },
   });
 
@@ -301,12 +433,16 @@ export default function TileShell({
       }
     }
     originRef.current = { ...geometry };
+    if (mode === "free") {
+      originGridRef.current = grid ? { ...grid } : null;
+    }
     onMouseDown(event, "move");
   };
 
   const startResize = (event: React.MouseEvent, dir: ResizeDirection) => {
     if (mode !== "free") return; // dock / expanded 均不 resize
     originRef.current = { ...geometry };
+    originGridRef.current = grid ? { ...grid } : null;
     onMouseDown(event, `resize-${dir}` as DragMode);
   };
 
@@ -315,6 +451,7 @@ export default function TileShell({
   const visualW = geometry.w + dragOffset.w;
   const visualH = geometry.h + dragOffset.h;
 
+  const animMs = displacedPreview ? DISPLACE_DURATION_MS : ANIM_DURATION_MS;
   const style: CSSProperties = {
     position: "absolute",
     left: visualX,
@@ -322,7 +459,7 @@ export default function TileShell({
     width: visualW,
     height: visualH,
     zIndex: isDragging ? 1000 : zIndex ?? 1,
-    transition: isDragging ? "none" : ["left", "top", "width", "height"].map((prop) => `${prop} ${ANIM_DURATION_MS}ms ${ANIM_EASE}`).join(", "),
+    transition: isDragging ? "none" : ["left", "top", "width", "height"].map((prop) => `${prop} ${animMs}ms ${ANIM_EASE}`).join(", "),
   };
 
   // 3D 翻转容器：rotateY 0（第一态）↔ 180（第二态），与位置/尺寸共用同一条减速曲线
@@ -332,7 +469,7 @@ export default function TileShell({
     transform: `rotateY(${flipped ? 180 : 0}deg)`,
     transformStyle: "preserve-3d",
     willChange: "transform",
-    transition: isDragging ? "none" : `transform ${ANIM_DURATION_MS}ms ${ANIM_EASE}`,
+    transition: isDragging ? "none" : `transform ${animMs}ms ${ANIM_EASE}`,
   };
 
   const shellModeClass =
@@ -346,6 +483,19 @@ export default function TileShell({
       data-drag-mode={dragMode ?? ""}
       data-tile-mode={mode}
       onMouseDown={startMove}
+      onDoubleClickCapture={(event) => {
+        // capture 阶段拦截：拖动后的误双击不进入子组件
+        if (suppressClock.current.active) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+      onClick={() => {
+        // Tile 抽象统一的“单击 = 展示（打开）”
+        // 拖动（位移超阈值）松手后的 click 为误触，500ms 内忽略
+        if (suppressClock.current.active) return;
+        onOpenTile?.();
+      }}
       onContextMenu={onTileContextMenu}
     >
       <div className="tile-flip" style={flipStyle}>
@@ -369,7 +519,7 @@ export default function TileShell({
   );
 }
 
-/** 把磁贴 clamp 到父容器内（顶部不限制、左右下边各留至少 32px 在屏内） */
+/** 把磁贴 clamp 到父容器内（顶部不限制、左右下边各留至少 32px 在屏内；expanded 模式用） */
 function clamp(geom: TileGeometry, bounds?: { width: number; height: number }): TileGeometry {
   if (!bounds) return geom;
   const maxX = Math.max(SCREEN_EDGE, bounds.width - 32);

@@ -93,14 +93,63 @@ export class MomokaAgentCore implements MomokaAgent {
     const topic = request.topic?.trim() || message.slice(0, 80);
     // 流式落盘：agent 输出随 token 增量写入会话日志。
     // 连接只是在线投影——前端断开/收起磁贴不影响写入，重开窗口即读到进行中内容。
+    // 同时记录 tool/text 顺序时间线（timeline）与分段文本（segments），
+    // 供前端在重开/刷新后还原“文字段 → 工具卡片 → 文字段”的真实交错顺序。
     let streamingMessage: SessionMessage | null = null;
+    // timeline: "text" 表示一段文本，number 表示 toolCalls 下标（工具）；segments 按文本段出现顺序归档
+    const timeline: Array<"text" | number> = [];
+    const segments: string[] = [];
+    let segmentBuf = "";
+    let segmentHasText = false;
+    let toolCallIndex = 0;
+    // 流式工具增量集合（task 完成前即可恢复；finish 时被 result.toolCalls 覆盖）
+    const streamingTools: Array<{ tool: string; args: string; result: string }> = [];
     if (sessionId) {
       streamingMessage = await this.sessionManager.beginStreamingMessage(sessionId);
     }
     const onEvent = (event: StreamEvent): void => {
-      if (event.type === "token" && streamingMessage && sessionId) {
-        this.sessionManager.appendStreamingMessage(sessionId, streamingMessage.id, event.text);
+      const sm = streamingMessage;
+      const sid = sessionId;
+      if (event.type === "token" && sm && sid) {
+        this.sessionManager.appendStreamingMessage(sid, sm.id, event.text);
+        segmentBuf += event.text;
+        if (!segmentHasText) {
+          timeline.push("text");
+          segmentHasText = true;
+          // 文本段开始即落盘时间线，流式恢复时能见到
+          void this.sessionManager.updateStreamingMessage(sid, sm.id, { timeline });
+        }
+      } else if (event.type === "tool_start") {
+        // 工具出现时先归档前一段文本，再记录工具下标（与 model-client 的 toolCalls.push 顺序一致）
+        if (segmentHasText) {
+          segments.push(segmentBuf);
+          segmentBuf = "";
+          segmentHasText = false;
+        }
+        streamingTools.push({ tool: event.name, args: event.args, result: "" });
+        timeline.push(toolCallIndex);
+        toolCallIndex += 1;
+        // 工具开始即增量落盘：关闭重开/轮询时可以恢复“进行中的工具卡”
+        if (sm && sid) {
+          void this.sessionManager.updateStreamingMessage(sid, sm.id, {
+            toolCalls: streamingTools,
+            timeline,
+          });
+        }
+      } else if (event.type === "tool_result") {
+        for (let i = streamingTools.length - 1; i >= 0; i -= 1) {
+          if (streamingTools[i].tool === event.name && !streamingTools[i].result) {
+            streamingTools[i].result = event.result;
+            break;
+          }
+        }
+        if (sm && sid) {
+          void this.sessionManager.updateStreamingMessage(sid, sm.id, {
+            toolCalls: streamingTools,
+          });
+        }
       }
+      // tool_result 的其它细节由 request.onEvent 透传；timeline 不再推进（工具下标已记录）
       request.onEvent?.(event);
     };
     let result: ModelRunResult;
@@ -125,9 +174,17 @@ export class MomokaAgentCore implements MomokaAgent {
     await appendTraceEvent(tracePath, "final_answer", { response: result.output });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId && streamingMessage) {
+      // 归档最后一段文本（若存在）
+      if (segmentHasText) {
+        segments.push(segmentBuf);
+        segmentBuf = "";
+        segmentHasText = false;
+      }
       await this.sessionManager.finishStreamingMessage(sessionId, streamingMessage.id, {
         outputId,
         toolCalls: result.toolCalls ?? [],
+        segments,
+        timeline,
       });
     } else if (sessionId) {
       await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });

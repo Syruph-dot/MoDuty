@@ -48,7 +48,9 @@ export default function WidgetPickerCard() {
 
   const choose = (kind: WidgetKind) => {
     close();
-    addWidget(kind, spawn ?? undefined);
+    // spawn 是视口坐标；横向滚动时折算成内容坐标 → widget 插入列与鼠标 X 轴一致
+    const scrollLeft = document.querySelector<HTMLElement>(".tile-wall")?.scrollLeft ?? 0;
+    addWidget(kind, spawn ? { x: spawn.x + scrollLeft, y: spawn.y } : undefined);
   };
 
   return (

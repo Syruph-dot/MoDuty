@@ -49,11 +49,13 @@ export default function NewAgentDialog() {
     setSubmitting(true);
     setError(null);
     const spawn = useDialogStore.getState().newAgentSpawn;
+    // spawn 是视口坐标；横向滚动时折算成内容坐标，让新磁贴插入到鼠标 X 轴对应列
+    const scrollLeft = document.querySelector<HTMLElement>(".tile-wall")?.scrollLeft ?? 0;
     const agent = await createAgent({
       name,
       workspace_dir: workspaceDir,
       ...(form.model.trim() ? { model: form.model.trim() } : {}),
-      ...(spawn ? { spawn } : {}),
+      ...(spawn ? { spawn: { x: spawn.x + scrollLeft, y: spawn.y } } : {}),
     });
     setSubmitting(false);
     if (agent) {

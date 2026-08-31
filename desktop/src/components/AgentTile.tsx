@@ -146,7 +146,6 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
       type="button"
       className={`agent-tile agent-tile--${agent.state}${scanKind ? ` agent-tile--scan-${scanKind}` : ""}`}
       style={themeVars}
-      onDoubleClick={() => onOpen(agent)}
       onMouseEnter={() => {
         hoveringRef.current = true;
         setHovering(true);
@@ -155,8 +154,8 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
         hoveringRef.current = false;
         setHovering(false);
       }}
-      aria-label={`Agent ${agent.name}，状态 ${STATE_LABELS[agent.state]}，OPEN 或双击进入对话`}
-      title="双击打开对话"
+      aria-label={`Agent ${agent.name}，状态 ${STATE_LABELS[agent.state]}，单击进入对话`}
+      title="单击打开对话"
     >
       {/* 名称常驻顶部（重命名在其上展开） */}
       <div className="agent-tile__header">

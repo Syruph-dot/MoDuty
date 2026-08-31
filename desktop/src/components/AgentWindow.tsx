@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
+import { buildMessageSequence } from "../lib/sessionMessages";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -12,7 +13,9 @@ interface StoredMessage {
   timestamp: string;
   /** 流式消息状态：streaming / done / stopped / error（缺省 = 已完成的旧消息） */
   status?: string;
+  /** 落盘工具调用（snake: tool_calls；兼容 camel: toolCalls） */
   toolCalls?: Array<{ tool: string; args: string; result: string }>;
+  tool_calls?: Array<{ tool: string; args: string; result: string }>;
 }
 
 /** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
@@ -87,14 +90,46 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         return [];
       }
       const data = (await res.json()) as { messages: StoredMessage[] };
-      setMessages(
-        data.messages.map((message) => ({
-          key: `${message.timestamp}-${message.role}`,
-          role: message.role === "user" ? "user" : "agent",
-          content: message.content,
-          status: message.status,
-        })),
-      );
+      // 落盘消息 → 展示消息：按 timeline 还原工具卡片与文本段的真实交错顺序
+      // （关闭重开 / onDone 全量重建时与实时 SSE 渲染保持一致；已完成工具默认折叠）
+      const restored: DisplayMessage[] = [];
+      data.messages.forEach((message, index) => {
+        if (message.role !== "agent") {
+          restored.push({
+            key: `${message.timestamp}-${message.role}-${index}`,
+            role: message.role === "user" ? "user" : "agent",
+            content: message.content,
+            status: message.status,
+          });
+          return;
+        }
+        const seq = buildMessageSequence(message);
+        seq.forEach((item, seqIndex) => {
+          if (item.kind === "tool") {
+            restored.push({
+              key: `tool-restored-${message.timestamp}-${index}-${seqIndex}`,
+              role: "tool",
+              content: "",
+              toolCard: {
+                name: item.name,
+                args: item.args,
+                // 流式进行中：无 result 的工具显示为运行中；完成后折叠
+                status: item.result ? "done" : "running",
+                result: item.result,
+                collapsed: message.status === "streaming" ? false : !!item.result,
+              },
+            });
+          } else {
+            restored.push({
+              key: `agent-restored-${message.timestamp}-${index}-${seqIndex}`,
+              role: "agent",
+              content: item.content,
+              status: message.status,
+            });
+          }
+        });
+      });
+      setMessages(restored);
       return data.messages;
     } catch {
       return [];

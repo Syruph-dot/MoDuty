@@ -53,7 +53,7 @@ export async function handleAgentRoutes(
     const runtime = ensureAgents(ctx);
     const body = await readJsonBody(request);
     const name = String(body.name ?? "").trim();
-    const role = String(body.role ?? "").trim();
+    const role = String(body.system ?? body.role ?? "").trim();
     const workspaceDir = String(body.workspace_dir ?? "").trim();
     // name 必填；role 与 workspace_dir 允许空，由 registry 补默认 system prompt / 默认 workspace。
     if (!name) {

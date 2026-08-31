@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import ClockWidget from "../components/widgets/ClockWidget";
+import DutyGirl from "../components/widgets/DutyGirl";
 import type { WidgetDefinition, WidgetKind, WidgetRegistry } from "../types";
 
 /**
@@ -14,8 +15,17 @@ export const WIDGET_REGISTRY: WidgetRegistry = {
     name: "RingClock",
     description: "连续平滑圆环时钟 · 月/日/时/分/秒",
     defaultTitle: "Ring Clock",
-    defaultGeometry: { x: 64, y: 64, w: 220, h: 220 },
+    defaultGrid: { col: 0, row: 0, w: 1, h: 1 },
     renderBody: (): ReactNode => <ClockWidget />,
+  },
+  duty: {
+    kind: "duty",
+    name: "值日生",
+    description: "调度者 Agent · 调查会话并调用 MOMOKA CLI 驱动其它 Agent（固定 2×3）",
+    defaultTitle: "值日生",
+    defaultGrid: { col: 0, row: 1, w: 2, h: 3 },
+    fixedSize: true,
+    renderBody: (): ReactNode => <DutyGirl />,
   },
 };
 

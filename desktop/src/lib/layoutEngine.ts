@@ -37,7 +37,7 @@ export const STAGE_GAP = 10;
 /** 坞区域四周内边距 */
 export const DOCK_PADDING = 10;
 /** 坞内每行最多磁贴数 */
-export const DOCK_COLS = 4;
+export const DOCK_COLS = 3;
 
 /** 画布为空时的安全兜底（bounds 尚未测量到） */
 export function isBoundsReady(bounds: { width: number; height: number }): boolean {

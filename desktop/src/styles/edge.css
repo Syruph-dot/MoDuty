@@ -1,0 +1,304 @@
+/* ============================================================
+   Windows 8 左右栏：右缘 45px 模态切换（charms）+ 左缘 240px hover 滑出分类列表
+   ============================================================ */
+
+/* ---- 右栏：45px 模态切换条（鼠标到右边缘唤出，移开收回） ---- */
+
+.wm-charm-bar {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 45px;
+  z-index: 950;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(24, 26, 34, 0.72), rgba(16, 18, 26, 0.78));
+  border-left: 1px solid rgba(232, 237, 247, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-sizing: border-box;
+  pointer-events: auto;
+  transform: translateX(100%);
+  transition: transform 220ms cubic-bezier(0.2, 0, 0.2, 1);
+  will-change: transform;
+}
+
+.wm-charm-bar--open {
+  transform: translateX(0);
+}
+
+.wm-charm__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  padding: 10px 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(232, 237, 247, 0.82);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.wm-charm__btn:hover,
+.wm-charm__btn--hover {
+  background: rgba(79, 140, 255, 0.22);
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.4);
+}
+
+.wm-charm-bar--on .wm-charm__btn {
+  color: #8fd0ff;
+  background: rgba(79, 140, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.32);
+}
+
+.wm-charm__icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.wm-charm__label {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.wm-charm__mode {
+  font-size: 9px;
+  color: rgba(232, 237, 247, 0.45);
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ---- 左缘 / 右缘热区（透明，hover 滑出对应栏） ---- */
+
+.wm-left-hotzone,
+.wm-right-hotzone {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  z-index: 930;
+  pointer-events: auto;
+}
+
+.wm-left-hotzone {
+  left: 0;
+}
+
+.wm-right-hotzone {
+  right: 0;
+}
+
+/* ---- 左栏：240px 滑出面板（全高） ---- */
+
+.wm-side {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 240px;
+  z-index: 940;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(24, 26, 34, 0.78), rgba(16, 18, 26, 0.84));
+  border-right: 1px solid rgba(232, 237, 247, 0.12);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-sizing: border-box;
+  transform: translateX(-100%);
+  transition: transform 220ms cubic-bezier(0.2, 0, 0.2, 1);
+  will-change: transform;
+  pointer-events: auto;
+}
+
+.wm-side--open {
+  transform: translateX(0);
+}
+
+.wm-side__head {
+  padding: 12px 12px 8px;
+  border-bottom: 1px solid rgba(232, 237, 247, 0.1);
+  flex-shrink: 0;
+}
+
+.wm-side__title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: rgba(232, 237, 247, 0.9);
+  margin-bottom: 10px;
+}
+
+.wm-side__sort {
+  display: flex;
+  gap: 6px;
+}
+
+.wm-side__sort-btn {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
+  background: rgba(232, 237, 247, 0.06);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.wm-side__sort-btn:hover {
+  color: rgba(232, 237, 247, 0.85);
+}
+
+.wm-side__sort-btn--active {
+  color: #ffffff;
+  background: rgba(79, 140, 255, 0.26);
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.36);
+}
+
+/* ---- 分组与卡片 ---- */
+
+.wm-side__groups {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232, 237, 247, 0.2) transparent;
+}
+
+.wm-side__groups::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wm-side__groups::-webkit-scrollbar-thumb {
+  background: rgba(232, 237, 247, 0.22);
+  border-radius: 3px;
+}
+
+.wm-group {
+  margin-bottom: 14px;
+}
+
+.wm-group__title {
+  margin: 10px 4px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(232, 237, 247, 0.42);
+}
+
+.wm-subgroup {
+  margin-bottom: 6px;
+}
+
+.wm-subgroup__title {
+  margin: 8px 4px 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: rgba(232, 237, 247, 0.4);
+}
+
+/* 未打开卡片弱化（打开中保持 --open 高亮） */
+.wm-card--closed {
+  opacity: 0.62;
+}
+
+.wm-card--closed:hover {
+  opacity: 1;
+}
+
+.wm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+  text-align: left;
+  color: rgba(232, 237, 247, 0.9);
+  background: rgba(232, 237, 247, 0.06);
+  border: 1px solid rgba(232, 237, 247, 0.08);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.wm-card:hover {
+  background: rgba(79, 140, 255, 0.16);
+  border-color: rgba(79, 140, 255, 0.34);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.wm-card--open {
+  background: rgba(79, 140, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.26);
+}
+
+.wm-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+.wm-card__phase {
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-card__time {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* 状态点（Win8 磁贴色） */
+.wm-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.3);
+}
+
+.wm-card__dot--idle { background: #8b93a7; }
+.wm-card__dot--running { background: #4f8cff; }
+.wm-card__dot--waiting_approval { background: #ffb02e; }
+.wm-card__dot--completed { background: #33c481; }
+.wm-card__dot--error { background: #e85a5a; }
+.wm-card__dot--launching { background: #4f8cff; }
+.wm-card__dot--ready { background: #33c481; }
+.wm-card__dot--closed { background: #8b93a7; }
+
+.wm-side__empty {
+  margin: 24px 8px;
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.4);
+  text-align: center;
+  letter-spacing: 1px;
+}

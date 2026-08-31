@@ -4,6 +4,7 @@ import App from "./App";
 import "./styles/desktop.css";
 import "./styles/tiles.css";
 import "./styles/window.css";
+import "./styles/edge.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");

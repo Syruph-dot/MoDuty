@@ -171,6 +171,20 @@ export class SessionManager {
     await this.writeMessages(sessionId, messages);
   }
 
+  /**
+   * 流式消息增量补写（工具事件/时间线）：锁内读-改-写，不更新 count/transcript，
+   * 避免高频全量重写。供 tool_start / tool_result / 文本段开始时的实时落盘。
+   */
+  async updateStreamingMessage(sessionId: string, messageId: string, patch: Record<string, unknown>): Promise<void> {
+    await withFileLock(this.messagesPath(sessionId), async () => {
+      const messages = await this.getMessages(sessionId, null);
+      const message = messages.find((m) => m.id === messageId);
+      if (!message) return;
+      Object.assign(message, patch);
+      await this.writeMessages(sessionId, messages);
+    });
+  }
+
   /** 收尾流式消息：落完整段、更新会话元数据与 transcript。status 默认 done，可传 stopped/error */
   async finishStreamingMessage(sessionId: string, messageId: string, extra: Record<string, unknown> = {}): Promise<void> {
     await this.flushStreamingBuffer(sessionId);

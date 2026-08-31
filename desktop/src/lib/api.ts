@@ -1,4 +1,4 @@
-import type { Agent } from "../types";
+import type { Agent, BrowserInfo } from "../types";
 
 /**
  * API base 解析（异步）：
@@ -178,4 +178,46 @@ export async function fetchModels(overrides?: { baseUrl?: string; apiKey?: strin
     "GET /api/models",
   )) as { models: string[] };
   return data.models ?? [];
+}
+
+/* ============================================================
+ * 受控浏览器 API
+ * ============================================================ */
+
+export async function listBrowsers(): Promise<BrowserInfo[]> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(await fetch(`${base}/api/browsers`), "GET /api/browsers")) as { browsers: BrowserInfo[] };
+  return data.browsers;
+}
+
+export async function createBrowser(input: { name?: string; mode?: "persistent" | "incognito" }): Promise<BrowserInfo> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/browsers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+    "POST /api/browsers",
+  )) as { browser: BrowserInfo };
+  return data.browser;
+}
+
+export async function deleteBrowser(id: string): Promise<void> {
+  const base = await awaitApiBase();
+  await jsonOrThrow(await fetch(`${base}/api/browsers/${encodeURIComponent(id)}`, { method: "DELETE" }), "DELETE /api/browsers/:id");
+}
+
+export async function browserAction<T>(id: string, action: string, body?: Record<string, unknown>): Promise<T> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}/api/browsers/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${action}: ${res.status} ${text.slice(0, 160)}`);
+  }
+  return (await res.json()) as T;
 }

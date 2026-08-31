@@ -2,21 +2,23 @@ import { create } from "zustand";
 
 import { listAgents } from "../lib/api";
 import { createAgent as apiCreateAgent, deleteAgent as apiDeleteAgent, renameAgent as apiRenameAgent } from "../lib/api";
-import { DEFAULT_TILE_GEOMETRY, loadAllTiles, removeTile, saveTile } from "../lib/persistTiles";
-import type { Agent, AgentStateEvent, TileGeometry } from "../types";
+import { firstFreeCell, insertTile } from "../lib/gridLayout";
+import { loadAllTiles, removeTile, saveTile, spawnXToCol } from "../lib/persistTiles";
+import type { Agent, AgentStateEvent, TileGrid } from "../types";
+import { useWindowManagerStore } from "./windowManagerStore";
 
 export interface CreateAgentInput {
   name: string;
   workspace_dir?: string;
   model?: string;
-  /** 打开新建菜单时光标相对磁贴墙的坐标；传入后新磁贴以光标为中心落位 */
+  /** 打开新建菜单时光标相对磁贴墙的 X 像素；新磁贴插入到鼠标 X 轴列 */
   spawn?: { x: number; y: number };
 }
 
 interface AgentsStore {
   agents: Agent[];
-  /** 磁贴几何（idle 摆放）：agent.id → 位置/尺寸；启动时从 localStorage 还原 */
-  tiles: Record<string, TileGeometry>;
+  /** 磁贴网格（idle 摆放）：agent.id → 网格坐标/尺寸；启动时从 localStorage 还原 */
+  tiles: Record<string, TileGrid>;
   /** 已打开的磁贴 id（顺序 = 打开顺序）；打开态几何由布局引擎实时计算，不持久化 */
   openAgentIds: string[];
   loading: boolean;
@@ -31,20 +33,22 @@ interface AgentsStore {
   closeAgent: (id: string) => void;
   applyAgentEvent: (event: AgentStateEvent) => void;
   /** 拖动中 / 任何 store 内同步（不落盘） */
-  moveTile: (id: string, geometry: TileGeometry) => void;
+  moveTile: (id: string, grid: TileGrid) => void;
   /** 拖动结束 / 第一次落盘（写 localStorage） */
-  commitTile: (id: string, geometry: TileGeometry) => void;
+  commitTile: (id: string, grid: TileGrid) => void;
   /** 重置某磁贴到默认位置 */
   resetTile: (id: string) => void;
 }
 
-/** 把 agents 列表里没有 tiles 记录的补成默认位置（不落盘，等用户真正动过再写） */
-function ensureDefaultTiles(agents: Agent[], stored: Record<string, TileGeometry>): Record<string, TileGeometry> {
-  const next: Record<string, TileGeometry> = { ...stored };
+/** 把 agents 列表里没有 tiles 记录的逐个插入到网格空位（不落盘，等用户真正动过再写） */
+function ensureDefaultTiles(agents: Agent[], stored: Record<string, TileGrid>): Record<string, TileGrid> {
+  let next: Record<string, TileGrid> = { ...stored };
   let changed = false;
+  let colHint = 0;
   for (const agent of agents) {
     if (!next[agent.id]) {
-      next[agent.id] = { ...DEFAULT_TILE_GEOMETRY };
+      next = insertTile(next, agent.id, colHint);
+      colHint += 1;
       changed = true;
     }
   }
@@ -89,18 +93,10 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         ...(input.model ? { model: input.model } : {}),
       });
       set((state) => {
-        // 新 agent：默认位置；若打开菜单时光标坐标已知，则以光标为中心落位
-        const spawnGeom = input.spawn
-          ? {
-              x: Math.max(0, input.spawn.x - DEFAULT_TILE_GEOMETRY.w / 2),
-              y: Math.max(0, input.spawn.y - DEFAULT_TILE_GEOMETRY.h / 2),
-              w: DEFAULT_TILE_GEOMETRY.w,
-              h: DEFAULT_TILE_GEOMETRY.h,
-            }
-          : { ...DEFAULT_TILE_GEOMETRY };
+        // 新 agent：插入到鼠标 X 轴列；若已有则保持既有位置
         const tiles = state.tiles[agent.id]
           ? state.tiles
-          : { ...state.tiles, [agent.id]: spawnGeom };
+          : insertTile(state.tiles, agent.id, spawnXToCol(input.spawn?.x));
         return { agents: [agent, ...state.agents], tiles };
       });
       return agent;
@@ -147,6 +143,8 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   },
 
   openAgent(id) {
+    useWindowManagerStore.getState().markOpened("agent", id);
+    window.dispatchEvent(new CustomEvent("momoka:tile-opened"));
     set((state) => ({
       openAgentIds: state.openAgentIds.includes(id) ? state.openAgentIds : [...state.openAgentIds, id],
     }));
@@ -159,6 +157,9 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   },
 
   applyAgentEvent(event) {
+    if (event.state === "completed") {
+      useWindowManagerStore.getState().markCompleted("agent", event.agent_id);
+    }
     set((state) => ({
       agents: state.agents.map((agent) =>
         agent.id === event.agent_id
@@ -184,8 +185,12 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   },
 
   resetTile(id) {
-    const next = { ...DEFAULT_TILE_GEOMETRY };
-    set((state) => ({ tiles: { ...state.tiles, [id]: next } }));
-    saveTile(id, next);
+    set((state) => {
+      // 重置到网格最左侧第一个空单格（1×1 默认尺寸）
+      const slot = firstFreeCell(state.tiles, 0);
+      const next = { ...state.tiles, [id]: { col: slot.col, row: slot.row, w: 1, h: 1 } };
+      saveTile(id, next[id]);
+      return { tiles: next };
+    });
   },
 }));

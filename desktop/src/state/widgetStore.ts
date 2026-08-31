@@ -1,13 +1,14 @@
 import { create } from "zustand";
 
+import { firstFreeSlot } from "../lib/gridLayout";
 import {
-  DEFAULT_TILE_GEOMETRY,
   loadAllTiles,
   removeTile,
   saveTile,
+  spawnXToCol,
 } from "../lib/persistTiles";
 import { WIDGET_REGISTRY } from "./widgetRegistry";
-import type { TileGeometry, WidgetInstance, WidgetKind } from "../types";
+import type { TileGrid, WidgetInstance, WidgetKind } from "../types";
 
 /* 启动时光标相对磁贴墙的落点：由 WidgetPickerCard 选择后传入 */
 interface WidgetSpawn {
@@ -27,9 +28,9 @@ interface WidgetStore {
   /** 改名（仅前端，不接后端） */
   renameWidget: (id: string, title: string) => void;
   /** 拖动中（只改 store，不落盘） */
-  moveWidget: (id: string, geometry: TileGeometry) => void;
+  moveWidget: (id: string, grid: TileGrid) => void;
   /** 拖动结束（落盘 localStorage） */
-  commitWidget: (id: string, geometry: TileGeometry) => void;
+  commitWidget: (id: string, grid: TileGrid) => void;
 }
 
 let widgetSeq = 0;
@@ -51,7 +52,7 @@ function nextWidgetId(kind: WidgetKind, existing: WidgetInstance[]): string {
 function buildFromStorage(): WidgetInstance[] {
   const all = loadAllTiles();
   const result: WidgetInstance[] = [];
-  for (const [key, geom] of Object.entries(all)) {
+  for (const [key, grid] of Object.entries(all)) {
     if (!key.startsWith("widget:")) continue;
     // key 形如 widget:<kind>:<seq>，解析 kind
     const kind = key.slice("widget:".length).split(":")[0] as WidgetKind;
@@ -60,7 +61,7 @@ function buildFromStorage(): WidgetInstance[] {
       // 未知 kind（如旧版本残留）→ 跳过，不渲染
       continue;
     }
-    result.push({ id: key, kind, title: def.defaultTitle, geometry: geom });
+    result.push({ id: key, kind, title: def.defaultTitle, grid });
   }
   return result;
 }
@@ -77,18 +78,16 @@ export const useWidgetStore = create<WidgetStore>()((set) => ({
     if (!def) return;
     set((state) => {
       const id = nextWidgetId(kind, state.widgets);
-      // 默认几何基础上，若用户在选择卡点击处落位，则以光标为中心
-      const geometry: TileGeometry = spawn
-        ? {
-            x: Math.max(0, spawn.x - def.defaultGeometry.w / 2),
-            y: Math.max(0, spawn.y - def.defaultGeometry.h / 2),
-            w: def.defaultGeometry.w,
-            h: def.defaultGeometry.h,
-          }
-        : { ...DEFAULT_TILE_GEOMETRY };
-      const instance: WidgetInstance = { id, kind, title: def.defaultTitle, geometry };
+      // 按 defaultGrid 尺寸找空位落位（保持已有磁贴位置不变；值日生 2×3 等固定尺寸生效）
+      const map: Record<string, TileGrid> = {};
+      for (const widget of state.widgets) {
+        map[widget.id] = widget.grid;
+      }
+      const slot = firstFreeSlot(map, spawnXToCol(spawn?.x), def.defaultGrid.w, def.defaultGrid.h);
+      const grid = { ...def.defaultGrid, col: slot.col, row: slot.row };
+      const instance: WidgetInstance = { id, kind, title: def.defaultTitle, grid };
       // 立即落盘几何（空几何也写，方便下次启动还原）
-      saveTile(id, geometry);
+      saveTile(id, grid);
       return { widgets: [...state.widgets, instance] };
     });
   },
@@ -112,16 +111,16 @@ export const useWidgetStore = create<WidgetStore>()((set) => ({
     });
   },
 
-  moveWidget(id, geometry) {
+  moveWidget(id, grid) {
     set((state) => ({
-      widgets: state.widgets.map((widget) => (widget.id === id ? { ...widget, geometry } : widget)),
+      widgets: state.widgets.map((widget) => (widget.id === id ? { ...widget, grid } : widget)),
     }));
   },
 
-  commitWidget(id, geometry) {
+  commitWidget(id, grid) {
     set((state) => ({
-      widgets: state.widgets.map((widget) => (widget.id === id ? { ...widget, geometry } : widget)),
+      widgets: state.widgets.map((widget) => (widget.id === id ? { ...widget, grid } : widget)),
     }));
-    saveTile(id, geometry);
+    saveTile(id, grid);
   },
 }));

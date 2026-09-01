@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { Agent, AgentState } from "../types";
 import { formatShortTime } from "../lib/tileContent";
+import { splitHighlight } from "../lib/agentFilter";
 import { useTileThemeStore } from "../state/tileThemeStore";
 
 export const STATE_LABELS: Record<AgentState, string> = {
@@ -36,6 +37,10 @@ interface AgentTileProps {
   onRenameCommit?: (name: string) => void;
   /** 取消（Esc） */
   onRenameCancel?: () => void;
+  /** 钉住标记（方案 D）：显示角标，表示永远留在磁贴墙 */
+  pinned?: boolean;
+  /** 搜索命中词（方案 A）：name/goal 命中处 <mark> 高亮 */
+  highlight?: string;
 }
 
 /**
@@ -52,7 +57,15 @@ interface AgentTileProps {
  * - footer = dot + 最近活跃时间；hover 浮现黑色 utility 条（OPEN ↵）
  * - 字号 / 字体家族由 tileThemeStore 配置，经 CSS 变量注入
  */
-export default function AgentTile({ agent, onOpen, renaming = false, onRenameCommit, onRenameCancel }: AgentTileProps) {
+export default function AgentTile({
+  agent,
+  onOpen,
+  renaming = false,
+  onRenameCommit,
+  onRenameCancel,
+  pinned = false,
+  highlight = "",
+}: AgentTileProps) {
   const theme = useTileThemeStore();
   const [draft, setDraft] = useState(agent.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -141,6 +154,16 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
       : "slow"
     : null;
 
+  // 命中高亮渲染（方案 A）：切分为 <mark>/纯文本段
+  const renderHighlighted = (text: string) =>
+    highlight.trim() ? (
+      splitHighlight(text, highlight).map((segment, i) =>
+        segment.hit ? <mark key={i} className="agent-tile__mark">{segment.text}</mark> : <span key={i}>{segment.text}</span>,
+      )
+    ) : (
+      text
+    );
+
   return (
     <button
       type="button"
@@ -189,8 +212,13 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
             }}
           />
         ) : (
-          <span className="agent-tile__name">{agent.name}</span>
+          <span className="agent-tile__name">{renderHighlighted(agent.name)}</span>
         )}
+        {pinned ? (
+          <span className="agent-tile__pin" aria-label="已钉住" title="已钉住（始终在墙）">
+            📌
+          </span>
+        ) : null}
       </div>
 
       <div className="agent-tile__pages">
@@ -199,7 +227,7 @@ export default function AgentTile({ agent, onOpen, renaming = false, onRenameCom
           {/* 页1：最近结果 */}
           <div className="agent-tile__page" aria-hidden={activePage !== 0}>
             <div className="agent-tile__role">LAST RESULT</div>
-            <div className="agent-tile__result">{messageGoal || "No result yet"}</div>
+            <div className="agent-tile__result">{renderHighlighted(messageGoal) || "No result yet"}</div>
           </div>
 
           {/* 页2：上下文指标（长度/窗口 + 占用率/缓存命中率） */}

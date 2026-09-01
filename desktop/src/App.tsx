@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 
 import ApprovalPanel from "./components/ApprovalPanel";
+import AgentFilterBar from "./components/AgentFilterBar";
+import ArchivePanel from "./components/ArchivePanel";
 import ContextMenu from "./components/ContextMenu";
 import ControlBar from "./components/ControlBar";
 import Desktop from "./components/Desktop";
@@ -41,7 +43,9 @@ export default function App() {
   return (
     <div className="desktop-shell" ref={shellRef}>
       <ControlBar />
+      <AgentFilterBar />
       <Desktop onOpen={(candidate) => openAgent(candidate.id)} />
+      <ArchivePanel />
       <ApprovalPanel />
       <ContextMenu />
       <NewAgentDialog />

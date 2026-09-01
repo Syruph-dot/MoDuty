@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { useDialogStore } from "../state/dialogStore";
+import { useAgentsStore } from "../state/agentsStore";
 import { useTileThemeStore, type TileTheme } from "../state/tileThemeStore";
 import { fetchSettings, updateSettings, fetchModels } from "../lib/api";
 
@@ -159,6 +160,9 @@ export default function SettingsDialog() {
         {/* 磁贴字体主题：前端样式可配置项 */}
         <TileFontSection />
 
+        {/* 磁贴墙治理（方案 D）：自动归档阈值（前端本地偏好） */}
+        <ArchiveSection />
+
         {error ? (
           <p className="dialog__error" role="alert">
             {error}
@@ -180,6 +184,42 @@ export default function SettingsDialog() {
         </div>
       </form>
     </div>
+  );
+}
+
+/** 磁贴墙治理（方案 D）：自动归档阈值（前端本地偏好，存 localStorage，不影响后端设置保存） */
+function ArchiveSection() {
+  const archiveDays = useAgentsStore((state) => state.archiveDays);
+  const setArchiveDays = useAgentsStore((state) => state.setArchiveDays);
+
+  const options: ReadonlyArray<{ value: number; label: string }> = [
+    { value: 7, label: "7 天" },
+    { value: 14, label: "14 天" },
+    { value: 30, label: "30 天" },
+    { value: 60, label: "60 天" },
+    { value: 0, label: "关闭自动归档" },
+  ];
+
+  return (
+    <section className="dialog__field">
+      <span className="dialog__label">自动归档阈值（磁贴墙）</span>
+      <div className="archive-threshold-row" role="group" aria-label="自动归档阈值">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`filter-chip${archiveDays === option.value ? " filter-chip--active" : ""}`}
+            aria-pressed={archiveDays === option.value}
+            onClick={() => setArchiveDays(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <span style={{ opacity: 0.7, fontSize: 12 }}>
+        超过阈值且未钉住的 Agent 自动移出磁贴墙，进入归档库（不删除会话）。
+      </span>
+    </section>
   );
 }
 

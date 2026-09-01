@@ -1,0 +1,610 @@
+/* ============================================================
+ * 磁贴墙治理（A+B+D）：治理栏 / 归档库 / 分组墙 / 高亮与角标
+ * 用户偏好：治理控件全部使用直角矩形（border-radius: 0，禁用圆角）
+ * ============================================================ */
+
+/* ---- 治理按钮（控制条新增）：直角 ---- */
+.control-bar__btn--mgmt {
+  border-radius: 0;
+  font-size: 14px;
+}
+.control-bar__btn--mgmt.control-bar__btn--active {
+  background: rgba(79, 140, 255, 0.35);
+  color: #fff;
+}
+
+/* ---- 顶部治理栏（方案 A）：搜索 + chips + 排序 ----
+ * 用户偏好：治理栏固定于左侧（不占顶部），直角矩形风格 */
+.filter-bar {
+  position: fixed;
+  top: 54px;
+  left: 12px;
+  bottom: 12px;
+  width: 340px;
+  z-index: 950;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  overflow-y: auto;
+  background: rgba(10, 14, 24, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0; /* 禁用圆角矩形 */
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.filter-bar__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-bar__search {
+  flex: 1;
+  min-width: 220px;
+  height: 34px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  color: #e8edf7;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0; /* 禁用圆角矩形 */
+  outline: none;
+}
+.filter-bar__search:focus {
+  border-color: #4f8cff;
+  background: rgba(255, 255, 255, 0.09);
+}
+.filter-bar__search::placeholder {
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.filter-bar__group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.filter-bar__label {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: rgba(232, 237, 247, 0.55);
+  margin-right: 2px;
+  user-select: none;
+}
+
+.filter-chip {
+  height: 28px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12px;
+  color: #cdd6e6;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0; /* 禁用圆角矩形 */
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.filter-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.filter-chip--active {
+  background: rgba(79, 140, 255, 0.3);
+  border-color: #4f8cff;
+  color: #fff;
+}
+.filter-chip--ws {
+  max-width: 180px;
+}
+
+.filter-bar__reset {
+  margin-left: auto;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: #ff9d9d;
+  background: transparent;
+  border: 1px solid rgba(255, 130, 130, 0.35);
+  border-radius: 0; /* 禁用圆角矩形 */
+  cursor: pointer;
+}
+.filter-bar__reset:hover {
+  background: rgba(255, 130, 130, 0.15);
+}
+
+.filter-bar__close {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+  color: #cdd6e6;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0; /* 禁用圆角矩形 */
+  cursor: pointer;
+}
+.filter-bar__close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ---- 归档横幅（方案 D）：墙底 ---- */
+.wall-footer-banner {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 90;
+  padding: 8px 18px;
+  font: inherit;
+  font-size: 13px;
+  color: #dbe6ff;
+  background: rgba(23, 34, 58, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0; /* 禁用圆角矩形 */
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+.wall-footer-banner:hover {
+  background: rgba(47, 107, 255, 0.55);
+}
+
+/* ---- 空态（free 视图：筛选后无命中） ---- */
+.tile-wall__filter-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.tile-wall__filter-empty p {
+  margin: 0;
+  font-size: 15px;
+  color: rgba(232, 237, 247, 0.6);
+}
+.tile-wall__filter-empty .btn {
+  pointer-events: auto;
+}
+
+/* ---- 归档库侧边面板（方案 D） ---- */
+.archive-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  color: #e8edf7;
+  background: rgba(12, 18, 34, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0; /* 禁用圆角矩形 */
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
+  animation: archive-panel-in 160ms ease-out;
+}
+@keyframes archive-panel-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.archive-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+}
+.archive-panel__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 300;
+  letter-spacing: 0.04em;
+}
+.archive-panel__close {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 1;
+  color: #cdd6e6;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0; /* 禁用圆角矩形 */
+  cursor: pointer;
+}
+.archive-panel__close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.archive-panel__hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+.archive-panel__search {
+  flex: none;
+  margin-top: 12px;
+  height: 34px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  color: #e8edf7;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0; /* 禁用圆角矩形 */
+  outline: none;
+}
+.archive-panel__search:focus {
+  border-color: #4f8cff;
+}
+.archive-panel__search::placeholder {
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.archive-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  flex: none;
+}
+.archive-panel__unarchive-all {
+  border-color: rgba(255, 159, 159, 0.4);
+  color: #ffb0b0;
+}
+
+.archive-panel__list {
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.archive-panel__list::-webkit-scrollbar {
+  width: 6px;
+}
+.archive-panel__list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.archive-panel__empty {
+  margin: 24px 0;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.archive-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0; /* 禁用圆角矩形 */
+}
+.archive-item__main {
+  min-width: 0;
+}
+.archive-item__name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.archive-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
+}
+.archive-item__ws {
+  max-width: 130px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #7ab0ff;
+}
+.archive-item__badge {
+  padding: 1px 6px;
+  font-size: 10px;
+  color: #ffd27a;
+  border: 1px solid rgba(255, 210, 122, 0.4);
+}
+.archive-item__badge--pin {
+  color: #9ad0ff;
+  border-color: rgba(154, 208, 255, 0.4);
+}
+.archive-item__actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.archive-item__actions .btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 0; /* 禁用圆角矩形 */
+}
+
+.archive-panel__foot {
+  flex: none;
+  margin: 12px 0 0;
+  text-align: center;
+}
+.archive-panel__foot-btn {
+  font: inherit;
+  font-size: 13px;
+  color: #9abaff;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.archive-panel__foot-btn:hover {
+  color: #fff;
+}
+
+/* ---- 分组墙（方案 B）：X 轴分列布局 ---- */
+.grouped-wall {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 20px 64px;
+}
+.grouped-wall::-webkit-scrollbar {
+  width: 8px;
+}
+.grouped-wall::-webkit-scrollbar-thumb {
+  background: rgba(232, 237, 247, 0.22);
+}
+
+/* 工作区切换 tab（直角） */
+.ws-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px 12px;
+  background: rgba(10, 14, 24, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0; /* 禁用圆角矩形 */
+  margin-bottom: 14px;
+}
+.ws-tabs__tab {
+  height: 30px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 13px;
+  color: #cdd6e6;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0; /* 禁用圆角矩形 */
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-tabs__tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.ws-tabs__tab--active {
+  background: rgba(79, 140, 255, 0.32);
+  border-color: #4f8cff;
+  color: #fff;
+}
+
+/* 列容器：组与组按 X 轴分开，每组占一个 X 区间（横向排列） */
+.grouped-wall__cols {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: nowrap;
+}
+
+/* 单组：占有 --ws-group-width 宽度的 X 区间 */
+.ws-group {
+  flex: none;
+  width: var(--ws-group-width, 480px);
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 组头：上方预留空间左对齐显示组名（Segoe UI 细体） */
+.ws-group__head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px 8px 2px;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+}
+.ws-group__title {
+  font-family: "Segoe UI Light", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-weight: 300;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  color: #e8edf7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-group__count {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.5);
+}
+.ws-group__fold {
+  margin-left: auto;
+  color: rgba(232, 237, 247, 0.5);
+  font-size: 13px;
+}
+.ws-group__head:hover .ws-group__title {
+  color: #fff;
+}
+
+/* 组内磁贴：统一尺寸小磁贴网格（不使用自由 tiles 坐标） */
+.ws-group__tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 12px;
+}
+.ws-group__tile {
+  width: 220px;
+  height: 150px;
+  position: relative;
+}
+.ws-group__tile .agent-tile {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+}
+
+.grouped-wall__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 0;
+  color: rgba(232, 237, 247, 0.55);
+  font-size: 14px;
+}
+.grouped-wall__empty .btn {
+  border-radius: 0; /* 禁用圆角矩形 */
+}
+
+/* ---- AgentTile 增强：钉住角标 + 命中高亮 ---- */
+.agent-tile__pin {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 3;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.9;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.agent-tile__mark {
+  background: rgba(255, 200, 60, 0.85);
+  color: #1a1305;
+  border-radius: 0;
+  padding: 0 1px;
+}
+
+/* ---- 拖拽成组：组名层（顶部保留行，Segoe UI Light，左对齐） ---- */
+.tile-group-name {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 8px;
+  font-family: "Segoe UI Light", "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-weight: 300;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  color: #e8edf7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  user-select: none;
+  border: 1px solid transparent;
+  border-radius: 0; /* 禁用圆角矩形 */
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.tile-group-name__text {
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile-group-name__count {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.5);
+  flex: none;
+}
+.tile-group-name__edit {
+  width: 100%;
+  font: inherit;
+  font-weight: 300;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  color: #1a1305;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 0; /* 禁用圆角矩形 */
+  padding: 0 6px;
+  outline: none;
+}
+/* 跨组 hover 0.5s 激活：组名/磁贴整块亮起（松手成组） */
+.tile-group-name--drop {
+  color: #cfe0ff;
+  background: rgba(79, 140, 255, 0.16);
+  border-color: rgba(79, 140, 255, 0.75);
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.45);
+}
+.tile-shell--drop {
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.55) !important;
+}
+/* 按住超过 1s：切换「排斥」模式（橙亮，松手 = 排斥落位：源落入目标位置，目标带内让位 → 无重叠） */
+.tile-group-name--repel {
+  color: #ffe4c2;
+  background: rgba(255, 170, 60, 0.16);
+  border-color: rgba(255, 170, 60, 0.8);
+  box-shadow: 0 0 0 3px rgba(255, 170, 60, 0.5);
+}
+.tile-shell--repel {
+  box-shadow: 0 0 0 3px rgba(255, 170, 60, 0.6) !important;
+}
+
+/* 组标题拖拽排序：拖动中半透明，经过目标组高亮 */
+.tile-group-name--dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+.tile-group-name--reorder-drop {
+  color: #d8f2ff;
+  background: rgba(0, 170, 255, 0.16);
+  border-color: rgba(0, 170, 255, 0.85);
+  box-shadow: 0 0 0 3px rgba(0, 170, 255, 0.55);
+}
+.tile-group-name {
+  cursor: grab;
+}

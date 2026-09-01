@@ -4,8 +4,8 @@ export type ResizeDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 export type DragMode = "move" | `resize-${ResizeDirection}`;
 
 export interface DragOptions {
-  /** 拖拽中持续触发：deltaX/deltaY 相对 mousedown 起点 */
-  onMove?: (deltaX: number, deltaY: number, mode: DragMode) => void;
+  /** 拖拽中持续触发：deltaX/deltaY 相对 mousedown 起点；event 为原生 mousemove 事件（用于指针命中检测） */
+  onMove?: (deltaX: number, deltaY: number, mode: DragMode, event: MouseEvent) => void;
   /** mouseup 时触发一次；didMove 表示是否真的移动过（超过 threshold） */
   onEnd?: (deltaX: number, deltaY: number, didMove: boolean, mode: DragMode) => void;
   /** 位移阈值（像素），避免点击误触发拖拽。默认 3 */
@@ -52,7 +52,7 @@ export function useDrag(options: DragOptions = {}): DragHandle {
         return;
       }
       state.moved = true;
-      optsRef.current.onMove?.(dx, dy, state.mode);
+      optsRef.current.onMove?.(dx, dy, state.mode, event);
     };
 
     const handleUp = (event: MouseEvent) => {

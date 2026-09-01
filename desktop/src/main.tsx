@@ -5,6 +5,7 @@ import "./styles/desktop.css";
 import "./styles/tiles.css";
 import "./styles/window.css";
 import "./styles/edge.css";
+import "./styles/governance.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");

@@ -77,6 +77,12 @@ interface TileShellProps {
   displacedPreview?: boolean;
   /** 松手时提交“被排斥（让位）磁贴”的最终网格（id → grid）；由父级落盘，使它们定格在临时位置 */
   onCommitDisplaced?: (map: Record<string, TileGrid>) => void;
+  /** 网格坐标约束（拖拽成组：组带内的允许列/r行范围；free 拖动时 nextCol/nextRow 会被 clamp 到该矩形） */
+  gridClamp?: { minCol: number; maxCol: number; minRow: number; maxRow: number };
+  /** 组带起始 X（px，内容区相对坐标）：ghost/像素派生时叠加，让磁贴渲染在带内 */
+  bandX?: number;
+  /** 打开态画布弱化层：未打开且非 dock 的磁贴以画布位置弱化显示（透明可见初始画布） */
+  canvasGhost?: boolean;
 }
 
 /** 开合动画统一速度曲线：无加速仅减速（先快后慢） */
@@ -178,6 +184,9 @@ export default function TileShell({
   contextMenuItems,
   displacedPreview = false,
   onCommitDisplaced,
+  gridClamp,
+  bandX = 0,
+  canvasGhost = false,
 }: TileShellProps) {
   const showContextMenu = useContextMenuStore((state) => state.show);
   const openRename = useDialogStore((state) => state.openRename);
@@ -290,35 +299,74 @@ export default function TileShell({
       else if (centerY > ghostPx.y + ghostPx.h) nextRow += 1;
       nextCol = Math.max(0, nextCol);
       nextRow = Math.max(GRID_START_ROW, Math.min(nextRow, GRID_ROWS - originGrid.h));
+      // 拖拽成组：限制在组带内部（不越带拖出）
+      if (gridClamp) {
+        nextCol = Math.max(gridClamp.minCol, Math.min(nextCol, gridClamp.maxCol));
+        nextRow = Math.max(gridClamp.minRow, Math.min(nextRow, gridClamp.maxRow));
+      }
       return { ...originGrid, col: nextCol, row: nextRow };
     }
     const dir = dragMode.slice("resize-".length) as ResizeDirection;
     return quantizeResize(gridMap, id, dir, originGrid, dx, dy, metrics);
   };
 
-  const { onMouseDown, isDragging, mode: dragMode } = useDrag({
-    onMove: (dx, dy, dragMode) => {
-      if (mode === "free") {
-        if (!originRef.current || !metrics) return;
-        const originPx = originRef.current;
-        // 本体像素跟手（无量化）→ 视觉即时响应鼠标
-        const nextPx = applyDelta(originPx, dx, dy, dragMode);
-        setDragOffset({
-          x: nextPx.x - originPx.x,
-          y: nextPx.y - originPx.y,
-          w: nextPx.w - originPx.w,
-          h: nextPx.h - originPx.h,
-        });
-        // 量化落点 → 灰色提示框
-        const ghost = computeGhost(dx, dy, dragMode);
-        ghostRef.current = ghost;
-        if (ghost && metrics) {
-          setGhost(gridToPixels(ghost, metrics));
-          // 灰框临时让位：被波及磁贴预览布局（离开后自动恢复）
-          if (gridMap) {
-            setDisplaced(displaceTiles(gridMap, ghost, id));
+  // 拖动中最后一次 delta（供画布边缘自动滚动时同步重算 ghost）
+  const lastDeltaRef = useRef({ dx: 0, dy: 0 });
+  // 画布自动滚动累计补偿（px）：滚动后 ghost 计算统一叠加，保持磁贴相对指针跟手
+  const scrollCompRef = useRef(0);
+  // free 拖动主体：由 useDrag.onMove 与画布滚动补偿共用（滚动时叠加 scrollComp → ghost 跟手）
+  const applyFreeMoveRef = useRef<(dx: number, dy: number, dragMode: DragMode, event: { clientX: number; clientY: number }) => void>(() => {});
+  applyFreeMoveRef.current = (dx, dy, dragMode, event) => {
+    if (!originRef.current || !metrics) return;
+    const originPx = originRef.current;
+    const effDx = dx + scrollCompRef.current;
+    // 本体像素跟手（无量化）→ 视觉即时响应鼠标
+    const nextPx = applyDelta(originPx, effDx, dy, dragMode);
+    setDragOffset({
+      x: nextPx.x - originPx.x,
+      y: nextPx.y - originPx.y,
+      w: nextPx.w - originPx.w,
+      h: nextPx.h - originPx.h,
+    });
+    // 量化落点 → 灰色提示框
+    const ghost = computeGhost(effDx, dy, dragMode);
+    ghostRef.current = ghost;
+    if (ghost && metrics) {
+      setGhost(gridToPixels(ghost, metrics, bandX));
+      // 灰框临时让位：被波及磁贴预览布局（离开后自动恢复）
+      // 指针正悬停在其它磁贴/组名上 → 抑制让位（目标稳在原位，供 Desktop hover 成组/排斥检测）；
+      // 指针在空白 → 照旧让位（带内自由排布 / 组内自由布局）
+      if (gridMap) {
+        let hoverTarget = false;
+        try {
+          for (const el of document.elementsFromPoint(event.clientX, event.clientY)) {
+            const tileEl = el.closest?.("[data-tile-id]") as HTMLElement | null;
+            if (tileEl && tileEl.dataset.tileId && tileEl.dataset.tileId !== id) {
+              hoverTarget = true;
+              break;
+            }
+            if (el.closest?.("[data-group-name]")) {
+              hoverTarget = true;
+              break;
+            }
           }
+        } catch {
+          /* elementsFromPoint 偶发不可用：回退到让位照旧 */
         }
+        if (hoverTarget) {
+          clearDisplaced();
+        } else {
+          setDisplaced(displaceTiles(gridMap, ghost, id));
+        }
+      }
+    }
+  };
+
+  const { onMouseDown, isDragging, mode: dragMode } = useDrag({
+    onMove: (dx, dy, dragMode, event) => {
+      if (mode === "free") {
+        lastDeltaRef.current = { dx, dy };
+        applyFreeMoveRef.current(dx, dy, dragMode, event);
         return;
       }
       // expanded：沿用旧像素 snap + 左坞检测
@@ -371,6 +419,7 @@ export default function TileShell({
       originRef.current = null;
       originGridRef.current = null;
       ghostRef.current = null;
+      scrollCompRef.current = 0;
       setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       setOverDock(false);
       clearSnapGuides();
@@ -386,6 +435,28 @@ export default function TileShell({
       setOverDock(false);
     }
   }, [geometry.x, geometry.y, geometry.w, geometry.h, isDragging]);
+
+  // 拖动中的指针坐标由 Desktop 全局 mousemove 转发（.tile-shell--dragging）驱动 hover 状态机，TileShell 不介入
+
+  // 画布边缘自动滚动补偿：Desktop 滚动时派发 momoka:wall-scroll，
+  // 这里把滚动量叠加到累计补偿并立即重算 ghost（保持磁贴相对指针跟手）
+  useEffect(() => {
+    const onWallScroll = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { delta?: number; clientX?: number; clientY?: number } | undefined;
+      const delta = detail?.delta;
+      if (!delta || !isDragging || !originRef.current) return;
+      if (dragMode === "move") {
+        scrollCompRef.current += delta;
+        const last = lastDeltaRef.current;
+        applyFreeMoveRef.current(last.dx, last.dy, "move", {
+          clientX: detail.clientX ?? 0,
+          clientY: detail.clientY ?? 0,
+        });
+      }
+    };
+    window.addEventListener("momoka:wall-scroll", onWallScroll);
+    return () => window.removeEventListener("momoka:wall-scroll", onWallScroll);
+  }, [isDragging, dragMode]);
 
   const onTileContextMenu = (event: React.MouseEvent) => {
     // 展开态（打开的对话窗口）不弹卡片菜单，避免与窗口内交互冲突
@@ -477,7 +548,7 @@ export default function TileShell({
 
   return (
     <div
-      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}`}
+      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}`}
       style={style}
       data-tile-id={id}
       data-drag-mode={dragMode ?? ""}

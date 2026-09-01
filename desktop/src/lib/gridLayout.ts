@@ -43,10 +43,10 @@ export function computeMetrics(
   return { cellW: cellH, cellH, gap, padding, rows };
 }
 
-/** grid → 像素（绝对定位几何）。 */
-export function gridToPixels(tg: TileGrid, m: GridMetrics): TileGeometry {
+/** grid → 像素（绝对定位几何）。offsetX：组带起始 X（内容区相对坐标，内部再加 padding） */
+export function gridToPixels(tg: TileGrid, m: GridMetrics, offsetX = 0): TileGeometry {
   return {
-    x: m.padding + tg.col * (m.cellW + m.gap),
+    x: m.padding + offsetX + tg.col * (m.cellW + m.gap),
     y: m.padding + tg.row * (m.cellH + m.gap),
     w: tg.w * m.cellW + (tg.w - 1) * m.gap,
     h: tg.h * m.cellH + (tg.h - 1) * m.gap,

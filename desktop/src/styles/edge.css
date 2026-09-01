@@ -2,14 +2,14 @@
    Windows 8 左右栏：右缘 45px 模态切换（charms）+ 左缘 240px hover 滑出分类列表
    ============================================================ */
 
-/* ---- 右栏：45px 模态切换条（鼠标到右边缘唤出，移开收回） ---- */
+/* ---- 右栏：模态切换条（鼠标到右边缘唤出，移开收回） ---- */
 
 .wm-charm-bar {
   position: fixed;
   right: 0;
   top: 0;
   bottom: 0;
-  width: 45px;
+  width: 120px;
   z-index: 950;
   display: flex;
   flex-direction: column;
@@ -32,50 +32,56 @@
 }
 
 .wm-charm__btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 40px;
-  padding: 10px 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  position: relative;
+  display: block;
+  padding: 0;
+  width: 70%;
+  aspect-ratio: 1; /* 方形：宽=高，hover 背景呈方形 */
+  border: none;
+  border-radius: 0; /* 方形：禁用圆角矩形 */
   background: transparent;
-  color: rgba(232, 237, 247, 0.82);
+  color: rgba(232, 237, 247, 0.8);
   cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
-}
-
-.wm-charm__btn:hover,
-.wm-charm__btn--hover {
-  background: rgba(79, 140, 255, 0.22);
-  color: #ffffff;
-  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.4);
+  /* 图标直露居中：默认无任何背景/边框提示 */
 }
 
 .wm-charm-bar--on .wm-charm__btn {
   color: #8fd0ff;
-  background: rgba(79, 140, 255, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(79, 140, 255, 0.32);
 }
 
-.wm-charm__icon {
-  font-size: 18px;
-  line-height: 1;
+/* hover：方形“向上渐变”背景整体渐显，0.3s 完成（背景层淡入） */
+.wm-charm__btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(79, 140, 255, 0.42), rgba(79, 140, 255, 0.06));
+  opacity: 0;
+  transition: opacity 300ms ease;
+  pointer-events: none;
 }
 
-.wm-charm__label {
-  font-size: 10px;
-  letter-spacing: 0.5px;
+.wm-charm__btn:hover::before {
+  opacity: 1;
 }
 
-.wm-charm__mode {
-  font-size: 9px;
-  color: rgba(232, 237, 247, 0.45);
-  writing-mode: vertical-rl;
-  letter-spacing: 2px;
-  text-transform: uppercase;
+.wm-charm__btn:active::before {
+  transition-duration: 120ms;
+  opacity: 0.85;
+}
+
+/* 图标 = 动态参数曲线 canvas（右栏唤出时动画；常亮，hover 仅淡入渐变背景） */
+.wm-charm__cv {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  opacity: 0.85; /* 提高亮度 */
+  transform-origin: center;
+}
+
+.wm-charm-bar--on .wm-charm__cv {
+  opacity: 1;
 }
 
 /* ---- 左缘 / 右缘热区（透明，hover 滑出对应栏） ---- */
@@ -85,7 +91,7 @@
   position: fixed;
   top: 0;
   bottom: 0;
-  width: 14px;
+  width: 10px;
   z-index: 930;
   pointer-events: auto;
 }

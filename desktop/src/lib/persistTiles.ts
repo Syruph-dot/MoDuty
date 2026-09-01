@@ -50,6 +50,21 @@ export function saveTile(id: string, grid: TileGrid): void {
   }
 }
 
+/** 批量写回整张 tiles 表（一次性迁移 / 全量整理后使用） */
+export function saveAllTiles(map: TileGridMap): void {
+  if (typeof localStorage === "undefined") return;
+  const all: TileGridMap = {};
+  for (const [id, grid] of Object.entries(map)) {
+    const g = sanitizeGrid(grid);
+    if (g) all[id] = g;
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // 静默失败
+  }
+}
+
 export function removeTile(id: string): void {
   if (typeof localStorage === "undefined") return;
   const all = loadAllTiles();

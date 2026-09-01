@@ -13,6 +13,30 @@
   box-sizing: border-box;
 }
 
+/* 拖拽平移画布：空白处左键按住拖动（抓手光标） */
+.tile-wall--panning {
+  cursor: grabbing !important;
+}
+.tile-wall--panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* 打开态画布弱化层：未打开磁贴透明可见（dock 背景透明 → 可见初始画布） */
+.tile-shell--canvas-ghost {
+  opacity: 0.28;
+  z-index: 0;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.tile-shell--canvas-ghost .tile-flip,
+.tile-shell--canvas-ghost .agent-tile {
+  border-radius: 8px;
+  background: rgba(10, 14, 24, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: none;
+}
+
 /* 网格内容撑宽器：让横向滚动区感知磁贴实际列宽（磁贴本身 absolute 不参与文档流） */
 .tile-wall__sizer {
   display: block;

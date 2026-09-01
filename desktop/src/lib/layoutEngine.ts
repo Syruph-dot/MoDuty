@@ -99,10 +99,11 @@ export function computeOpenLayout(
     geometryOf[id] = { x, y, w, h };
   });
 
-  // ---- 左半屏坞：未打开的磁贴（紧凑网格，按 allIds 原顺序） ----
+  // ---- 左半屏坞：未打开的磁贴（关联会话网格：≤6 → 2×3；>6 → 3×4，最多 12）----
   const dockIds = allIds.filter((id) => !openIds.includes(id));
   const m = dockIds.length;
-  const dockCols = m > 0 ? Math.min(DOCK_COLS, m) : 1;
+  // 用户规则：候选 ≤6 → 2 列；>6 → 3 列。行数不限（browser 续排可能超过 12）
+  const dockCols = m > 0 ? (m <= 6 ? 2 : 3) : 1;
   const dockRows = m > 0 ? Math.ceil(m / dockCols) : 0;
   const usableW = Math.max(0, dock.w - DOCK_PADDING * 2);
   const usableH = Math.max(0, dock.h - DOCK_PADDING * 2);

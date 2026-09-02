@@ -2,6 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { atomicWrite, atomicWriteJson, withFileLock } from "./write-queue.js";
+import { refreshSessionGraph } from "./relation-graph.js";
 
 export interface SessionRecord {
   id: string;
@@ -390,6 +391,8 @@ export class SessionManager {
   private async writeMessages(sessionId: string, messages: SessionMessage[]): Promise<void> {
     const filePath = this.messagesPath(sessionId);
     await atomicWriteJson(filePath, messages.map(messageToDisk));
+    // 消息变更后增量刷新 &ses_ 关联图（无缓存时忽略）
+    refreshSessionGraph(this.sessionsDir, sessionId);
   }
 
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {

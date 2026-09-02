@@ -4,16 +4,16 @@ import { create } from "zustand";
 import { listAgents } from "../lib/api";
 import { createAgent as apiCreateAgent, deleteAgent as apiDeleteAgent, renameAgent as apiRenameAgent } from "../lib/api";
 import { DEFAULT_FILTERS, deriveVisibleAgents, type AgentFilters, type GroupByKey, type ViewMode } from "../lib/agentFilter";
-import { firstFreeCell, insertTile, compactGrid, resolveOverlaps } from "../lib/gridLayout";
-import { loadAllTiles, removeTile, saveTile, saveAllTiles, spawnXToCol } from "../lib/persistTiles";
+import { firstFreeCell, compactGrid, resolveOverlaps } from "../lib/gridLayout";
+import { loadAllTiles, removeTile, saveTile, spawnXToCol } from "../lib/persistTiles";
 import type { Agent, AgentState, AgentStateEvent, TileGrid } from "../types";
 import { GRID_ROWS, GRID_START_ROW } from "../types";
 import { useWindowManagerStore } from "./windowManagerStore";
+import { UNGROUPED_BAND_ID } from "../lib/bandLayout";
 
-/** 一次性存量压缩标记：首次把横向无限延伸的 agent 磁贴重排为列优先后置位 */
+/** 一次性存量压缩标记：v3 迁移时全局紧凑 */
 import { useWidgetStore } from "./widgetStore";
 
-const PACK_COLUMN_FIRST_MARKER = "momoka:tiles:packed-colfirst-v2";
 const COMPACT_V3_MARKER = "momoka:tiles:compacted-v3";
 
 /** 磁贴墙治理偏好（A+B+D）持久化 key：UI 本地状态，与后端无关 */
@@ -31,7 +31,8 @@ export interface TileGroup {
   order: number;
 }
 
-/** 组内成员局部网格：col/row 相对本组带（组带 x 由渲染层计算），宽高沿用全局瓦片尺寸 */
+/** 磁贴局部网格：col/row 相对所属组带（组带 x 由渲染层计算），宽高沿用瓦片尺寸。
+ *  g 为 UNGROUPED_BAND_ID 时表示未分组磁贴（取代旧的全局 state.tiles）。 */
 export interface GroupMemberTile {
   g: string;
   col: number;
@@ -66,9 +67,9 @@ function loadGroupsStorage(): GroupsStorage {
 function persistGroupsStorage(groups: TileGroup[], members: Record<string, GroupMemberTile>): void {
   if (typeof localStorage === "undefined") return;
   try {
-    // 排序后存 order 连续的组列表，成员只含有效组引用
+    // 排序后存 order 连续的组列表，成员只含有效组引用（含 UNGROUPED_BAND_ID）
     const sorted = [...groups].sort((a, b) => a.order - b.order).map((g, i) => ({ ...g, order: i }));
-    const validIds = new Set(sorted.map((g) => g.id));
+    const validIds = new Set([...sorted.map((g) => g.id), UNGROUPED_BAND_ID]);
     const clean: Record<string, GroupMemberTile> = {};
     for (const [agentId, m] of Object.entries(members)) {
       if (m && validIds.has(m.g)) clean[agentId] = m;
@@ -80,6 +81,17 @@ function persistGroupsStorage(groups: TileGroup[], members: Record<string, Group
 }
 
 const INITIAL_GROUPS = loadGroupsStorage();
+
+/** 迁移旧版本的 state.tiles 数据到 groupMembers（g=UNGROUPED_BAND_ID） */
+function migrateOldTiles(storedTiles: Record<string, TileGrid>, members: Record<string, GroupMemberTile>): Record<string, GroupMemberTile> {
+  const next: Record<string, GroupMemberTile> = { ...members };
+  for (const [id, grid] of Object.entries(storedTiles)) {
+    // 如果已经在用户组中，不覆盖
+    if (next[id] && next[id].g !== UNGROUPED_BAND_ID) continue;
+    next[id] = { g: UNGROUPED_BAND_ID, col: grid.col, row: grid.row, w: grid.w, h: grid.h };
+  }
+  return next;
+}
 
 interface TileMgmtPrefs {
   filters: AgentFilters;
@@ -137,6 +149,21 @@ function persistMgmtPrefs(s: TileMgmtPrefs): void {
   }
 }
 
+/** 读取当前 store 的治理偏好（用于持久化时合并） */
+function readMgmt(): TileMgmtPrefs {
+  const s = useAgentsStore.getState();
+  return {
+    filters: s.filters,
+    viewMode: s.viewMode,
+    groupBy: s.groupBy,
+    pinnedIds: s.pinnedIds,
+    archivedIds: s.archivedIds,
+    archiveDays: s.archiveDays,
+    collapsedWorkspaces: s.collapsedWorkspaces,
+    activeWorkspace: s.activeWorkspace,
+  };
+}
+
 const INITIAL_MGMT = loadMgmtPrefs();
 
 export interface CreateAgentInput {
@@ -147,10 +174,18 @@ export interface CreateAgentInput {
   spawn?: { x: number; y: number };
 }
 
+/** 组内首列左平移：如果该组第一列没有磁贴，整体左移直到第一列有磁贴（组内容紧凑） */
+function compactGroupMembers(members: Record<string, GroupMemberTile>, groupId: string): void {
+  const ids = Object.keys(members).filter((k) => members[k].g === groupId);
+  if (ids.length === 0) return;
+  const minCol = Math.min(...ids.map((k) => members[k].col));
+  if (minCol > 0) {
+    for (const k of ids) members[k] = { ...members[k], col: members[k].col - minCol };
+  }
+}
+
 interface AgentsStore {
   agents: Agent[];
-  /** 磁贴网格（idle 摆放）：agent.id → 网格坐标/尺寸；启动时从 localStorage 还原 */
-  tiles: Record<string, TileGrid>;
   /** 已打开的磁贴 id（顺序 = 打开顺序）；打开态几何由布局引擎实时计算，不持久化 */
   openAgentIds: string[];
   loading: boolean;
@@ -164,7 +199,7 @@ interface AgentsStore {
   /** 关闭一个磁贴（从打开集合移除；全部关闭即回到自由摆放） */
   closeAgent: (id: string) => void;
   applyAgentEvent: (event: AgentStateEvent) => void;
-  /** 拖动中 / 任何 store 内同步（不落盘） */
+  /** 拖动中 / 任何 store 内同步（不落盘）：更新 groupMembers 中的 grid */
   moveTile: (id: string, grid: TileGrid) => void;
   /** 拖动结束 / 第一次落盘（写 localStorage） */
   commitTile: (id: string, grid: TileGrid) => void;
@@ -228,7 +263,6 @@ interface AgentsStore {
   purgeMgmtForAgent: (id: string) => void;
 }
 
-/** 把 agents 列表里没有 tiles 记录的逐个插入到网格空位（不落盘，等用户真正动过再写） */
 /** 组内成员是否为 widget（广义 Tile：agent 或 widget 都可入组） */
 function isWidgetId(id: string): boolean {
   return useWidgetStore.getState().widgets.some((w) => w.id === id);
@@ -240,7 +274,7 @@ function widgetGridOf(id: string): TileGrid | null {
   return w?.grid ?? null;
 }
 
-/** 未分组带落盘：widget 写回 widgetStore.grid，agent 写回 tiles */
+/** 未分组带落盘：widget 写回 widgetStore.grid，agent 写回 localStorage */
 function persistUngroupedGrid(id: string, grid: TileGrid): void {
   if (isWidgetId(id)) {
     useWidgetStore.getState().commitWidget(id, grid);
@@ -249,73 +283,9 @@ function persistUngroupedGrid(id: string, grid: TileGrid): void {
   }
 }
 
-function ensureDefaultTiles(agents: Agent[], stored: Record<string, TileGrid>): Record<string, TileGrid> {
-  let next: Record<string, TileGrid> = { ...stored };
-  let changed = false;
-  // 新增自动磁贴：固定从第 0 列起逐列自上而下找空位（列优先回填），
-  // 替代旧的 colHint+=1（无限向右延伸、第一行拉长）
-  for (const agent of agents) {
-    if (!next[agent.id]) {
-      next = insertTile(next, agent.id, 0);
-      changed = true;
-    }
-  }
-  // 清理已被删 agent 的悬挂条目
-  for (const id of Object.keys(next)) {
-    if (!agents.some((agent) => agent.id === id)) {
-      delete next[id];
-      changed = true;
-    }
-  }
-  // 一次性存量压缩：把历史上横向无限延长的 agent 磁贴整体重排为列优先（仅首次，标记后不再动）
-  let packed = false;
-  try {
-    if (typeof localStorage !== "undefined" && !localStorage.getItem(PACK_COLUMN_FIRST_MARKER)) {
-      next = compactGrid(next);
-      localStorage.setItem(PACK_COLUMN_FIRST_MARKER, "1");
-      packed = true;
-    }
-    // v3 迁移（组带模型）：把未分组磁贴强制列优先整理一次并**写回**，消除历史重叠（未分组带从此无重复）
-    if (typeof localStorage !== "undefined" && !localStorage.getItem(COMPACT_V3_MARKER)) {
-      next = compactGrid(next);
-      saveAllTiles(next);
-      localStorage.setItem(COMPACT_V3_MARKER, "1");
-      packed = true;
-    }
-  } catch {
-    /* 无 localStorage（SSR/隐私模式）则跳过一次性压缩 */
-  }
-  return changed || packed ? next : stored;
-}
-
-function readMgmt(): TileMgmtPrefs {
-  const s = useAgentsStore.getState();
-  return {
-    filters: s.filters,
-    viewMode: s.viewMode,
-    groupBy: s.groupBy,
-    pinnedIds: s.pinnedIds,
-    archivedIds: s.archivedIds,
-    archiveDays: s.archiveDays,
-    collapsedWorkspaces: s.collapsedWorkspaces,
-    activeWorkspace: s.activeWorkspace,
-  };
-}
-
-/** 组内首列左平移：如果该组第一列没有磁贴，整体左移直到第一列有磁贴（组内容紧凑） */
-function compactGroupMembers(members: Record<string, GroupMemberTile>, groupId: string): void {
-  const ids = Object.keys(members).filter((k) => members[k].g === groupId);
-  if (ids.length === 0) return;
-  const minCol = Math.min(...ids.map((k) => members[k].col));
-  if (minCol > 0) {
-    for (const k of ids) members[k] = { ...members[k], col: members[k].col - minCol };
-  }
-}
-
-/** 磁贴墙全局状态：agents + 实时事件应用（SSE 驱动）+ 磁贴几何 + 墙治理（A+B+D） */
+/** 磁贴墙全局状态：agents + 实时事件应用（SSE 驱动）+ 磁贴几何 + 墙治理（A+B+D) */
 export const useAgentsStore = create<AgentsStore>()((set) => ({
   agents: [],
-  tiles: {},
   openAgentIds: [],
   loading: false,
   error: null,
@@ -336,12 +306,47 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   async load() {
     set({ loading: true, error: null });
     try {
-      const [agents, storedTiles] = await Promise.all([
+      const [agents, storedTiles, storedMembers] = await Promise.all([
         listAgents(),
         Promise.resolve(loadAllTiles()),
+        Promise.resolve(INITIAL_GROUPS.members),
       ]);
-      const tiles = ensureDefaultTiles(agents, storedTiles);
-      set({ agents, tiles, loading: false });
+      // 迁移旧的 tiles 数据到 groupMembers (g=UNGROUPED_BAND_ID)
+      const members = migrateOldTiles(storedTiles, storedMembers);
+      // 确保新增 agents 都有记录
+      const allIds = new Set([...agents.map((a) => a.id), ...Object.keys(members)]);
+      for (const agent of agents) {
+        if (!members[agent.id]) {
+          const slot = firstFreeCell(
+            Object.fromEntries(Object.entries(members).filter(([, m]) => m.g === UNGROUPED_BAND_ID).map(([id, m]) => [id, { col: m.col, row: m.row, w: m.w, h: m.h }])),
+            0,
+          );
+          members[agent.id] = { g: UNGROUPED_BAND_ID, col: slot.col, row: slot.row, w: 1, h: 1 };
+        }
+      }
+      // 清理已删除 agent 的记录
+      for (const id of Object.keys(members)) {
+        if (!allIds.has(id) && members[id]?.g === UNGROUPED_BAND_ID) {
+          delete members[id];
+        }
+      }
+      // 一次性存量压缩
+      try {
+        if (typeof localStorage !== "undefined" && !localStorage.getItem(COMPACT_V3_MARKER)) {
+          // 对未分组带的成员做列优先紧凑
+          const ungroupedMap: Record<string, TileGrid> = {};
+          for (const [id, m] of Object.entries(members)) {
+            if (m.g === UNGROUPED_BAND_ID) ungroupedMap[id] = { col: m.col, row: m.row, w: m.w, h: m.h };
+          }
+          const packed = compactGrid(ungroupedMap);
+          for (const [id, g] of Object.entries(packed)) {
+            members[id] = { ...members[id], ...g };
+          }
+          localStorage.setItem(COMPACT_V3_MARKER, "1");
+        }
+      } catch {}
+      persistGroupsStorage([], members);
+      set({ agents, groupMembers: members, loading: false });
     } catch (error) {
       set({ loading: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -349,18 +354,24 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
 
   async createAgent(input) {
     try {
-      // spawn 仅用于前端落位，不发给后端
       const agent = await apiCreateAgent({
         name: input.name,
         ...(input.workspace_dir ? { workspace_dir: input.workspace_dir } : {}),
         ...(input.model ? { model: input.model } : {}),
       });
       set((state) => {
-        // 新 agent：插入到鼠标 X 轴列；若已有则保持既有位置
-        const tiles = state.tiles[agent.id]
-          ? state.tiles
-          : insertTile(state.tiles, agent.id, spawnXToCol(input.spawn?.x));
-        return { agents: [agent, ...state.agents], tiles };
+        const members = { ...state.groupMembers };
+        if (!members[agent.id]) {
+          // 新 agent：插入到鼠标 X 轴列的空位
+          const colHint = spawnXToCol(input.spawn?.x);
+          const ungroupedMap: Record<string, TileGrid> = {};
+          for (const [id, m] of Object.entries(members)) {
+            if (m.g === UNGROUPED_BAND_ID) ungroupedMap[id] = { col: m.col, row: m.row, w: m.w, h: m.h };
+          }
+          const slot = firstFreeCell(ungroupedMap, colHint);
+          members[agent.id] = { g: UNGROUPED_BAND_ID, col: slot.col, row: slot.row, w: 1, h: 1 };
+        }
+        return { agents: [agent, ...state.agents], groupMembers: members };
       });
       return agent;
     } catch (error) {
@@ -377,7 +388,6 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
       }));
       return updated;
     } catch (error) {
-      // 重命名失败时留给内联编辑态保持，错误由桌面顶部 tile-wall__error 展示
       const message = error instanceof Error ? error.message : String(error);
       set({ error: `重命名 Agent 失败: ${message}` });
       throw error;
@@ -388,12 +398,10 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     try {
       await apiDeleteAgent(id);
       set((state) => {
-        const { [id]: _removed, ...rest } = state.tiles;
-        const { [id]: _member, ...membersRest } = state.groupMembers;
+        const { [id]: _removed, ...members } = state.groupMembers;
         return {
           agents: state.agents.filter((agent) => agent.id !== id),
-          tiles: rest,
-          groupMembers: membersRest,
+          groupMembers: members,
           openAgentIds: state.openAgentIds.filter((openId) => openId !== id),
           pinnedIds: state.pinnedIds.filter((pid) => pid !== id),
           archivedIds: state.archivedIds.filter((aid) => aid !== id),
@@ -401,8 +409,6 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
       });
       removeTile(id);
     } catch (error) {
-      // 删除失败（如后端未启动/网络错误）：写入 store.error，由桌面顶部 tile-wall__error 展示，
-      // 避免确认框关闭后静默无反馈；同时继续抛出，防止调用方误以为已删除。
       const message = error instanceof Error ? error.message : String(error);
       set({ error: `删除 Agent 失败: ${message}` });
       throw error;
@@ -442,22 +448,49 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     }));
   },
 
-  moveTile(id, geometry) {
-    set((state) => ({ tiles: { ...state.tiles, [id]: geometry } }));
+  moveTile(id, grid) {
+    set((state) => {
+      const m = state.groupMembers[id];
+      if (!m) return {};
+      return {
+        groupMembers: {
+          ...state.groupMembers,
+          [id]: { ...m, col: grid.col, row: grid.row, w: grid.w, h: grid.h },
+        },
+      };
+    });
   },
 
-  commitTile(id, geometry) {
-    set((state) => ({ tiles: { ...state.tiles, [id]: geometry } }));
-    saveTile(id, geometry);
+  commitTile(id, grid) {
+    set((state) => {
+      const m = state.groupMembers[id];
+      if (!m) return {};
+      const next = { ...m, col: grid.col, row: grid.row, w: grid.w, h: grid.h };
+      if (m.g === UNGROUPED_BAND_ID && !isWidgetId(id)) {
+        saveTile(id, { col: grid.col, row: grid.row, w: grid.w, h: grid.h });
+      }
+      return {
+        groupMembers: { ...state.groupMembers, [id]: next },
+      };
+    });
   },
 
   resetTile(id) {
     set((state) => {
-      // 重置到网格最左侧第一个空单格（1×1 默认尺寸）
-      const slot = firstFreeCell(state.tiles, 0);
-      const next = { ...state.tiles, [id]: { col: slot.col, row: slot.row, w: 1, h: 1 } };
-      saveTile(id, next[id]);
-      return { tiles: next };
+      const ungroupedMap: Record<string, TileGrid> = {};
+      for (const [tid, m] of Object.entries(state.groupMembers)) {
+        if (m.g === UNGROUPED_BAND_ID) ungroupedMap[tid] = { col: m.col, row: m.row, w: m.w, h: m.h };
+      }
+      const slot = firstFreeCell(ungroupedMap, 0);
+      const members = {
+        ...state.groupMembers,
+        [id]: { ...state.groupMembers[id], col: slot.col, row: slot.row, w: 1, h: 1 },
+      };
+      const m = members[id];
+      if (m?.g === UNGROUPED_BAND_ID && !isWidgetId(id)) {
+        saveTile(id, { col: slot.col, row: slot.row, w: 1, h: 1 });
+      }
+      return { groupMembers: members };
     });
   },
 
@@ -538,7 +571,6 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   toggleViewMode() {
     const current = useAgentsStore.getState().viewMode;
     const next: ViewMode = current === "free" ? "grouped" : "free";
-    // 切换视图时收起归档/筛选面板，避免遮挡
     set(() => {
       persistMgmtPrefs({ ...readMgmt(), viewMode: next });
       return { viewMode: next, archiveOpen: false, filterBarOpen: false };
@@ -617,16 +649,14 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
       const groups = [...state.groups];
       const group: TileGroup = { id, name: name ?? state.agents.find((a) => a.id === agentIds[0])?.name ?? "新组", order: groups.length };
       const members: Record<string, GroupMemberTile> = { ...state.groupMembers };
-      const tiles = { ...state.tiles };
       let col = 0;
       let row = GRID_START_ROW;
       for (const aid of agentIds) {
-        // 已入其它组：沿用旧组内宽高；未分组：沿用未分组带宽高（widget → widget.grid）
-        const old = members[aid] ?? tiles[aid] ?? widgetGridOf(aid);
+        // 已入其它组：沿用旧组内宽高；未分组：沿用 groupMembers 中的坐标
+        const old = members[aid] ?? (isWidgetId(aid) ? widgetGridOf(aid) : null);
         const w = old?.w ?? 1;
         const h = old?.h ?? 1;
         members[aid] = { g: id, col, row, w, h };
-        delete tiles[aid]; // 移出未分组带（widget 的未分组坐标在其 store，成组后由 bandLayout 走组内）
         row += h;
         if (row > GRID_ROWS - 1) {
           row = GRID_START_ROW;
@@ -634,7 +664,7 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         }
       }
       persistGroupsStorage([...groups, group], members);
-      return { groups: [...groups, group], groupMembers: members, tiles };
+      return { groups: [...groups, group], groupMembers: members };
     });
     return id;
   },
@@ -642,11 +672,11 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   joinGroup(agentId, groupId) {
     set((state) => {
       const members: Record<string, GroupMemberTile> = { ...state.groupMembers };
-      const tiles = { ...state.tiles };
-      delete members[agentId]; // 先移出旧组
+      const cur = members[agentId];
+      delete members[agentId]; // 先删除，重新插入
       const groupIds = Object.keys(members).filter((k) => members[k].g === groupId);
       const used = new Set(groupIds.map((k) => `${members[k].col},${members[k].row}`));
-      const prev = members[agentId] ?? tiles[agentId] ?? widgetGridOf(agentId);
+      const prev = cur ?? (isWidgetId(agentId) ? widgetGridOf(agentId) : null);
       const w = prev?.w ?? 1;
       const h = prev?.h ?? 1;
       let col = 0;
@@ -659,10 +689,9 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         }
       }
       members[agentId] = { g: groupId, col, row, w, h };
-      delete tiles[agentId]; // 移出未分组带
       compactGroupMembers(members, groupId);
       persistGroupsStorage(state.groups, members);
-      return { groupMembers: members, tiles };
+      return { groupMembers: members };
     });
   },
 
@@ -680,15 +709,16 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         // 组空 → 解散并回收顺序
         groups = groups.filter((g) => g.id !== cur.g).map((g, i) => ({ ...g, order: i }));
       }
-      // 回未分组带：在现有未分组网格中找空位（保证最终布局无重复）；widget 写回自身 store
-      const tiles = { ...state.tiles };
-      delete tiles[agentId];
-      const slot = firstFreeCell(tiles, 0);
-      const grid: TileGrid = { col: slot.col, row: slot.row, w: cur.w, h: cur.h };
-      persistUngroupedGrid(agentId, grid);
-      if (!isWidgetId(agentId)) tiles[agentId] = grid;
+      // 回未分组带：在现有未分组带中找空位（保证最终布局无重复）
+      const ungroupedMap: Record<string, TileGrid> = {};
+      for (const [id, m] of Object.entries(members)) {
+        if (m.g === UNGROUPED_BAND_ID) ungroupedMap[id] = { col: m.col, row: m.row, w: m.w, h: m.h };
+      }
+      const slot = firstFreeCell(ungroupedMap, 0);
+      members[agentId] = { g: UNGROUPED_BAND_ID, col: slot.col, row: slot.row, w: cur.w, h: cur.h };
+      persistUngroupedGrid(agentId, { col: slot.col, row: slot.row, w: cur.w, h: cur.h });
       persistGroupsStorage(groups, members);
-      return { groups, groupMembers: members, tiles };
+      return { groups, groupMembers: members };
     });
   },
 
@@ -722,10 +752,9 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   repelDropIntoGroup(agentId, groupId, col, row, w, h) {
     set((state) => {
       const members: Record<string, GroupMemberTile> = { ...state.groupMembers };
-      const tiles = { ...state.tiles };
+      // 先删除源，重新插入到目标组
       delete members[agentId];
-      delete tiles[agentId];
-      // 组内局部 map（放入源到目标位置）→ resolveOverlaps 挤开波及磁贴
+      // 组内局部 map → resolveOverlaps 挤开波及磁贴
       const map: Record<string, TileGrid> = {};
       for (const [aid, m] of Object.entries(members)) {
         if (m.g === groupId) map[aid] = { col: m.col, row: m.row, w: m.w, h: m.h };
@@ -738,20 +767,18 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
       }
       compactGroupMembers(members, groupId);
       persistGroupsStorage(state.groups, members);
-      return { groupMembers: members, tiles };
+      return { groupMembers: members };
     });
   },
 
   repelDropToUngrouped(agentId, col, row, w, h) {
     set((state) => {
       const members: Record<string, GroupMemberTile> = { ...state.groupMembers };
-      const tiles = { ...state.tiles };
       const cur = members[agentId];
+      // 旧组若因此清空 → 解散
       delete members[agentId];
-      delete tiles[agentId];
-      // 旧组若因此清空 → 解散并回收顺序
       let groups = state.groups;
-      if (cur) {
+      if (cur && cur.g !== UNGROUPED_BAND_ID) {
         const remaining = Object.keys(members).some((k) => members[k].g === cur.g);
         if (remaining) {
           compactGroupMembers(members, cur.g);
@@ -759,23 +786,29 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
           groups = groups.filter((g) => g.id !== cur.g).map((g, i) => ({ ...g, order: i }));
         }
       }
-      // 源落到目标位置 → 未分组带 resolveOverlaps（agent tiles + widget grid 一起，保证无重复）
-      const ungroupedMap: Record<string, TileGrid> = { ...tiles };
-      for (const w of useWidgetStore.getState().widgets) ungroupedMap[w.id] = w.grid;
+      // 源落到目标位置 → 未分组带 resolveOverlaps
+      const ungroupedMap: Record<string, TileGrid> = {};
+      for (const [id, m] of Object.entries(members)) {
+        if (m.g === UNGROUPED_BAND_ID) ungroupedMap[id] = { col: m.col, row: m.row, w: m.w, h: m.h };
+      }
+      // widget 也加入 resolveOverlaps 的障碍集
+      for (const w of useWidgetStore.getState().widgets) {
+        if (!ungroupedMap[w.id]) ungroupedMap[w.id] = w.grid;
+      }
       delete ungroupedMap[agentId];
       ungroupedMap[agentId] = { col: Math.max(0, col), row: Math.max(GRID_START_ROW, Math.min(row, GRID_ROWS - (h ?? 1))), w: w ?? 1, h: h ?? 1 };
       const resolved = resolveOverlaps(ungroupedMap);
-      const nextTiles: Record<string, TileGrid> = {};
+      // 回写 groupMembers 和 widgetStore
       for (const [aid, g] of Object.entries(resolved)) {
-        if (useWidgetStore.getState().widgets.some((x) => x.id === aid)) {
+        const widgetDef = useWidgetStore.getState().widgets.find((x) => x.id === aid);
+        if (widgetDef) {
           useWidgetStore.getState().commitWidget(aid, g);
         } else {
-          nextTiles[aid] = g;
-          saveTile(aid, g);
+          members[aid] = { g: UNGROUPED_BAND_ID, col: g.col, row: g.row, w: g.w, h: g.h };
         }
       }
       persistGroupsStorage(groups, members);
-      return { groups, groupMembers: members, tiles: nextTiles };
+      return { groups, groupMembers: members };
     });
   },
 
@@ -798,24 +831,26 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     set((state) => {
       const groups = state.groups.filter((g) => g.id !== groupId).map((g, i) => ({ ...g, order: i }));
       const members: Record<string, GroupMemberTile> = {};
-      const tiles = { ...state.tiles };
+      const removed: Record<string, GroupMemberTile> = {};
       for (const [aid, m] of Object.entries(state.groupMembers)) {
         if (m.g === groupId) {
-          delete tiles[aid];
+          removed[aid] = m;
         } else {
           members[aid] = m;
         }
       }
-      // 解散的成员回未分组带：逐个找空位（保证无重叠）；widget 写回自身 store
-      for (const [aid, m] of Object.entries(state.groupMembers)) {
-        if (m.g !== groupId) continue;
-        const slot = firstFreeCell(tiles, 0);
-        const grid: TileGrid = { col: slot.col, row: slot.row, w: m.w, h: m.h };
-        persistUngroupedGrid(aid, grid);
-        if (!isWidgetId(aid)) tiles[aid] = grid;
+      // 解散的成员回未分组带：逐个找空位
+      const ungroupedMap: Record<string, TileGrid> = {};
+      for (const [id, m] of Object.entries(members)) {
+        if (m.g === UNGROUPED_BAND_ID) ungroupedMap[id] = { col: m.col, row: m.row, w: m.w, h: m.h };
+      }
+      for (const [aid, m] of Object.entries(removed)) {
+        const slot = firstFreeCell(ungroupedMap, 0);
+        members[aid] = { g: UNGROUPED_BAND_ID, col: slot.col, row: slot.row, w: m.w, h: m.h };
+        persistUngroupedGrid(aid, { col: slot.col, row: slot.row, w: m.w, h: m.h });
       }
       persistGroupsStorage(groups, members);
-      return { groups, groupMembers: members, tiles };
+      return { groups, groupMembers: members };
     });
   },
 }));

@@ -43,14 +43,14 @@ interface ModelRoundResult {
 }
 
 const APPROVAL_PATTERN = /pending approval/i;
-const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
+// 删除const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+// 删除const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
 
 export interface ResolvedModelConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
-  isZen: boolean;
+  //删除isZen: boolean;
 }
 
 /** 凭证解析优先级：显式参数 > settings.json（~/.momoka/settings.json）> 环境变量 > 默认值。
@@ -65,7 +65,7 @@ export async function resolveModelConfig(
     overrides.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
   ).replace(/\/+$/u, "");
   const model = overrides.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
-  return { apiKey, baseUrl, model, isZen: ZEN_BASE_PATTERN.test(baseUrl) };
+  return { apiKey, baseUrl, model};//删除, isZen: ZEN_BASE_PATTERN.test(baseUrl) };
 }
 
 export interface ProviderDiagnostics {
@@ -80,9 +80,9 @@ export interface ProviderDiagnostics {
 /** /api/config 的 provider 诊断（基于最终生效配置：settings 优先、env 兕底） */
 export async function describeEnvProviderDiagnostics(): Promise<ProviderDiagnostics> {
   const config = await resolveModelConfig();
-  const isZen = ZEN_BASE_PATTERN.test(config.baseUrl);
+  //删除const isZen = ZEN_BASE_PATTERN.test(config.baseUrl);
   const hasKey = Boolean(config.apiKey);
-  const provider = isZen ? "OpenCode Zen" : (config.baseUrl ? "OpenAI (兼容)" : "未配置");
+  const provider = (config.baseUrl ? "OpenAI (兼容)" : "未配置");
   const issues: string[] = [];
   if (!hasKey) {
     issues.push("API key 未配置。请在软件设置界面填写（保存在 ~/.momoka/settings.json），或临时设置 OPENAI_API_KEY 环境变量。");
@@ -119,13 +119,13 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const apiKey = options.apiKey || process.env.OPENAI_API_KEY || "";
-  const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
+  const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL).replace(/\/+$/u, "");
   const model = options.model || process.env.MOMOKA_MODEL || "qwen-plus";
   const fetchImpl = options.fetch ?? fetch;
   const maxToolRounds = options.maxToolRounds ?? Infinity;
   const stream = options.stream ?? false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
-  const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+  //删除const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
@@ -138,14 +138,14 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
         options.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
       ).replace(/\/+$/u, "");
       const model = options.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
-      const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+      //删除const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
-      if (!apiKey && (baseUrl === DEFAULT_DASHSCOPE || isZen)) {
-        if (isZen) {
-          throw new Error(
-            "OpenCode Zen 需要 API key：请前往 https://opencode.ai/auth 注册免费账号并获取 API key，然后设置 OPENAI_API_KEY 环境变量。"
-          );
-        }
+      if (!apiKey) {
+        //if (isZen) {
+        //  throw new Error(
+        //    "OpenCode Zen 需要 API key：请前往 https://opencode.ai/auth 注册免费账号并获取 API key，然后设置 OPENAI_API_KEY 环境变量。"
+        //  );
+        //}
         throw new Error("API key 未配置：请设置 OPENAI_API_KEY 环境变量，或提供无需鉴权的 OPENAI_BASE_URL");
       }
       const messages: ChatMessage[] = [
@@ -257,7 +257,7 @@ async function callModelRound(options: {
   if (stream) payload.stream = true;
 
   const headers: Record<string, string> = { "content-type": "application/json" };
-  // 统一 OpenAI 兼容鉴权：opencode Zen 的 /zen/v1/chat/completions 也是 openai-compatible
+  // 统一 OpenAI 兼容鉴权
   // （x-api-key 不会被识别，会回 Missing API key）。
   if (apiKey) {
     headers["authorization"] = `Bearer ${apiKey}`;

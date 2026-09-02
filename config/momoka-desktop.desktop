@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=MOMOKA Desktop
+Comment=AI Agent Desktop Environment
+Exec=/usr/bin/momoka-session
+Type=Application
+DesktopNames=MOMOKA
+Keywords=AI;Agent;Desktop;

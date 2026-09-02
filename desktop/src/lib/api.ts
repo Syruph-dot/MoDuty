@@ -23,6 +23,10 @@ function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI__" in window;
 }
 
+function inMomokaShell(): boolean {
+  return typeof window !== "undefined" && "__MOMOKA_SHELL__" in window;
+}
+
 export function awaitApiBase(): Promise<string> {
   if (_apiBasePromise) return _apiBasePromise;
   _apiBasePromise = (async () => {
@@ -39,6 +43,10 @@ export function awaitApiBase(): Promise<string> {
         console.error("[api] failed to resolve momoka port from Tauri:", err);
         throw err;
       }
+    }
+    if (inMomokaShell()) {
+      // momoka-shell (WebKitGTK) 固定连 8888
+      return "http://127.0.0.1:8888";
     }
     return ""; // 浏览器 dev：Vite dev proxy
   })();

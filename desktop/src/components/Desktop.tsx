@@ -42,13 +42,11 @@ const EMPTY_TILE: TileGeometry = { x: 0, y: 0, w: 0, h: 0 };
  */
 export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) {
   const agents = useAgentsStore((state) => state.agents);
-  const tiles = useAgentsStore((state) => state.tiles);
   const openAgentIds = useAgentsStore((state) => state.openAgentIds);
   const loading = useAgentsStore((state) => state.loading);
   const error = useAgentsStore((state) => state.error);
   const load = useAgentsStore((state) => state.load);
   const applyAgentEvent = useAgentsStore((state) => state.applyAgentEvent);
-  const moveTile = useAgentsStore((state) => state.moveTile);
   const commitTile = useAgentsStore((state) => state.commitTile);
   const closeAgent = useAgentsStore((state) => state.closeAgent);
   const renameAgent = useAgentsStore((state) => state.renameAgent);
@@ -303,19 +301,19 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   // ---- Band（组带）布局：打破全局网格 —— 组带序列（x 累加，组间 120px）+ 组内局部网格 ----
+  // 所有 tile 位置均存于 groupMembers（g=UNGROUPED_BAND_ID 表示未分组），bandLayout 派生带局部 gridMap
   const bandLayout = useMemo(() => {
     if (!metrics) return null;
     return computeBands({
       agents: wallAgents,
       groups,
       groupMembers,
-      tiles,
       browsers,
       browserTiles,
       widgets,
       metrics,
     });
-  }, [metrics, wallAgents, groups, groupMembers, tiles, browsers, browserTiles, widgets]);
+  }, [metrics, wallAgents, groups, groupMembers, browsers, browserTiles, widgets]);
   const bands = bandLayout?.bands ?? [];
   const bandOf = bandLayout?.bandOf ?? {};
   const bandById = useMemo(() => {
@@ -324,10 +322,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return m;
   }, [bands]);
 
-  // ---- 拖拽成组：hover 单计时状态机（ref 驱动）----
-  //  0～0.5s  计时（目标磁贴/组名亮起中）
-  //  0.5～1s  成组就绪（--drop 蓝亮，松手 = 建组/移组）
-  //  >1s      排斥就绪（--repel 橙亮，松手 = 排斥落位，目标带内让位 → 最终无重叠）
+  // ---- 拖拽成组：hover 计时状态机（ref 驱动）----
+  //  仅当 hover 到另一个磁贴（非组名、非空网格）时启动计时：
+  //  0～500ms  计时（目标磁贴亮起中）
+  //  500～1000ms  成组就绪（--drop 蓝亮，松手 = 建组/移组）
+  //  >1000ms      排斥就绪（--repel 橙亮，松手 = 排斥落位，目标带内让位 → 最终无重叠）
+  //  hover 到组名或空网格时：不启动计时，仅记录目标带（供跨组移动）
   const dragHoverRef = useRef<{
     sourceAgentId: string | null;
     sourceGroupId: string | null;
@@ -337,7 +337,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     mode: "group" | "repel";
     timer: number | null;
     guard: number;
-  }>({ sourceAgentId: null, sourceGroupId: null, targetGroupId: null, targetAgentId: null, activated: false, mode: "group", timer: null, guard: 0 });
+    /** 空网格跨组移动：指针所在目标带 + 带内局部网格（不激活 hover，仅供落位） */
+    targetGrid: TileGrid | null;
+  }>({ sourceAgentId: null, sourceGroupId: null, targetGroupId: null, targetAgentId: null, activated: false, mode: "group", timer: null, guard: 0, targetGrid: null });
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState("");
 
@@ -350,6 +352,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     h.timer = null;
     h.targetGroupId = null;
     h.targetAgentId = null;
+    h.targetGrid = null;
     h.activated = false;
     h.mode = "group";
     h.sourceAgentId = null;
@@ -380,11 +383,78 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       // 无目标 / 系统带（browser/widget，不参与成组）→ 清除
       // 同带磁贴也激活 hover：<1s 同组→落位（resolve）、未分组↔未分组→建组；≥1s→排斥落位
       if (!targetAgentId && !targetGroupId) {
+        // 空网格：带区域命中 → 跨组移动到该带（记录目标带 + 带内局部网格，不激活 hover）
+        const el = wallRef.current;
+        const bandAt =
+          metrics && el
+            ? (() => {
+                const rect = el.getBoundingClientRect();
+                const x = clientX - rect.left - metrics.padding;
+                let bestId: string | null = null;
+                let bestDist = Infinity;
+                for (const b of bands) {
+                  const dist = x < b.x ? b.x - x : x > b.x + b.width ? x - (b.x + b.width) : 0;
+                  if (dist < bestDist) {
+                    bestDist = dist;
+                    bestId = b.id;
+                  }
+                }
+                return bestId;
+              })()
+            : null;
+        if (bandAt && bandAt !== h.sourceGroupId && bandAt !== SYSTEM_BAND_ID) {
+          // 先清除占用计时（空网格不启动 hover 判定）
+          if (h.timer !== null) window.clearTimeout(h.timer);
+          h.timer = null;
+          h.activated = false;
+          document.querySelectorAll(".tile-group-name--drop,.tile-shell--drop,.tile-group-name--repel,.tile-shell--repel").forEach((el) => {
+            el.classList.remove("tile-group-name--drop", "tile-shell--drop", "tile-group-name--repel", "tile-shell--repel");
+          });
+          const band = bandById[bandAt] ?? null;
+          const step = metrics ? metrics.cellW + metrics.gap : 0;
+          const rect = el!.getBoundingClientRect();
+          const x = clientX - rect.left - metrics!.padding;
+          const y = clientY - rect.top - metrics!.padding;
+          h.targetGroupId = bandAt;
+          h.targetAgentId = null;
+          h.activated = false;
+          h.targetGrid =
+            band && metrics
+              ? {
+                  col: Math.max(0, Math.round((x - band.x - step / 2) / step)),
+                  row: Math.max(GRID_START_ROW, Math.min(Math.round((y - (metrics.cellH + metrics.gap) / 2) / (metrics.cellH + metrics.gap)), metrics.rows - 1)),
+                  w: 1,
+                  h: 1,
+                }
+              : null;
+          return;
+        }
         clearDragHover();
         return;
       }
       if (targetGroupId === SYSTEM_BAND_ID) {
         clearDragHover();
+        return;
+      }
+      // 仅当 hover 到另一个磁贴时启动计时（hover 到组名不启动计时，仅记录目标组）
+      if (!targetAgentId) {
+        // hover 到组名：记录目标组但不启动计时
+        if (h.targetGroupId !== targetGroupId || h.targetAgentId !== targetAgentId) {
+          h.targetGroupId = targetGroupId;
+          h.targetAgentId = null;
+          h.activated = false;
+          h.mode = "group";
+        }
+        // 清除已有高亮
+        document.querySelectorAll(".tile-group-name--drop,.tile-group-name--repel,.tile-shell--drop,.tile-shell--repel").forEach((el) => {
+          el.classList.remove("tile-group-name--drop", "tile-shell--drop", "tile-group-name--repel", "tile-shell--repel");
+        });
+        // 组名高亮（轻微提示，不需要计时）
+        if (h.timer !== null) window.clearTimeout(h.timer);
+        h.timer = null;
+        if (targetGroupId) {
+          document.querySelector(`[data-group-name="${targetGroupId}"]`)?.classList.add("tile-group-name--drop");
+        }
         return;
       }
       // 目标未变化且已就绪：保持
@@ -705,6 +775,78 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load, zoom, zoomIn, zoomOut],
   );
 
+  // ---- 广义 Tile 统一拖放（agent / widget 完全同一路径；不特殊化到 session） ----
+  // 所有 tile 位置均存于 groupMembers，bandLayout 派生带局部 gridMap
+  const isWidgetTile = useCallback((id: string) => widgets.some((w) => w.id === id), [widgets]);
+  const handleTileMove = useCallback(
+    (id: string, next: TileGrid) => {
+      // widget 走 widgetStore；agent 和 browser 走 groupMembers + bandLayout
+      if (isWidgetTile(id)) {
+        moveWidget(id, next);
+      } else {
+        const m = useAgentsStore.getState().groupMembers[id];
+        if (m) moveGroupMember(id, next.col, next.row, next.w, next.h);
+        else console.warn(`[handleTileMove] tile ${id} not found in groupMembers`);
+      }
+    },
+    [isWidgetTile, moveGroupMember, moveWidget],
+  );
+  const handleTileDrop = useCallback(
+    (id: string, next: TileGrid) => {
+      const h = dragHoverRef.current;
+      // hover 就绪（占用 Tile 判定）→ 成组/移组/排斥
+      if (h.activated && h.sourceAgentId === id) {
+        const target = h.targetAgentId;
+        if (target) {
+          const tBand = h.targetGroupId ? bandById[h.targetGroupId] : null;
+          const tGrid = tBand?.gridMap[target];
+          const col = tGrid?.col ?? 0;
+          const row = tGrid?.row ?? GRID_START_ROW;
+          const w = tGrid?.w ?? next.w;
+          const th = tGrid?.h ?? next.h;
+          const sameUserGroup = h.targetGroupId && h.targetGroupId === h.sourceGroupId && h.targetGroupId !== UNGROUPED_BAND_ID;
+          if (h.mode === "repel" || sameUserGroup) {
+            if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
+              repelDropIntoGroup(id, h.targetGroupId, col, row, w, th);
+            } else {
+              repelDropToUngrouped(id, col, row, w, th);
+            }
+          } else if (h.targetGroupId === UNGROUPED_BAND_ID && h.sourceGroupId === UNGROUPED_BAND_ID) {
+            createGroup([id, target]);
+          } else if (h.targetGroupId === UNGROUPED_BAND_ID) {
+            repelDropToUngrouped(id, col, row, w, th);
+          } else if (h.targetGroupId) {
+            joinGroup(id, h.targetGroupId);
+          }
+        } else if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
+          joinGroup(id, h.targetGroupId);
+        }
+        clearDragHover();
+        return;
+      }
+      // 空网格跨组移动：目标带 ≠ 源带 → 直接移入目标带（进入组/回未分组），不必拖到磁贴上
+      if (h.targetGroupId && h.targetGroupId !== bandOf[id]) {
+        const g = h.targetGrid ?? next;
+        if (h.targetGroupId !== UNGROUPED_BAND_ID) {
+          repelDropIntoGroup(id, h.targetGroupId, g.col, g.row, next.w, next.h);
+        } else {
+          repelDropToUngrouped(id, g.col, g.row, next.w, next.h);
+        }
+        clearDragHover();
+        return;
+      }
+      clearDragHover();
+      // 普通移动：widget 走 widgetStore；其它 tile 走 groupMembers（持久化到 groups-v1 storage）
+      if (isWidgetTile(id)) {
+        commitWidget(id, next);
+      } else {
+        const m = useAgentsStore.getState().groupMembers[id];
+        if (m) moveGroupMember(id, next.col, next.row, next.w, next.h);
+      }
+    },
+    [bandById, bandOf, clearDragHover, commitWidget, createGroup, isWidgetTile, joinGroup, moveGroupMember, repelDropIntoGroup, repelDropToUngrouped],
+  );
+
   return (
     <div className={`tile-wall${openMode ? " tile-wall--open" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
       {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
@@ -789,6 +931,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           ))
         : null}
 
+      {/* ---- 广义 Tile 统一拖放：agent / widget 完全同一路径（不特殊化到 session） ---- */}
       {agents.map((agent) => {
         // 分组视图：Agent 磁贴由 GroupedWall 统一渲染（非自由网格）
         if (groupedMode) return null;
@@ -821,57 +964,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                 maxRow: GRID_ROWS - 1,
               }
             : undefined;
-        // 组内拖动落点 → 组内局部坐标；未分组 → 未分组带局部坐标（tiles）
-        const onTileMove = (next: TileGrid) => {
-          const m = useAgentsStore.getState().groupMembers[agent.id];
-          if (m) moveGroupMember(agent.id, next.col, next.row, next.w, next.h);
-          else moveTile(agent.id, next);
-        };
-        const onTileCommit = (next: TileGrid) => {
-          const h = dragHoverRef.current;
-          // 跨带/同带 hover 就绪后松手：<1s 成组/落位，≥1s 排斥落位
-          if (h.activated && h.sourceAgentId === agent.id) {
-            const target = h.targetAgentId;
-            if (target) {
-              const tBand = h.targetGroupId ? bandById[h.targetGroupId] : null;
-              const tGrid = tBand?.gridMap[target];
-              const col = tGrid?.col ?? 0;
-              const row = tGrid?.row ?? GRID_START_ROW;
-              const w = tGrid?.w ?? next.w;
-              const th = tGrid?.h ?? next.h;
-              const sameUserGroup = h.targetGroupId && h.targetGroupId === h.sourceGroupId && h.targetGroupId !== UNGROUPED_BAND_ID;
-              if (h.mode === "repel" || sameUserGroup) {
-                // ≥1s 排斥落位；或 <1s 同组拖动 → 落目标位置 + 组内 resolve（无重叠）
-                if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-                  repelDropIntoGroup(agent.id, h.targetGroupId, col, row, w, th);
-                } else {
-                  repelDropToUngrouped(agent.id, col, row, w, th);
-                }
-              } else if (h.targetGroupId === UNGROUPED_BAND_ID && h.sourceGroupId === UNGROUPED_BAND_ID) {
-                // 未分组 ↔ 未分组（<1s）→ 建新组
-                createGroup([agent.id, target]);
-              } else if (h.targetGroupId === UNGROUPED_BAND_ID) {
-                // 组内 → 未分组磁贴（<1s）→ 回未分组并落目标位置（无重叠）
-                repelDropToUngrouped(agent.id, col, row, w, th);
-              } else if (h.targetGroupId) {
-                // 未分组/其它组 → 目标组磁贴（<1s）→ 移入目标组
-                joinGroup(agent.id, h.targetGroupId);
-              }
-            } else if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-              // 拖到组名/组带空白：移入该组
-              joinGroup(agent.id, h.targetGroupId);
-            }
-            clearDragHover();
-            return;
-          }
-          clearDragHover();
-          const m = useAgentsStore.getState().groupMembers[agent.id];
-          if (m) moveGroupMember(agent.id, next.col, next.row, next.w, next.h);
-          else commitTile(agent.id, next);
-        };
-        // 拖动指针回调已改为 Desktop 全局 mousemove 机制（见下方 useEffect）：
-        // 只要墙上有磁贴处于 .tile-shell--dragging，全局监听即转发坐标并驱动 hover 状态机
-
+        // 广义 Tile 统一拖放（agent 与 widget 同路径，见 handleTileMove / handleTileDrop）
         return (
           <TileShell
             key={agent.id}
@@ -892,8 +985,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             canvasGhost={canvasGhost}
             flipped={isOpen}
             back={isOpen ? <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} /> : undefined}
-            onMove={onTileMove}
-            onCommit={onTileCommit}
+            onMove={(next) => handleTileMove(agent.id, next)}
+            onCommit={(next) => handleTileDrop(agent.id, next)}
             onCommitDisplaced={commitDisplacedTiles}
             onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
             contextMenuItems={!openMode ? buildAgentMenu(agent) : undefined}
@@ -1000,43 +1093,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           },
         ];
         const title = widget.title;
-        // widget 与 agent 一样参与拖拽成组/排斥（hover 状态机；未分组落位走 widgetStore）
-        const widgetTileCommit = (next: TileGrid) => {
-          const h = dragHoverRef.current;
-          if (h.activated && h.sourceAgentId === widget.id) {
-            const target = h.targetAgentId;
-            if (target) {
-              const tBand = h.targetGroupId ? bandById[h.targetGroupId] : null;
-              const tGrid = tBand?.gridMap[target];
-              const col = tGrid?.col ?? 0;
-              const row = tGrid?.row ?? GRID_START_ROW;
-              const w = tGrid?.w ?? next.w;
-              const th = tGrid?.h ?? next.h;
-              const sameUserGroup = h.targetGroupId && h.targetGroupId === h.sourceGroupId && h.targetGroupId !== UNGROUPED_BAND_ID;
-              if (h.mode === "repel" || sameUserGroup) {
-                if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-                  repelDropIntoGroup(widget.id, h.targetGroupId, col, row, w, th);
-                } else {
-                  repelDropToUngrouped(widget.id, col, row, w, th);
-                }
-              } else if (h.targetGroupId === UNGROUPED_BAND_ID && h.sourceGroupId === UNGROUPED_BAND_ID) {
-                createGroup([widget.id, target]);
-              } else if (h.targetGroupId === UNGROUPED_BAND_ID) {
-                repelDropToUngrouped(widget.id, col, row, w, th);
-              } else if (h.targetGroupId) {
-                joinGroup(widget.id, h.targetGroupId);
-              }
-            } else if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-              joinGroup(widget.id, h.targetGroupId);
-            }
-            clearDragHover();
-            return;
-          }
-          clearDragHover();
-          const m = useAgentsStore.getState().groupMembers[widget.id];
-          if (m) moveGroupMember(widget.id, next.col, next.row, next.w, next.h);
-          else commitWidget(widget.id, next);
-        };
         return (
           <TileShell
             key={widget.id}
@@ -1062,12 +1118,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                 : undefined
             }
             contextMenuItems={widgetMenuItems}
-            onMove={(next) => {
-              const m = useAgentsStore.getState().groupMembers[widget.id];
-              if (m) moveGroupMember(widget.id, next.col, next.row, next.w, next.h);
-              else moveWidget(widget.id, next);
-            }}
-            onCommit={widgetTileCommit}
+            onMove={(next) => handleTileMove(widget.id, next)}
+            onCommit={(next) => handleTileDrop(widget.id, next)}
             onCommitDisplaced={commitDisplacedTiles}
           >
             <div className="widget-tile">

@@ -1,0 +1,50 @@
+#!/bin/sh
+# MOMOKA Desktop Session — lightdm 会话入口
+# /usr/bin/momoka-session
+
+# 启动后端（如果未运行）
+if ! pgrep -f "node.*server.js" >/dev/null 2>&1; then
+    cd /opt/momoka
+    export MOMOKA_API_BASE="http://127.0.0.1:8888"
+    export MOMOKA_FRONTEND="http://127.0.0.1:8888/desktop/index.html"
+    nohup node dist/server.js > /tmp/momoka-backend.log 2>&1 &
+    BACKEND_PID=$!
+    echo "$BACKEND_PID" > /tmp/momoka-backend.pid
+    sleep 2
+fi
+
+# 等后端健康检查通过
+for i in $(seq 1 30); do
+    curl -s http://127.0.0.1:8888/api/health >/dev/null 2>&1 && break
+    sleep 1
+done
+
+# 窗口管理器
+openbox &
+WM_PID=$!
+
+# 面板
+tint2 &
+PANEL_PID=$!
+
+# 启动前端静态服务 (8889)
+cd /opt/momoka/desktop/dist
+nohup python3 -m http.server 8889 > /tmp/momoka-frontend.log 2>&1 &
+FRONTEND_PID=$!
+echo "$FRONTEND_PID" > /tmp/momoka-frontend.pid
+sleep 1
+
+# MOMOKA 全屏 Shell
+export MOMOKA_API_BASE="http://127.0.0.1:8888"
+export MOMOKA_FRONTEND="http://127.0.0.1:8889/"
+python3 /opt/momoka/momoka-shell.py &
+SHELL_PID=$!
+
+# 等待任意子进程退出（通常是 WM 退出）
+wait $WM_PID $PANEL_PID $SHELL_PID 2>/dev/null
+
+# 清理
+kill $WM_PID $PANEL_PID $SHELL_PID 2>/dev/null
+if [ -f /tmp/momoka-backend.pid ]; then
+    kill $(cat /tmp/momoka-backend.pid) 2>/dev/null
+fi

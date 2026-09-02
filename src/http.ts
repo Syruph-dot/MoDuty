@@ -12,6 +12,7 @@ import type { RouteContext } from "./http/route-context.js";
 import { orchestrationOf, wireAgentStatePersistence } from "./http/agent-orchestration.js";
 import { handleSettingsRoutes } from "./http/settings-routes.js";
 import { handleSessionRoutes } from "./http/session-routes.js";
+import { handleRelationRoutes } from "./http/relation-routes.js";
 import { handleAgentRoutes } from "./http/agent-routes.js";
 import { handleApprovalRoutes } from "./http/approval-routes.js";
 import { handleBrowserRoutes } from "./http/browser-routes.js";
@@ -66,6 +67,7 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
     }
 
     if (await handleSettingsRoutes(ctx, request, response, url)) return;
+    if (await handleRelationRoutes(ctx, request, response, url)) return;
     if (await handleSessionRoutes(ctx, request, response, url)) return;
     if (await handleAgentRoutes(ctx, request, response, url)) return;
     if (await handleApprovalRoutes(ctx, request, response, url)) return;

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import ApprovalPanel from "./components/ApprovalPanel";
 import AgentFilterBar from "./components/AgentFilterBar";
@@ -28,6 +28,11 @@ import { applyFontSourceLink } from "./state/tileThemeStore";
  */
 export default function App() {
   const openAgent = useAgentsStore((state) => state.openAgent);
+  // 稳定回调：配合 Desktop/GroupedWall 内 AgentTile 的 memo，避免每次 App 渲染穿透更新全部磁贴
+  const handleOpenAgent = useCallback(
+    (candidate: { id: string }) => openAgent(candidate.id),
+    [openAgent],
+  );
 
   // 把当前 wallpaper 应用到 .desktop-shell 上，并订阅 store 变化
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -44,7 +49,7 @@ export default function App() {
     <div className="desktop-shell" ref={shellRef}>
       <ControlBar />
       <AgentFilterBar />
-      <Desktop onOpen={(candidate) => openAgent(candidate.id)} />
+      <Desktop onOpen={handleOpenAgent} />
       <ArchivePanel />
       <ApprovalPanel />
       <ContextMenu />

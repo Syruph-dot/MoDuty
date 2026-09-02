@@ -136,6 +136,19 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
 
+  // 稳定回调（配合 AgentTile memo）：提交时从 dialogStore 读取当前重命名目标，避免 per-tile 闭包
+  const handleRenameCommit = useCallback(
+    (name: string) => {
+      const id = useDialogStore.getState().renameTarget;
+      if (!id) return;
+      // 成功才退出内联编辑；失败保持编辑态，错误已写入 store.error（桌面顶部展示）
+      void renameAgent(id, name)
+        .then(() => closeRename())
+        .catch(() => undefined);
+    },
+    [renameAgent, closeRename],
+  );
+
   /** Agent 磁贴右键菜单（A/B/D）：钉住 / 归档 / 重命名 / 删除 */
   const buildAgentMenu = useCallback(
     (agent: Agent): ContextMenuItem[] => {
@@ -998,13 +1011,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
               pinned={pinnedIds.includes(agent.id)}
               highlight={filters.query}
               renaming={renameTarget === agent.id}
-              onRenameCommit={(agentName) => {
-                // 成功才退出内联编辑；失败保持编辑态，错误已写入 store.error（桌面顶部展示）
-                void renameAgent(agent.id, agentName)
-                  .then(() => closeRename())
-                  .catch(() => undefined);
-              }}
-              onRenameCancel={() => closeRename()}
+              onRenameCommit={handleRenameCommit}
+              onRenameCancel={closeRename}
             />
           </TileShell>
         );

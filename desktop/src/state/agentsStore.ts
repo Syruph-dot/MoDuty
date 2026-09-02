@@ -433,19 +433,39 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     if (event.state === "completed") {
       useWindowManagerStore.getState().markCompleted("agent", event.agent_id);
     }
-    set((state) => ({
-      agents: state.agents.map((agent) =>
-        agent.id === event.agent_id
-          ? {
-              ...agent,
-              state: event.state,
-              phase: event.phase ?? null,
-              ...(event.context_stats ? { context_stats: event.context_stats } : {}),
-              last_active_at: new Date().toISOString(),
-            }
-          : agent,
-      ),
-    }));
+    set((state) => {
+      const target = state.agents.find((agent) => agent.id === event.agent_id);
+      if (!target) return {};
+      // 幂等短路：事件未带来任何可见变化（SSE 重复推送 / 轮询降级全量回放）时，
+      // 不新建 agents 数组 —— 下游 useVisibleAgents / bandLayout / 全墙 Tile 重渲染全部随之跳过
+      const prevStats = target.context_stats;
+      const nextStats = event.context_stats;
+      const statsUnchanged =
+        !nextStats ||
+        (!!prevStats &&
+          prevStats.prompt_tokens === nextStats.prompt_tokens &&
+          prevStats.cached_tokens === nextStats.cached_tokens &&
+          prevStats.context_window === nextStats.context_window);
+      const stateUnchanged =
+        target.state === event.state &&
+        (target.phase ?? null) === (event.phase ?? null) &&
+        statsUnchanged;
+      if (stateUnchanged) return {};
+      return {
+        agents: state.agents.map((agent) =>
+          agent.id === event.agent_id
+            ? {
+                ...agent,
+                state: event.state,
+                phase: event.phase ?? null,
+                ...(event.context_stats ? { context_stats: event.context_stats } : {}),
+                // last_active_at 仅在真实变化时更新，避免无条件时间戳导致排序抖动
+                last_active_at: new Date().toISOString(),
+              }
+            : agent,
+        ),
+      };
+    });
   },
 
   moveTile(id, grid) {

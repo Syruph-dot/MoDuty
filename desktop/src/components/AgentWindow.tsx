@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
@@ -51,6 +51,70 @@ interface DisplayMessage {
 }
 
  
+
+/**
+ * 单条消息（memo 化）：流式 token 只更新流式那条消息的 content，
+ * 历史消息 props 不变 → 跳过重渲染；markdown 解析按 content 缓存，每 token 只解析流式文本。
+ */
+const MessageItem = memo(function MessageItem({
+  message,
+  onToggleTool,
+}: {
+  message: DisplayMessage;
+  onToggleTool: (key: string) => void;
+}) {
+  // agent 消息才走 markdown；content 不变时复用上一次的解析结果
+  const html = useMemo(
+    () => (message.role === "agent" ? renderMarkdown(message.content) : ""),
+    [message.role, message.content],
+  );
+
+  // 跳过 tool call 之间创建的空 agent 消息（占位用，不应渲染）
+  if (message.role === "agent" && message.content === "") {
+    return null;
+  }
+
+  if (message.role === "tool" && message.toolCard) {
+    const tc = message.toolCard;
+    return (
+      <div
+        className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}`}
+        onClick={() => onToggleTool(message.key)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleTool(message.key); } }}
+      >
+        <div className="tool-card__head">
+          <span className={`tool-card__dot tool-card__dot--${tc.status}`} aria-hidden="true" />
+          <span className="tool-card__name">{tc.name}</span>
+          <span className="tool-card__args">{shortArgs(tc.args)}</span>
+          <span className="tool-card__toggle" aria-hidden="true">{tc.collapsed ? "▶" : "▼"}</span>
+        </div>
+        <div className="tool-card__body">
+          {tc.result ? (
+            <pre className="tool-card__result">{tc.result.length > 500 ? `${tc.result.slice(0, 500)}…` : tc.result}</pre>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  // 用户消息 = 纯文本（保留换行，由 .msg__bubble 的 white-space: pre-wrap 呈现），
+  // 不走 markdown：避免纯文本被 marked 包成 <p> 段落 + 尾随换行造成前后空行。
+  if (message.role === "user") {
+    return (
+      <div className={`msg msg--${message.role}`}>
+        <div className="msg__bubble">{message.content}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`msg msg--${message.role}`}>
+      <div className="msg__bubble" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  );
+});
 
 function shortArgs(args: string): string {
   if (!args || args === "{}") return "";
@@ -273,14 +337,14 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages, streaming]);
 
-  // 切换 tool card 折叠/展开
-  const toggleToolCollapsed = (key: string) => {
+  // 切换 tool card 折叠/展开（useCallback 保持稳定引用，配合 MessageItem memo）
+  const toggleToolCollapsed = useCallback((key: string) => {
     setMessages((prev) =>
       prev.map((m) =>
         m.key === key && m.toolCard ? { ...m, toolCard: { ...m.toolCard, collapsed: !m.toolCard.collapsed } } : m,
       ),
     );
-  };
+  }, []);
 
   // tool result 到达后 3 秒自动折叠
   const collapseAfterDelay = (key: string) => {
@@ -327,6 +391,21 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     const combinedSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     let currentAgentKey = `agent-${Date.now()}`;
     setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
+    // token 合帧：SSE token 到达频率远高于渲染需求（每 token 一次 setMessages/render/markdown），
+    // 先积累到 buffer，由 requestAnimationFrame 每帧最多 flush 一次 → 渲染频率上限 60fps。
+    // 注意：切换 currentAgentKey（tool call 分界）或流结束前必须 flush，否则尾部 token 会掉入下一条消息。
+    let tokenBuffer = "";
+    let tokenRaf: number | null = null;
+    const flushTokens = (): void => {
+      if (tokenRaf !== null) {
+        cancelAnimationFrame(tokenRaf);
+        tokenRaf = null;
+      }
+      if (!tokenBuffer) return;
+      const chunk = tokenBuffer;
+      tokenBuffer = "";
+      setMessages((prev) => prev.map((m) => (m.key === currentAgentKey ? { ...m, content: m.content + chunk } : m)));
+    };
     try {
       const base = await awaitApiBase();
       await runChatStream(
@@ -335,9 +414,14 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         trimmed,
         {
           onToken: (chunk) => {
-            setMessages((prev) => prev.map((m) => (m.key === currentAgentKey ? { ...m, content: m.content + chunk } : m)));
+            tokenBuffer += chunk;
+            if (tokenRaf === null) {
+              tokenRaf = requestAnimationFrame(flushTokens);
+            }
           },
           onToolStart: (name, args) => {
+            // tool call 分界：先把缓冲 token 落进旧消息，再切换 currentAgentKey
+            flushTokens();
             // 先结束当前 agent 消息（如果只有空 content 则删掉）
             setMessages((prev) => {
               const cleaned = prev.filter((m) => !(m.key === currentAgentKey && m.role === "agent" && m.content === ""));
@@ -373,10 +457,12 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             // 审批联动由 ApprovalPanel（ISS-09）处理；磁贴会经 agent_state 事件转 waiting_approval
           },
           onDone: async () => {
+            flushTokens();
             await reloadMessages();
             await load();
           },
           onError: (message) => {
+            flushTokens();
             setStreamError(message);
             setMessages((prev) => prev.filter((m) => !(m.role === "agent" && m.content === "")));
           },
@@ -392,6 +478,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         setMessages((prev) => prev.filter((message) => message.key !== currentAgentKey || message.content !== ""));
       }
     } finally {
+      flushTokens(); // 兜底：abort/超时路径也要把缓冲 token 落定
       setStreaming(false);
       stopPolling();
       // 若连接异常但后端任务仍在流式落盘，重新接入轮询跟随（后台恢复场景）
@@ -476,54 +563,9 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (
-          messages.map((message) => {
-            // 跳过 tool call 之间创建的空 agent 消息（占位用，不应渲染）
-            if (message.role === "agent" && message.content === "") {
-              return null;
-            }
-            if (message.role === "tool" && message.toolCard) {
-              const tc = message.toolCard;
-              return (
-                <div
-                  key={message.key}
-                  className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}`}
-                  onClick={() => toggleToolCollapsed(message.key)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleToolCollapsed(message.key); } }}
-                >
-                  <div className="tool-card__head">
-                    <span className={`tool-card__dot tool-card__dot--${tc.status}`} aria-hidden="true" />
-                    <span className="tool-card__name">{tc.name}</span>
-                    <span className="tool-card__args">{shortArgs(tc.args)}</span>
-                    <span className="tool-card__toggle" aria-hidden="true">{tc.collapsed ? "▶" : "▼"}</span>
-                  </div>
-                  <div className="tool-card__body">
-                    {tc.result ? (
-                      <pre className="tool-card__result">{tc.result.length > 500 ? `${tc.result.slice(0, 500)}…` : tc.result}</pre>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            }
-            // 用户消息 = 纯文本（保留换行，由 .msg__bubble 的 white-space: pre-wrap 呈现），
-            // 不走 markdown：避免纯文本被 marked 包成 <p> 段落 + 尾随换行造成前后空行。
-            if (message.role === "user") {
-              return (
-                <div key={message.key} className={`msg msg--${message.role}`}>
-                  <div className="msg__bubble">{message.content}</div>
-                </div>
-              );
-            }
-            return (
-              <div key={message.key} className={`msg msg--${message.role}`}>
-                <div
-                  className="msg__bubble"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-                />
-              </div>
-            );
-          })
+          messages.map((message) => (
+            <MessageItem key={message.key} message={message} onToggleTool={toggleToolCollapsed} />
+          ))
         )}
 
         {streaming && messages.length > 0 && messages[messages.length - 1]?.content === "" ? (

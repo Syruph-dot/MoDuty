@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useCallback, type CSSProperties } from "react";
 
 import AgentTile from "./AgentTile";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
@@ -36,6 +36,18 @@ export default function GroupedWall({ onOpen }: { onOpen: (agent: Agent) => void
   const showContextMenu = useContextMenuStore((state) => state.show);
   const deleteAgent = useAgentsStore((state) => state.deleteAgent);
   const renameAgent = useAgentsStore((state) => state.renameAgent);
+
+  // 稳定回调（配合 AgentTile memo）：提交时从 dialogStore 读当前重命名目标，避免 per-tile 闭包
+  const handleRenameCommit = useCallback(
+    (name: string) => {
+      const id = useDialogStore.getState().renameTarget;
+      if (!id) return;
+      void renameAgent(id, name)
+        .then(() => closeRename())
+        .catch(() => undefined);
+    },
+    [renameAgent, closeRename],
+  );
 
   // grouped 视图专用：墙内可见集（含筛选），不渲染归档
   const { wall } = useVisibleAgents();
@@ -174,12 +186,8 @@ export default function GroupedWall({ onOpen }: { onOpen: (agent: Agent) => void
                         pinned={pinnedIds.includes(agent.id)}
                         highlight={filters.query}
                         renaming={renameTarget === agent.id}
-                        onRenameCommit={(agentName) => {
-                          void renameAgent(agent.id, agentName)
-                            .then(() => closeRename())
-                            .catch(() => undefined);
-                        }}
-                        onRenameCancel={() => closeRename()}
+                        onRenameCommit={handleRenameCommit}
+                        onRenameCancel={closeRename}
                       />
                     </div>
                   ))}

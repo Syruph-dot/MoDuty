@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import type { Agent, AgentState } from "../types";
 import { formatShortTime } from "../lib/tileContent";
@@ -23,6 +23,9 @@ export const STATE_DOT_CLASS: Record<AgentState, string> = {
 
 /** 两页轮播间隔（hover 浏览 / running 轮滚共用） */
 const PAGE_MS = 2700;
+
+/** 千分位格式化器：提升为模块级单例，避免每个磁贴每次渲染重建 Intl.NumberFormat */
+const nf = new Intl.NumberFormat("en-US");
 
 /** running 时边框扫描两档速度：LLM 推理快、等待工具执行慢 */
 export const SCAN_FAST_MS = 1000;
@@ -57,7 +60,7 @@ interface AgentTileProps {
  * - footer = dot + 最近活跃时间；hover 浮现黑色 utility 条（OPEN ↵）
  * - 字号 / 字体家族由 tileThemeStore 配置，经 CSS 变量注入
  */
-export default function AgentTile({
+function AgentTile({
   agent,
   onOpen,
   renaming = false,
@@ -135,7 +138,6 @@ export default function AgentTile({
   const stats = agent.context_stats ?? null;
 
   // 上下文两行指标：{长度 / 窗口} + {占用率 / 缓存命中率}
-  const nf = new Intl.NumberFormat("en-US");
   const ctxLine1 = stats ? `${nf.format(stats.prompt_tokens)} / ${nf.format(stats.context_window)}` : "-- / --";
   const usagePct = stats && stats.context_window > 0
     ? `${((stats.prompt_tokens / stats.context_window) * 100).toFixed(1)}%`
@@ -269,3 +271,7 @@ export default function AgentTile({
     </button>
   );
 }
+
+// memo：SSE agent_state 事件只改动单个 agent 对象，`agents` 数组里其余元素引用不变，
+// 配合父级稳定的回调 props（useCallback / store action），未变化的磁贴全部跳过重渲染。
+export default memo(AgentTile);

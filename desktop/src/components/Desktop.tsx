@@ -13,11 +13,11 @@ import { awaitApiBase } from "../lib/api";
 import { computeBands, UNGROUPED_BAND_ID, SYSTEM_BAND_ID, type Band } from "../lib/bandLayout";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, gridToPixels } from "../lib/gridLayout";
-import { DEFAULT_TILE_GRID } from "../lib/persistTiles";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { startBrowserEventStream } from "../lib/browserEvents";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
 import { useBrowserStore } from "../state/browserStore";
+import { useTileStore } from "../state/tileStore";
 import { useWidgetStore } from "../state/widgetStore";
 import { useContextMenuStore, type ContextMenuItem } from "../state/contextMenuStore";
 import { useDialogStore } from "../state/dialogStore";
@@ -47,7 +47,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const error = useAgentsStore((state) => state.error);
   const load = useAgentsStore((state) => state.load);
   const applyAgentEvent = useAgentsStore((state) => state.applyAgentEvent);
-  const commitTile = useAgentsStore((state) => state.commitTile);
   const closeAgent = useAgentsStore((state) => state.closeAgent);
   const renameAgent = useAgentsStore((state) => state.renameAgent);
   const deleteAgent = useAgentsStore((state) => state.deleteAgent);
@@ -61,29 +60,27 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const setArchiveOpen = useAgentsStore((state) => state.setArchiveOpen);
   const { wall: wallAgents, archivedTotal } = useVisibleAgents();
 
-  // 拖拽成组（手动画组）：组带数据与动作
-  const groups = useAgentsStore((state) => state.groups);
-  const groupMembers = useAgentsStore((state) => state.groupMembers);
-  const createGroup = useAgentsStore((state) => state.createGroup);
-  const joinGroup = useAgentsStore((state) => state.joinGroup);
-  const leaveGroup = useAgentsStore((state) => state.leaveGroup);
-  const moveGroupMember = useAgentsStore((state) => state.moveGroupMember);
-  const repelDropIntoGroup = useAgentsStore((state) => state.repelDropIntoGroup);
-  const repelDropToUngrouped = useAgentsStore((state) => state.repelDropToUngrouped);
-  const renameGroup = useAgentsStore((state) => state.renameGroup);
-  const reorderGroups = useAgentsStore((state) => state.reorderGroups);
+  // 磁贴几何/组属/组操作：统一 tileStore（单一事实源；agent/widget/browser 同一路径）
+  const tiles = useTileStore((state) => state.tiles);
+  const groups = useTileStore((state) => state.groups);
+  const hydrateTiles = useTileStore((state) => state.hydrate);
+  const createGroup = useTileStore((state) => state.createGroup);
+  const joinGroup = useTileStore((state) => state.joinGroup);
+  const leaveGroup = useTileStore((state) => state.leaveGroup);
+  const repelDropIntoGroup = useTileStore((state) => state.repelDropIntoGroup);
+  const repelDropToUngrouped = useTileStore((state) => state.repelDropToUngrouped);
+  const renameGroup = useTileStore((state) => state.renameGroup);
+  const reorderGroups = useTileStore((state) => state.reorderGroups);
+  const commitDisplacedV3 = useTileStore((state) => state.commitDisplaced);
 
-  // widget 磁贴状态
+  // widget 磁贴状态（仅实例列表；几何在 tileStore）
   const widgets = useWidgetStore((state) => state.widgets);
   const displaced = useGhostStore((state) => state.displaced);
   const hydrateWidgets = useWidgetStore((state) => state.hydrate);
-  const moveWidget = useWidgetStore((state) => state.moveWidget);
-  const commitWidget = useWidgetStore((state) => state.commitWidget);
   const removeWidget = useWidgetStore((state) => state.removeWidget);
 
   // 受控浏览器磁贴（独立于 Agent 的实体）
   const browsers = useBrowserStore((state) => state.browsers);
-  const browserTiles = useBrowserStore((state) => state.tiles);
   const openBrowserIds = useBrowserStore((state) => state.openBrowserIds);
   const hydrateBrowser = useBrowserStore((state) => state.hydrate);
   const createBrowser = useBrowserStore((state) => state.createBrowser);
@@ -91,23 +88,13 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const openBrowser = useBrowserStore((state) => state.openBrowser);
   const closeBrowser = useBrowserStore((state) => state.closeBrowser);
   const applyBrowserEvent = useBrowserStore((state) => state.applyBrowserEvent);
-  const moveBrowserTile = useBrowserStore((state) => state.moveTile);
-  const commitBrowserTile = useBrowserStore((state) => state.commitTile);
 
-  /** 把“被排斥（让位）磁贴”按类型路由到对应 store 落盘，使松手后定格在临时位置 */
+  /** 把“被排斥（让位）磁贴”一键定格到预览位置（单一事实源，无类型路由） */
   const commitDisplacedTiles = useCallback(
     (map: Record<string, TileGrid>) => {
-      for (const [id, grid] of Object.entries(map)) {
-        if (agents.some((agent) => agent.id === id)) {
-          commitTile(id, grid);
-        } else if (browsers.some((browser) => browser.id === id)) {
-          commitBrowserTile(id, grid);
-        } else if (widgets.some((widget) => widget.id === id)) {
-          commitWidget(id, grid);
-        }
-      }
+      commitDisplacedV3(map);
     },
-    [agents, browsers, widgets, commitTile, commitBrowserTile, commitWidget],
+    [commitDisplacedV3],
   );
 
   const renameTarget = useDialogStore((state) => state.renameTarget);
@@ -154,7 +141,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     (agent: Agent): ContextMenuItem[] => {
       const pinned = pinnedIds.includes(agent.id);
       const manualArchived = useAgentsStore.getState().archivedIds.includes(agent.id);
-      const inGroup = !!useAgentsStore.getState().groupMembers[agent.id];
+      const tileOfAgent = useTileStore.getState().tiles[agent.id];
+      const inGroup = !!tileOfAgent && tileOfAgent.groupId !== UNGROUPED_BAND_ID && tileOfAgent.groupId !== SYSTEM_BAND_ID;
       return [
         {
           id: pinned ? "unpin" : "pin",
@@ -223,6 +211,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     let cancelled = false;
     void (async () => {
       try {
+        hydrateTiles(); // 单一事实源先行：几何/组属迁移 + 还原，再供各实体 store 对账
         await load();
         if (cancelled) return;
         hydrateWidgets();
@@ -248,7 +237,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       stream?.stop();
       browserStream?.stop();
     };
-  }, [load, applyAgentEvent, hydrateWidgets, hydrateBrowser, applyBrowserEvent]);
+  }, [load, applyAgentEvent, hydrateTiles, hydrateWidgets, hydrateBrowser, applyBrowserEvent]);
 
   // ---- 打开态布局：Agent + 浏览器磁贴统一进入 open 分屏；widget 永远自由摆放 ----
   const openIds = [...openAgentIds, ...openBrowserIds];
@@ -314,19 +303,20 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   // ---- Band（组带）布局：打破全局网格 —— 组带序列（x 累加，组间 120px）+ 组内局部网格 ----
-  // 所有 tile 位置均存于 groupMembers（g=UNGROUPED_BAND_ID 表示未分组），bandLayout 派生带局部 gridMap
+  // 所有 tile（agent/widget/browser）几何与组属统一来自 tileStore；bandLayout 纯派生。
+  // 可见性：agent 受墙治理筛选（wallIds），widget/browser 恒可见
   const bandLayout = useMemo(() => {
     if (!metrics) return null;
     return computeBands({
-      agents: wallAgents,
+      tiles,
       groups,
-      groupMembers,
-      browsers,
-      browserTiles,
-      widgets,
       metrics,
+      isVisible: (id) => {
+        const tile = tiles[id];
+        return tile ? tile.kind !== "agent" || wallIds.has(id) : true;
+      },
     });
-  }, [metrics, wallAgents, groups, groupMembers, browsers, browserTiles, widgets]);
+  }, [metrics, tiles, groups, wallIds]);
   const bands = bandLayout?.bands ?? [];
   const bandOf = bandLayout?.bandOf ?? {};
   const bandById = useMemo(() => {
@@ -788,25 +778,15 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load, zoom, zoomIn, zoomOut],
   );
 
-  // ---- 广义 Tile 统一拖放（agent / widget 完全同一路径；不特殊化到 session） ----
-  // 所有 tile 位置均存于 groupMembers，bandLayout 派生带局部 gridMap
-  const isWidgetTile = useCallback((id: string) => widgets.some((w) => w.id === id), [widgets]);
-  const handleTileMove = useCallback(
-    (id: string, next: TileGrid) => {
-      // widget 走 widgetStore；agent 和 browser 走 groupMembers + bandLayout
-      if (isWidgetTile(id)) {
-        moveWidget(id, next);
-      } else {
-        const m = useAgentsStore.getState().groupMembers[id];
-        if (m) moveGroupMember(id, next.col, next.row, next.w, next.h);
-        else console.warn(`[handleTileMove] tile ${id} not found in groupMembers`);
-      }
-    },
-    [isWidgetTile, moveGroupMember, moveWidget],
-  );
+  // ---- 广义 Tile 统一拖放：所有类型（agent/widget/browser）唯一写路径 = tileStore ----
+  const handleTileMove = useCallback((id: string, next: TileGrid) => {
+    useTileStore.getState().moveTile(id, next);
+  }, []);
   const handleTileDrop = useCallback(
     (id: string, next: TileGrid) => {
       const h = dragHoverRef.current;
+      // 预览即落盘：排斥/让位的 displaced 结果直接作为最终布局（与动中预览同一算法）
+      const previewDisplaced = useGhostStore.getState().displaced;
       // hover 就绪（占用 Tile 判定）→ 成组/移组/排斥
       if (h.activated && h.sourceAgentId === id) {
         const target = h.targetAgentId;
@@ -820,14 +800,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           const sameUserGroup = h.targetGroupId && h.targetGroupId === h.sourceGroupId && h.targetGroupId !== UNGROUPED_BAND_ID;
           if (h.mode === "repel" || sameUserGroup) {
             if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-              repelDropIntoGroup(id, h.targetGroupId, col, row, w, th);
+              repelDropIntoGroup(id, h.targetGroupId, col, row, w, th, previewDisplaced);
             } else {
-              repelDropToUngrouped(id, col, row, w, th);
+              repelDropToUngrouped(id, col, row, w, th, previewDisplaced);
             }
           } else if (h.targetGroupId === UNGROUPED_BAND_ID && h.sourceGroupId === UNGROUPED_BAND_ID) {
             createGroup([id, target]);
           } else if (h.targetGroupId === UNGROUPED_BAND_ID) {
-            repelDropToUngrouped(id, col, row, w, th);
+            repelDropToUngrouped(id, col, row, w, th, previewDisplaced);
           } else if (h.targetGroupId) {
             joinGroup(id, h.targetGroupId);
           }
@@ -841,23 +821,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (h.targetGroupId && h.targetGroupId !== bandOf[id]) {
         const g = h.targetGrid ?? next;
         if (h.targetGroupId !== UNGROUPED_BAND_ID) {
-          repelDropIntoGroup(id, h.targetGroupId, g.col, g.row, next.w, next.h);
+          repelDropIntoGroup(id, h.targetGroupId, g.col, g.row, next.w, next.h, previewDisplaced);
         } else {
-          repelDropToUngrouped(id, g.col, g.row, next.w, next.h);
+          repelDropToUngrouped(id, g.col, g.row, next.w, next.h, previewDisplaced);
         }
         clearDragHover();
         return;
       }
       clearDragHover();
-      // 普通移动：widget 走 widgetStore；其它 tile 走 groupMembers（持久化到 groups-v1 storage）
-      if (isWidgetTile(id)) {
-        commitWidget(id, next);
-      } else {
-        const m = useAgentsStore.getState().groupMembers[id];
-        if (m) moveGroupMember(id, next.col, next.row, next.w, next.h);
-      }
+      // 普通移动：统一落盘（类型无关）
+      useTileStore.getState().commitTile(id, next);
     },
-    [bandById, bandOf, clearDragHover, commitWidget, createGroup, isWidgetTile, joinGroup, moveGroupMember, repelDropIntoGroup, repelDropToUngrouped],
+    [bandById, bandOf, clearDragHover, createGroup, joinGroup, repelDropIntoGroup, repelDropToUngrouped],
   );
 
   return (
@@ -1025,14 +1000,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const displacedGrid = displaced[browser.id];
         const systemBand = bandById[SYSTEM_BAND_ID] ?? null;
         const systemBandX = systemBand?.x ?? 0;
+        // 几何唯一事实源：tileStore → bandLayout 系统带 gridMap
+        const browserGrid = systemBand?.gridMap[browser.id] ?? null;
         const geometry =
           openMode && layout
             ? layout.geometryOf[browser.id] ?? EMPTY_TILE
-            : metrics && browserTiles[browser.id]
-              ? gridToPixels(displacedGrid ?? browserTiles[browser.id], metrics, systemBandX)
-              : metrics
-                ? gridToPixels(DEFAULT_TILE_GRID, metrics, systemBandX)
-                : EMPTY_TILE;
+            : metrics && browserGrid
+              ? gridToPixels(displacedGrid ?? browserGrid, metrics, systemBandX)
+              : EMPTY_TILE;
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : "dock";
         const browserMenuItems: ContextMenuItem[] = [
           {
@@ -1052,7 +1027,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             id={browser.id}
             agentName={browser.name}
             geometry={geometry}
-            grid={!openMode ? browserTiles[browser.id] ?? DEFAULT_TILE_GRID : undefined}
+            grid={!openMode ? browserGrid ?? undefined : undefined}
             gridMap={!openMode ? systemBand?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
             bounds={bounds}
@@ -1064,8 +1039,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             bandX={systemBandX}
             flipped={isOpen}
             back={isOpen ? <BrowserWindow browser={browser} onClose={() => closeBrowser(browser.id)} /> : undefined}
-            onMove={(next) => moveBrowserTile(browser.id, next)}
-            onCommit={(next) => commitBrowserTile(browser.id, next)}
+            onMove={(next) => handleTileMove(browser.id, next)}
+            onCommit={(next) => handleTileDrop(browser.id, next)}
             onCommitDisplaced={commitDisplacedTiles}
             onDropToDock={isOpen ? () => closeBrowser(browser.id) : undefined}
             contextMenuItems={browserMenuItems}
@@ -1081,10 +1056,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         if (groupedMode) return null; // 分组视图仅展示 Agent 分组
         const def = getWidgetDef(widget.kind);
         if (!def) return null;
-        // 广义 Tile：widget 也可成组 → 渲染位置 = 所属带（用户组/未分组带）的局部网格
+        // 统一事实源：所属带（用户组/未分组带）的局部网格；widget 入 hydration 后必有 tile，无 1×1 fallback
         const band = bandById[bandOf[widget.id]] ?? null;
         const bandX = band?.x ?? 0;
-        const sourceGrid = band?.gridMap[widget.id] ?? widget.grid;
+        const sourceGrid = band?.gridMap[widget.id] ?? null;
+        if (!sourceGrid) return null; // 无磁贴记录 = 数据未就绪，不渲染（不再画 1×1 假位）
         const geometry = metrics
           ? gridToPixels((displaced[widget.id] ?? sourceGrid), metrics, bandX)
           : EMPTY_TILE;

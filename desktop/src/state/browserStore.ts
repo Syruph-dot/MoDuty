@@ -1,16 +1,18 @@
 import { create } from "zustand";
 
 import { createBrowser as apiCreateBrowser, deleteBrowser as apiDeleteBrowser, listBrowsers } from "../lib/api";
-import { insertTile } from "../lib/gridLayout";
-import { loadAllTiles, removeTile, saveTile, spawnXToCol } from "../lib/persistTiles";
+import { spawnXToCol } from "../lib/persistTiles";
+import { useTileStore } from "./tileStore";
 import type { BrowserInfo, TileGrid } from "../types";
 import type { BrowserServiceEvent } from "../lib/browserEvents";
 import { useWindowManagerStore } from "./windowManagerStore";
 
+/**
+ * browserStore（v3 重构后）：只管 browser 远端实体列表与打开集合；
+ * 磁贴几何/组属 → tileStore（单一事实源）；moveTile/commitTile 保留为兼容入口（转发 tileStore）。
+ */
 interface BrowserStore {
   browsers: BrowserInfo[];
-  /** 磁贴网格：browser.id → 网格坐标/尺寸（localStorage 持久化） */
-  tiles: Record<string, TileGrid>;
   /** 已打开的浏览器磁贴 id（打开顺序） */
   openBrowserIds: string[];
   hydrate: () => Promise<void>;
@@ -25,56 +27,41 @@ interface BrowserStore {
   commitTile: (id: string, grid: TileGrid) => void;
 }
 
-const BROWSER_TILE_PREFIX = "browser:";
-
-function loadBrowserTiles(): Record<string, TileGrid> {
-  const all = loadAllTiles();
-  const tiles: Record<string, TileGrid> = {};
-  for (const [key, value] of Object.entries(all)) {
-    if (key.startsWith(BROWSER_TILE_PREFIX)) {
-      tiles[key.slice(BROWSER_TILE_PREFIX.length)] = value;
-    }
-  }
-  return tiles;
-}
-
 export const useBrowserStore = create<BrowserStore>()((set) => ({
   browsers: [],
-  tiles: {},
   openBrowserIds: [],
 
   async hydrate() {
-    const tiles = loadBrowserTiles();
     const browsers = await listBrowsers().catch(() => []);
+    const tiles = useTileStore.getState();
+    // 服务端现存 browser → 确保有磁贴；v3 里残留的 browser 磁贴（服务端已删）→ 清理
+    const serverIds = new Set(browsers.map((b) => b.id));
+    for (const tile of Object.values(tiles.tiles)) {
+      if (tile.kind === "browser" && !serverIds.has(tile.id)) tiles.removeTile(tile.id);
+    }
+    for (const b of browsers) {
+      tiles.ensureTile(b.id, "browser");
+    }
     set((state) => ({
       browsers,
-      tiles: { ...state.tiles, ...tiles },
-      openBrowserIds: state.openBrowserIds.filter((id) => browsers.some((b) => b.id === id)),
+      openBrowserIds: state.openBrowserIds.filter((id) => serverIds.has(id)),
     }));
   },
 
   async createBrowser(input) {
     const browser = await apiCreateBrowser({ mode: input.mode ?? "incognito", name: input.name });
-    set((state) => ({
-      browsers: [browser, ...state.browsers],
-      tiles: state.tiles[browser.id]
-        ? state.tiles
-        : insertTile(state.tiles, browser.id, spawnXToCol(0)),
-    }));
+    useTileStore.getState().ensureTile(browser.id, "browser", { colHint: spawnXToCol(0) });
+    set((state) => ({ browsers: [browser, ...state.browsers] }));
     return browser;
   },
 
   async deleteBrowser(id) {
     await apiDeleteBrowser(id);
-    set((state) => {
-      const { [id]: _removed, ...tiles } = state.tiles;
-      removeTile(`browser:${id}`);
-      return {
-        browsers: state.browsers.filter((b) => b.id !== id),
-        tiles,
-        openBrowserIds: state.openBrowserIds.filter((openId) => openId !== id),
-      };
-    });
+    useTileStore.getState().removeTile(id);
+    set((state) => ({
+      browsers: state.browsers.filter((b) => b.id !== id),
+      openBrowserIds: state.openBrowserIds.filter((openId) => openId !== id),
+    }));
   },
 
   openBrowser(id) {
@@ -99,16 +86,13 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
     const browser = event.browser;
     if (event.type === "browser_created") {
       useWindowManagerStore.getState().markOpened("browser", browser.id);
+      useTileStore.getState().ensureTile(browser.id, "browser");
       set((state) => {
         if (state.browsers.some((b) => b.id === browser.id)) {
           return state;
         }
-        const tiles = state.tiles[browser.id]
-          ? state.tiles
-          : insertTile(state.tiles, browser.id, spawnXToCol(0));
         return {
           browsers: [browser, ...state.browsers],
-          tiles,
           openBrowserIds: state.openBrowserIds.includes(browser.id)
             ? state.openBrowserIds
             : [...state.openBrowserIds, browser.id], // Agent/任何创建路径 → 右半舞台打开
@@ -117,15 +101,11 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
       return;
     }
     if (event.type === "browser_deleted") {
-      set((state) => {
-        const { [browser.id]: _removed, ...tiles } = state.tiles;
-        removeTile(`browser:${browser.id}`);
-        return {
-          browsers: state.browsers.filter((b) => b.id !== browser.id),
-          tiles,
-          openBrowserIds: state.openBrowserIds.filter((id) => id !== browser.id),
-        };
-      });
+      useTileStore.getState().removeTile(browser.id);
+      set((state) => ({
+        browsers: state.browsers.filter((b) => b.id !== browser.id),
+        openBrowserIds: state.openBrowserIds.filter((id) => id !== browser.id),
+      }));
       return;
     }
     // browser_state：就地更新
@@ -135,14 +115,10 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
   },
 
   moveTile(id, grid) {
-    set((state) => ({ tiles: { ...state.tiles, [id]: grid } }));
+    useTileStore.getState().moveTile(id, grid);
   },
 
   commitTile(id, grid) {
-    set((state) => {
-      const tiles = { ...state.tiles, [id]: grid };
-      saveTile(`browser:${id}`, grid);
-      return { tiles };
-    });
+    useTileStore.getState().commitTile(id, grid);
   },
 }));

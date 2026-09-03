@@ -263,6 +263,14 @@ export function firstFreeSlot(
   w: number,
   h: number,
 ): { col: number; row: number } {
+  return firstFree(map, colHint, w, h);
+}
+
+/**
+ * 统一空闲区查找（v3）：为任意 w×h 磁贴在 map 中找第一个可容纳空位。
+ * 从 colHint 列开始逐列、列内自上而下；矩形感知（isFree），不只看锚点格。
+ */
+export function firstFree(map: TileGridMap, colHint: number, w: number, h: number): { col: number; row: number } {
   for (let d = 0; d < 64; d += 1) {
     const col = Math.max(0, colHint + d);
     for (let row = GRID_START_ROW; row <= GRID_ROWS - h; row += 1) {
@@ -276,15 +284,7 @@ export function firstFreeSlot(
 
 /** 找到放置 1×1 磁贴的第一个空闲格（可放置行范围）；从 colHint 列开始，逐列自上而下找。 */
 export function firstFreeCell(map: TileGridMap, colHint: number): { col: number; row: number } {
-  for (let d = 0; d < 64; d += 1) {
-    const col = Math.max(0, colHint + d);
-    for (let row = GRID_START_ROW; row < GRID_ROWS; row += 1) {
-      if (isFree(map, { col, row, w: 1, h: 1 })) {
-        return { col, row };
-      }
-    }
-  }
-  return { col: Math.max(0, colHint), row: GRID_START_ROW };
+  return firstFree(map, colHint, 1, 1);
 }
 
 /**

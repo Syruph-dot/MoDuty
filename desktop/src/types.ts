@@ -43,6 +43,33 @@ export interface TileGrid {
   h: number; // 行跨度（∈ TILE_SIZES.h）
 }
 
+/** 磁贴类型（统一 Tile 模型，v3） */
+export type TileKind = "agent" | "widget" | "browser";
+
+/** 未分组带 id（tile.groupId 取此值 = 未分组） */
+export const UNGROUPED_BAND_ID = "__ungrouped";
+/** 系统带 id（browser 磁贴；不参与成组） */
+export const SYSTEM_BAND_ID = "__system";
+
+/**
+ * 统一磁贴（v3 单一事实源）：几何 + 组属 + 类型一体化。
+ * grid 为带内局部网格（col/row 相对所属组带，带起始 X 由 bandLayout 派生）。
+ */
+export interface Tile {
+  id: string;
+  kind: TileKind;
+  /** 所属组：用户组 id / UNGROUPED_BAND_ID / SYSTEM_BAND_ID */
+  groupId: string;
+  grid: TileGrid;
+}
+
+/** 用户组（拖拽成组）：order = 组带在 X 轴的排列顺序 */
+export interface TileGroup {
+  id: string;
+  name: string;
+  order: number;
+}
+
 export function isTileGrid(value: unknown): value is TileGrid {
   if (!value || typeof value !== "object") return false;
   const raw = value as Record<string, unknown>;

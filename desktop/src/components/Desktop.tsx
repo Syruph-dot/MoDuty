@@ -879,7 +879,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
               key={band.id}
               data-group-name={band.id}
               className={`tile-group-name${renamingGroupId === band.id ? " tile-group-name--editing" : ""}${reorderSource === band.id ? " tile-group-name--dragging" : ""}`}
-              style={{ left: metrics.padding + band.x, top: Math.max(2, metrics.padding - 10), width: band.width }}
+              style={{ left: metrics.padding + band.x, top: metrics.padding + metrics.cellH + metrics.gap - 10, width: band.width }}
               onMouseDown={onGroupNameMouseDown(band.id)}
             >
               {renamingGroupId === band.id && band.editable ? (

@@ -129,7 +129,7 @@ export default function BrowserWindow({
           <span className={`state-dot state-dot--${browserState.state === "ready" ? "running" : browserState.state === "error" ? "error" : "idle"}`} aria-hidden="true" />
           <h2 className="browser-window__title">{browserState.name}</h2>
           <span className={`browser-window__mode browser-window__mode--${browserState.mode}`}>
-            {browserState.mode === "persistent" ? "🔒 正常模式（登录持久化）" : "🕶 无痕模式"}
+            {browserState.mode === "persistent" ? "正常模式（登录持久化）" : "无痕模式"}
           </span>
         </div>
         <button type="button" className="browser-window__close" aria-label="关闭浏览器窗口" onClick={onClose}>

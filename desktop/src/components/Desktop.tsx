@@ -717,7 +717,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         },
         {
           id: "new-browser-normal",
-          label: "🔒 New Browser（正常·持久登录）",
+          label: "New Browser",
           onClick: () => {
             void createBrowser({ mode: "persistent" }).then((browser) => {
               if (browser) openBrowser(browser.id);
@@ -726,7 +726,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         },
         {
           id: "new-browser-incognito",
-          label: "🕶 New Browser（无痕）",
+          label: "New Browser(incognito)",
           onClick: () => {
             void createBrowser({ mode: "incognito" }).then((browser) => {
               if (browser) openBrowser(browser.id);

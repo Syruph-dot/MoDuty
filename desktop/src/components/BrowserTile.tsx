@@ -7,8 +7,8 @@ import { useState, type CSSProperties } from "react";
 import type { BrowserInfo } from "../types";
 
 const MODE_BADGE: Record<BrowserInfo["mode"], string> = {
-  persistent: "🔒 正常",
-  incognito: "🕶 无痕",
+  persistent: "正常",
+  incognito: "无痕",
 };
 
 const STATE_DOT: Record<BrowserInfo["state"], string> = {

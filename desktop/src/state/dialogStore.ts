@@ -13,7 +13,9 @@ interface DialogStore {
   newAgentOpen: boolean;
   /** 打开新建弹窗时光标相对磁贴墙的坐标（用于新磁贴落位） */
   newAgentSpawn: { x: number; y: number } | null;
-  openNewAgent: (spawn?: { x: number; y: number }) => void;
+  /** 可选：新建 Agent 时直接指定归属组（右键菜单按鼠标位置推断 / 组名 + 号点击） */
+  newAgentGroupId: string | null;
+  openNewAgent: (spawn?: { x: number; y: number }, groupId?: string) => void;
   closeNewAgent: () => void;
   /** 内联重命名目标 Agent id（null 表示未在重命名；由 TileShell 右键菜单触发，AgentTile 就地编辑） */
   renameTarget: string | null;
@@ -47,8 +49,9 @@ interface DialogStore {
 export const useDialogStore = create<DialogStore>((set) => ({
   newAgentOpen: false,
   newAgentSpawn: null,
-  openNewAgent: (spawn) => set({ newAgentOpen: true, newAgentSpawn: spawn ?? null }),
-  closeNewAgent: () => set({ newAgentOpen: false, newAgentSpawn: null }),
+  newAgentGroupId: null,
+  openNewAgent: (spawn, groupId) => set({ newAgentOpen: true, newAgentSpawn: spawn ?? null, newAgentGroupId: groupId ?? null }),
+  closeNewAgent: () => set({ newAgentOpen: false, newAgentSpawn: null, newAgentGroupId: null }),
   renameTarget: null,
   openRename: (id) => set({ renameTarget: id }),
   closeRename: () => set({ renameTarget: null }),

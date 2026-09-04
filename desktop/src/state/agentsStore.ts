@@ -97,6 +97,8 @@ export interface CreateAgentInput {
   model?: string;
   /** 打开新建菜单时光标相对磁贴墙的 X 像素；新磁贴插入到鼠标 X 轴列 */
   spawn?: { x: number; y: number };
+  /** 可选：直接指定归属组（绕过默认未分组带） */
+  groupId?: string;
 }
 
 interface AgentsStore {
@@ -198,7 +200,11 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         ...(input.workspace_dir ? { workspace_dir: input.workspace_dir } : {}),
         ...(input.model ? { model: input.model } : {}),
       });
-      useTileStore.getState().ensureTile(agent.id, "agent", { colHint: spawnXToCol(input.spawn?.x) });
+      // 如果指定了 groupId，直接入组；否则走默认未分组带
+      useTileStore.getState().ensureTile(agent.id, "agent", {
+        colHint: spawnXToCol(input.spawn?.x),
+        groupId: input.groupId,
+      });
       set((state) => ({ agents: [agent, ...state.agents] }));
       return agent;
     } catch (error) {

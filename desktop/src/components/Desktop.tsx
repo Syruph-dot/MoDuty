@@ -700,12 +700,23 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       const spawn = wallRect
         ? { x: event.clientX - wallRect.left, y: event.clientY - wallRect.top }
         : undefined;
+      // 根据鼠标 X 位置推断落在哪个组带（仅 free 模式下的用户组）
+      let contextGroupId: string | undefined;
+      if (!openMode && !groupedMode && bandLayout && wallRect && metrics) {
+        const contentX = event.clientX - wallRect.left;
+        for (const band of bandLayout.bands) {
+          if (band.editable && contentX >= band.x + metrics.padding && contentX <= band.x + metrics.padding + band.width) {
+            contextGroupId = band.id;
+            break;
+          }
+        }
+      }
       const items: ContextMenuItem[] = [
         {
           id: "new-agent",
           label: "New Agent",
           onClick: () => {
-            openNewAgent(spawn);
+            openNewAgent(spawn, contextGroupId);
           },
         },
         {
@@ -915,6 +926,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                 </span>
               )}
               <span className="tile-group-name__count">{band.ids.length}</span>
+              <button
+                type="button"
+                className="tile-group-name__add"
+                title="在该组创建 Agent"
+                aria-label="在该组创建 Agent"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openNewAgent(undefined, band.id);
+                }}
+              >
+                +
+              </button>
             </div>
           ))
         : null}

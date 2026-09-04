@@ -346,16 +346,23 @@
 
 /* ---- & 提及（会话引用）---- */
 
-/* 离屏 mirror：测量光标 X，不参与布局 */
-.mention-popup__mirror {
+/* 离屏 mirror：测量光标 X/Y，不参与布局（适配 textarea） */
+.agent-window__mirror {
   position: absolute;
   visibility: hidden;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-wrap: break-word;
   font-size: 14px;
   font-family: inherit;
   letter-spacing: inherit;
+  line-height: inherit;
   pointer-events: none;
   z-index: -1;
+  padding: 12px 14px; /* 与 textarea padding 一致 */
+  border: 1px solid transparent; /* 与 textarea border 一致 */
+  border-radius: 9px; /* 与 textarea border-radius 一致 */
+  box-sizing: border-box;
+  width: 100%; /* 与 textarea width 一致 */
 }
 
 .mention-popup {

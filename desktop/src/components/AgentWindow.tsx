@@ -139,8 +139,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   /** 后台流式任务的轮询刷新器（重开窗口时跟随流式落盘） */
   const pollTimerRef = useRef<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const mirrorRef = useRef<HTMLSpanElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const [sessions, setSessions] = useState<SessionCandidate[]>([]);
   const [mention, setMention] = useState<Mention | null>(null);
   const [mentionX, setMentionX] = useState(0);
@@ -272,22 +272,23 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       .slice(0, 20);
   }, [sessions, mention, agent.session_id]);
 
-  /** 离屏 mirror 测 caret X：与 input 同字体/同字号，偏移量 = mirror 宽度 + input padding-left(14px) */
-  const measureCaretX = (text: string): number => {
+  /** 离屏 mirror 测 caret X/Y：与 textarea 同字体/同字号/行高，支持多行 */
+  const measureCaret = (text: string): { x: number; y: number } => {
     const el = mirrorRef.current;
-    if (!el) return 0;
+    if (!el) return { x: 0, y: 0 };
     el.textContent = text;
-    return el.offsetWidth + 14;
+    return { x: el.offsetWidth + 14, y: el.offsetHeight };
   };
 
-  const onChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const onChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value;
     setInput(value);
     const caret = event.target.selectionStart ?? value.length;
     const match = value.slice(0, caret).match(/&(\S*)$/);
     if (match) {
       setMention({ active: true, query: match[1] ?? "", start: caret - match[0].length, index: 0 });
-      setMentionX(measureCaretX(value.slice(0, caret)));
+      const { x } = measureCaret(value.slice(0, caret));
+      setMentionX(x);
     } else {
       setMention(null);
     }
@@ -317,7 +318,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     setInput((val) => val.replace(new RegExp(`&ses_${sessionId}\s*`), ""));
   };
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mention?.active && candidates.length > 0) {
       const last = candidates.length - 1;
       if (event.key === "ArrowDown") {
@@ -343,7 +344,12 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       }
       return; // mention 活跃时其余键不发送
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    // Shift+Enter 或 Ctrl+Enter：插入换行符
+    if (event.key === "Enter" && (event.shiftKey || event.ctrlKey)) {
+      return; // 允许默认行为：插入换行
+    }
+    // Enter（无修饰键）：发送
+    if (event.key === "Enter") {
       event.preventDefault();
       void send();
     }
@@ -616,7 +622,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       </div>
 
       <footer className="agent-window__composer">
-        <span ref={mirrorRef} className="mention-popup__mirror" aria-hidden="true" />
+        <div ref={mirrorRef} className="agent-window__mirror" aria-hidden="true" />
         {/* 已选会话引用 chips：可视化标签，点击 × 删除 */}
         {mentionChips.length > 0 && (
           <div className="mention-chips" role="group" aria-label="已引用会话">
@@ -660,15 +666,16 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             ))}
           </ul>
         ) : null}
-        <input
+        <textarea
           ref={inputRef}
           className="agent-window__input"
           value={input}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          placeholder="输入消息，Enter 发送；输入 & 可引用历史会话"
-          disabled={streaming}
+          placeholder="输入消息，Enter 发送；Shift+Enter 或 Ctrl+Enter 换行；输入 & 可引用历史会话"
           aria-label="消息输入"
+          rows={1}
+          style={{ resize: 'none', minHeight: '44px', maxHeight: '200px' }}
         />
         <button
           type="button"

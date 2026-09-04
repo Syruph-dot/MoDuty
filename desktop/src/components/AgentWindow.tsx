@@ -144,6 +144,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [sessions, setSessions] = useState<SessionCandidate[]>([]);
   const [mention, setMention] = useState<Mention | null>(null);
   const [mentionX, setMentionX] = useState(0);
+  /** 已选中的会话引用 chips（用于可视化，底层 input 仍存 &ses_<id>） */
+  const [mentionChips, setMentionChips] = useState<Array<{ sessionId: string; name: string }>>([]);
   const load = useAgentsStore((state) => state.load);
 
   const reloadMessages = async (): Promise<StoredMessage[]> => {
@@ -289,16 +291,30 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     } else {
       setMention(null);
     }
+    // 检测用户手动删除了 &ses_<id>：同步移除对应 chip
+    const sesIdsInInput = value.match(/&ses_([^\s]+)/g)?.map((s) => s.slice(6)) ?? [];
+    setMentionChips((prev) => prev.filter((c) => sesIdsInInput.includes(c.sessionId)));
   };
 
-  /** 选中候选：把 value[start..caret] 替换为机器句柄 &ses_<id>，光标后置 */
+  /** 选中候选：在输入框插入 &ses_<id>，同时在 chips 区显示可视化标签 */
   const applyMention = (sessionId: string) => {
     if (!mention) return;
+    const candidate = candidates.find((c) => c.id === sessionId);
     const value = input;
     const caret = inputRef.current?.selectionStart ?? value.length;
-    setInput(`${value.slice(0, mention.start)}&ses_${sessionId} ${value.slice(caret)}`);
+    const newValue = `${value.slice(0, mention.start)}&ses_${sessionId} ${value.slice(caret)}`;
+    setInput(newValue);
+    if (candidate) {
+      setMentionChips((prev) => [...prev, { sessionId, name: candidate.name }]);
+    }
     setMention(null);
     inputRef.current?.focus();
+  };
+
+  /** 删除 mention chip：同步清理 chips 数组与 input 中的 &ses_<id> */
+  const removeMentionChip = (sessionId: string) => {
+    setMentionChips((prev) => prev.filter((c) => c.sessionId !== sessionId));
+    setInput((val) => val.replace(new RegExp(`&ses_${sessionId}\s*`), ""));
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -601,6 +617,28 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
 
       <footer className="agent-window__composer">
         <span ref={mirrorRef} className="mention-popup__mirror" aria-hidden="true" />
+        {/* 已选会话引用 chips：可视化标签，点击 × 删除 */}
+        {mentionChips.length > 0 && (
+          <div className="mention-chips" role="group" aria-label="已引用会话">
+            {mentionChips.map((chip) => (
+              <span
+                key={chip.sessionId}
+                className="mention-chip"
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <span className="mention-chip__name">@{chip.name}</span>
+                <button
+                  type="button"
+                  className="mention-chip__remove"
+                  aria-label={`移除引用 ${chip.name}`}
+                  onClick={() => removeMentionChip(chip.sessionId)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {mention?.active && candidates.length > 0 ? (
           <ul className="mention-popup" style={{ left: Math.min(mentionX, 380) }} role="listbox" aria-label="引用会话">
             {candidates.map((candidate, index) => (

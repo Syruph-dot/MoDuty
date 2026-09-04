@@ -403,6 +403,54 @@
   white-space: nowrap;
 }
 
+/* ---- & 提及 chips（已选会话引用的可视化标签）---- */
+.mention-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 4px 2px;
+}
+
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
+  font-size: 12px;
+  color: #e8edf7;
+  background: rgba(79, 140, 255, 0.18);
+  border: 1px solid rgba(79, 140, 255, 0.35);
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.mention-chip__name {
+  font-weight: 500;
+}
+
+.mention-chip__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(232, 237, 247, 0.7);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mention-chip__remove:hover {
+  background: rgba(79, 140, 255, 0.25);
+  color: #e8edf7;
+}
+
 .agent-window__input {
   flex: 1;
   padding: 11px 14px;

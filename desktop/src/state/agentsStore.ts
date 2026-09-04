@@ -259,8 +259,7 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     set((state) => {
       const target = state.agents.find((agent) => agent.id === event.agent_id);
       if (!target) return {};
-      // 幂等短路：事件未带来任何可见变化（SSE 重复推送 / 轮询降级全量回放）时，
-      // 不新建 agents 数组 —— 下游 useVisibleAgents / bandLayout / 全墙 Tile 重渲染全部随之跳过
+      // 幂等短路
       const prevStats = target.context_stats;
       const nextStats = event.context_stats;
       const statsUnchanged =
@@ -274,6 +273,11 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         (target.phase ?? null) === (event.phase ?? null) &&
         statsUnchanged;
       if (stateUnchanged) return {};
+      // 关键修复：completed 态不自动回 idle —— 只有用户打开该磁贴（openAgentIds 包含）时才允许 completed→idle 迁移
+      const isOpened = state.openAgentIds.includes(event.agent_id);
+      if (target.state === "completed" && event.state === "idle" && !isOpened) {
+        return {}; // 丢弃该事件，保持绿色完成态
+      }
       return {
         agents: state.agents.map((agent) =>
           agent.id === event.agent_id
@@ -282,7 +286,6 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
                 state: event.state,
                 phase: event.phase ?? null,
                 ...(event.context_stats ? { context_stats: event.context_stats } : {}),
-                // last_active_at 仅在真实变化时更新，避免无条件时间戳导致排序抖动
                 last_active_at: new Date().toISOString(),
               }
             : agent,

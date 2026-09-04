@@ -925,22 +925,36 @@
   margin-top: auto;
 }
 
-/* running 边框扫描层（interactionv2 .pre 的 border + clip-path 滚动效果）
+/* running 边框扫描层：径向渐变雷达扫描（conic-gradient 旋转）
    快档 = LLM 推理（planning/verifying），慢档 = 等待工具执行（searching/reading/executing） */
 .agent-tile__scan {
   position: absolute;
-  inset: 0;
-  border: 2px solid rgba(127, 183, 255, 0.9);
-  border-radius: 10px;
+  inset: -2px; /* 边框外扩 2px 覆盖 border-radius */
+  border-radius: 12px;
   pointer-events: none;
   z-index: 4;
-  clip-path: inset(0 100% 0 0);
-  animation: tile-scan 1s linear infinite;
+  /* conic-gradient 雷达扫描：透明背景 + 单一高光扇区旋转 */
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 120deg,
+    rgba(127, 183, 255, 0.55) 120deg,
+    rgba(127, 183, 255, 0.95) 135deg,
+    rgba(127, 183, 255, 0.55) 150deg,
+    transparent 150deg,
+    transparent 360deg
+  );
+  mask:
+    linear-gradient(#000, #000) content-box,
+    linear-gradient(#000, #000);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  animation: tile-scan-radial 1s linear infinite;
 }
 
-@keyframes tile-scan {
-  from { clip-path: inset(0 100% 0 0); }
-  to { clip-path: inset(0 0 0 0); }
+@keyframes tile-scan-radial {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .agent-tile--scan-fast .agent-tile__scan {
@@ -951,8 +965,7 @@
   animation-duration: var(--scan-slow-ms, 3.2s);
 }
 
-/* utility 条（hover 浮现；设计稿 .utility 黑色工具条）：横贯底部的条状形态，
-   不与 footer/内容重叠（footer 淡出让位） */
+/* utility 条（hover 浮现；设计稿 .utility 黑色工具条） */
 .agent-tile__utility {
   position: absolute;
   left: 0;
@@ -975,7 +988,6 @@
   pointer-events: none;
   transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
 }
-
 .agent-tile:hover .agent-tile__utility,
 .agent-tile__utility--visible,
 .agent-tile__utility:focus-visible {

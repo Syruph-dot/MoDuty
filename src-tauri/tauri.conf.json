@@ -6,7 +6,7 @@
     "distDir": "../desktop/dist"
   },
   "package": {
-    "productName": "Arona Chest",
+    "productName": "MoDuty",
     "version": "0.1.0"
   },
   "tauri": {
@@ -47,16 +47,16 @@
         "icons/icon.ico"
       ],
       "identifier": "com.aronachest.app",
-      "longDescription": "Arona Chest — AI Agent tile-wall desktop shell powered by the MOMOKA Agent core.",
+      "longDescription": "MoDuty — AI Agent tile-wall desktop shell powered by the MOMOKA Agent core.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
         "frameworks": [],
-        "providerShortName": "Arona Chest",
+        "providerShortName": "MoDuty",
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "Arona Chest — AI Agent tile-wall desktop",
+      "shortDescription": "MoDuty — AI Agent tile-wall desktop",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -76,7 +76,7 @@
         "fullscreen": true,
         "height": 600,
         "resizable": true,
-        "title": "Arona Chest",
+        "title": "MoDuty",
         "width": 800
       }
     ]

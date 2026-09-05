@@ -67,7 +67,7 @@ export default function ControlBar() {
           <button
             type="button"
             className="control-bar__btn control-bar__btn--close"
-            aria-label="Close Arona Chest"
+            aria-label="Close MoDuty"
             onClick={() => {
               void appWindow.close();
             }}

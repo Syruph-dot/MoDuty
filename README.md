@@ -1,11 +1,11 @@
-# MOMOKA — Minimalist-Opinion-Model-Optimized Knowledge Agent
+# MoDuty — Minimalist-Opinion-Model-Optimized Knowledge Agent
 
 批注式判断交互协议 · 极简意见模型 · 文件助手 Agent
-https://github.com/Syruph-dot/MOMOKA
+https://github.com/Syruph-dot/MoDuty
 
-MOMOKA 是一个 TypeScript-first 的智能文件助手 Agent，运行在 SophDotNet 平台上。它通过 **批注式判断交互协议**（Likert 7 点量表）实现人机之间的高效对齐——用户对 Agent 输出的一系列（逐句）评分，自动驱动 Agent 调整后续行为。
+MoDuty 是一个 TypeScript-first 的智能文件助手 Agent，运行在 SophDotNet 平台上。它通过 **批注式判断交互协议**（Likert 7 点量表）实现人机之间的高效对齐——用户对 Agent 输出的一系列（逐句）评分，自动驱动 Agent 调整后续行为。
 
-当前主实现位于 `src/`，对外暴露 `createMomokaAgent()`、`createOpenAICompatibleModelClient()` 和 `createMomokaHttpHandler()`。外部软件可以直接把 MOMOKA 当作 TypeScript package 调用，也可以通过 HTTP API 调用。
+当前主实现位于 `src/`，对外暴露 `createMomokaAgent()`、`createOpenAICompatibleModelClient()` 和 `createMomokaHttpHandler()`。外部软件可以直接把 MoDuty 当作 TypeScript package 调用，也可以通过 HTTP API 调用。
 
 ## 特性
 
@@ -26,7 +26,7 @@ MOMOKA 是一个 TypeScript-first 的智能文件助手 Agent，运行在 SophDo
 
 ```bash
 git clone <repo-url>
-cd MOMOKA
+cd MoDuty
 ```
 
 ### 2. 安装依赖
@@ -71,7 +71,7 @@ npm start
 
 终端会显示：
 ```
-MOMOKA TypeScript HTTP Server 启动中...
+MoDuty TypeScript HTTP Server 启动中...
   访问: http://localhost:8888
 ```
 
@@ -101,12 +101,12 @@ console.log(reply.outputId, reply.response);
 
 ## Agent Desktop（磁贴化桌面应用）
 
-MOMOKA 附带一个 **Tauri 无边框全屏桌面壳**：多个 Agent（1 Agent = 1 session 上下文串）以磁贴形式呈现在全屏磁贴墙上，磁贴实时反映 Agent 状态（idle / running / waiting_approval / completed / error）与阶段（planning / searching / reading / executing / verifying）。双击磁贴进入**分屏展开模式**：未打开磁贴收缩进左半屏坞，打开磁贴（含 SSE 流式对话窗口）在右半屏按 2n / 2n+1 规则展开，多窗口可拖拽重排、拖回左坞或点 × 收起；Agent 等待审批时浮出审批面板。
+MoDuty 附带一个 **Tauri 无边框全屏桌面壳**：多个 Agent（1 Agent = 1 session 上下文串）以磁贴形式呈现在全屏磁贴墙上，磁贴实时反映 Agent 状态（idle / running / waiting_approval / completed / error）与阶段（planning / searching / reading / executing / verifying）。双击磁贴进入**分屏展开模式**：未打开磁贴收缩进左半屏坞，打开磁贴（含 SSE 流式对话窗口）在右半屏按 2n / 2n+1 规则展开，多窗口可拖拽重排、拖回左坞或点 × 收起；Agent 等待审批时浮出审批面板。
 
 ### 架构
 
 ```
-MOMOKA/
+MoDuty/
 ├── src/
 │   ├── agent.ts            # 不动：单引擎（LLM client + tool loop + chat）
 │   ├── session-manager.ts  # 不动：session CRUD
@@ -224,7 +224,7 @@ Agent 支持以下文件操作（受限于会话绑定的工作文件夹）：
 ## 项目结构
 
 ```
-MOMOKA/
+MoDuty/
 ├── src/
 │   ├── index.ts           # 对外 package 入口
 │   ├── agent.ts           # MomokaAgent 接口化核心
@@ -308,4 +308,4 @@ MOMOKA/
 
 ## 协议
 
-MOMOKA &copy; 2026 SophDotNet · 批注式判断交互协议 · Likert 7-Point Scale
+MoDuty &copy; 2026 SophDotNet · 批注式判断交互协议 · Likert 7-Point Scale

@@ -1,9 +1,9 @@
 {
-  "name": "arona-chest",
+  "name": "moduty",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Arona Chest — AI Agent tile-wall desktop UI (React + Vite + TypeScript + Zustand)",
+  "description": "MoDuty — AI Agent tile-wall desktop UI (React + Vite + TypeScript + Zustand)",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

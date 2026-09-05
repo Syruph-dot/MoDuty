@@ -1,9 +1,9 @@
 {
-  "name": "momoka-ts",
+  "name": "moduty",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TypeScript rewrite of MOMOKA with an interface-first Agent core.",
+  "description": "MoDuty — TypeScript rewrite of MOMOKA with an interface-first Agent core.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

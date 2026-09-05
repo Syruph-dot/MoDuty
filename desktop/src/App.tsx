@@ -17,7 +17,7 @@ import { applyWallpaperTo } from "./state/wallpaperStore";
 import { applyFontSourceLink } from "./state/tileThemeStore";
 
 /**
- * Arona Chest：
+ * MoDuty：
  * 全屏磁贴墙 + 浮动控制条；
  * 双击磁贴 → 打开（进入分屏：未打开磁贴收缩进左坞，该磁贴在右舞台展开，SSE 流式对话）；
  * 展开窗口 × / 拖到左坞 → 收起；

@@ -1,4 +1,4 @@
-// Arona Chest 前后端共享数据形状（与后端 snake_case 对齐）
+// MoDuty 前后端共享数据形状（与后端 snake_case 对齐）
 
 export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
 export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "verifying";

@@ -1,5 +1,6 @@
 import { useCallback, type CSSProperties } from "react";
 
+
 import AgentTile from "./AgentTile";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
 import { useDialogStore } from "../state/dialogStore";

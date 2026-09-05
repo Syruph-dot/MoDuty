@@ -16,6 +16,8 @@ import { handleRelationRoutes } from "./http/relation-routes.js";
 import { handleAgentRoutes } from "./http/agent-routes.js";
 import { handleApprovalRoutes } from "./http/approval-routes.js";
 import { handleBrowserRoutes } from "./http/browser-routes.js";
+import { handleDailyRoutes } from "./http/daily-routes.js";
+import { handleGraphRoutes } from "./http/graph-routes.js";
 import { serveStatic } from "./http/static-routes.js";
 
 export interface AgentHttpOptions {
@@ -72,6 +74,8 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
     if (await handleAgentRoutes(ctx, request, response, url)) return;
     if (await handleApprovalRoutes(ctx, request, response, url)) return;
     if (await handleBrowserRoutes(ctx, request, response, url)) return;
+    if (await handleDailyRoutes(ctx, request, response, url)) return;
+    if (await handleGraphRoutes(ctx, request, response, url)) return;
     if ((request.method === "GET" || request.method === "HEAD") && await serveStatic(ctx.agent.projectRoot, url.pathname, response, request.method === "HEAD")) {
       return;
     }

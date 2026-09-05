@@ -229,3 +229,69 @@ export async function browserAction<T>(id: string, action: string, body?: Record
   }
   return (await res.json()) as T;
 }
+
+/* ============================================================
+ * 日报 API (Phase 1)
+ * ============================================================ */
+
+export interface DailyMeta {
+  lastGenAt: string | null;
+  updatedAt: string;
+}
+
+export interface ChangedSessionsResult {
+  newSessions: Array<{ id: string; name: string; goal: string; createdAt: string }>;
+  changedSessions: Array<{
+    id: string;
+    name: string;
+    goal: string;
+    lastMessageAt: string;
+    changedTurnRanges: Array<[number, number]>;
+    snippet: string;
+  }>;
+}
+
+export interface DailyGenerateResult {
+  runId: string;
+  status: string;
+  message: string;
+}
+
+async function dailyRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}${path}`, {
+    headers: {
+      "content-type": "application/json",
+      ...(options.headers ?? {}),
+    },
+    ...options,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Daily API ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const dailyApi = {
+  /** 获取日报元数据 */
+  getMeta: () => dailyRequest<DailyMeta>("/api/daily/meta"),
+
+  /** 标记日报生成开始 */
+  markStart: () => dailyRequest<{ lastGenAt: string }>("/api/daily/mark-start", { method: "POST" }),
+
+  /** 获取自指定时间以来的变更会话 */
+  getChangedSessions: (since: string) =>
+    dailyRequest<ChangedSessionsResult>(`/api/daily/changed-sessions?since=${encodeURIComponent(since)}`),
+
+  /** 触发生成日报 */
+  generate: (since: string, modelTier: "high" | "low" | "exact" = "low") =>
+    dailyRequest<DailyGenerateResult>("/api/daily/generate", {
+      method: "POST",
+      body: JSON.stringify({ since, modelTier }),
+    }),
+
+  /** 获取指定日期的日报内容 (Markdown 文本) */
+  getDaily: (date: string) =>
+    dailyRequest<string>(`/api/daily/entries?date=${encodeURIComponent(date)}`).catch(() => ""),
+};

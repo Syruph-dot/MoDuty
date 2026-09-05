@@ -392,7 +392,7 @@ export class SessionManager {
     const filePath = this.messagesPath(sessionId);
     await atomicWriteJson(filePath, messages.map(messageToDisk));
     // 消息变更后增量刷新 &ses_ 关联图（无缓存时忽略）
-    refreshSessionGraph(this.sessionsDir, sessionId);
+    refreshSessionGraph(this.sessionsDir, sessionId, this);
   }
 
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {

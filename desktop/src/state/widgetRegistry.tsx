@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 
 import ClockWidget from "../components/widgets/ClockWidget";
+import DailyWidget from "../components/widgets/DailyWidget";
 import DutyGirl from "../components/widgets/DutyGirl";
+import GraphWidget from "../components/widgets/GraphWidget";
 import type { WidgetDefinition, WidgetKind, WidgetRegistry } from "../types";
 
 /**
@@ -18,6 +20,14 @@ export const WIDGET_REGISTRY: WidgetRegistry = {
     defaultGrid: { col: 0, row: 0, w: 1, h: 1 },
     renderBody: (): ReactNode => <ClockWidget />,
   },
+  daily: {
+    kind: "daily",
+    name: "日报",
+    description: "日历视图 + 时间轴日报，点击生成调用低成本模型（MOMOKA CLI）",
+    defaultTitle: "日报",
+    defaultGrid: { col: 0, row: 0, w: 2, h: 2 },
+    renderBody: (): ReactNode => <DailyWidget />,
+  },
   duty: {
     kind: "duty",
     name: "值日生",
@@ -26,6 +36,14 @@ export const WIDGET_REGISTRY: WidgetRegistry = {
     defaultGrid: { col: 0, row: 1, w: 2, h: 3 },
     fixedSize: true,
     renderBody: (): ReactNode => <DutyGirl />,
+  },
+  graph: {
+    kind: "graph",
+    name: "关系图",
+    description: "会话 & 引用关系力导向图（D3.js），可拖拽固定、点击跳转",
+    defaultTitle: "关系图",
+    defaultGrid: { col: 0, row: 0, w: 3, h: 3 },
+    renderBody: (): ReactNode => <GraphWidget />,
   },
 };
 

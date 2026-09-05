@@ -1525,3 +1525,123 @@
     opacity: 1;
   }
 }
+
+/* ================================================================
+   GraphWidget：会话关系力导向图
+   ================================================================ */
+
+.graph-widget {
+  display: flex;
+  flex-direction: column;
+  background: var(--tile-bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.graph-widget__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.graph-widget__header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.graph-widget__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.graph-widget__btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--tile-bg);
+  cursor: pointer;
+}
+
+.graph-widget__btn:hover {
+  background: var(--hover-bg);
+}
+
+.graph-widget__svg {
+  flex: 1;
+  display: block;
+}
+
+.graph-widget__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  background: var(--tile-bg);
+}
+
+.graph-widget__controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  color: #666;
+}
+
+.graph-widget__controls input[type=range] {
+  accent-color: #4ecdc4;
+}
+
+.graph-widget__loading,
+.graph-widget__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #888;
+}
+
+.graph-widget__retry {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--tile-bg);
+  cursor: pointer;
+}
+
+.node text {
+  user-select: none;
+}
+
+.link {
+  fill: none;
+  stroke: #999;
+  stroke-width: 1.5;
+  stroke-dasharray: 4,2;
+  marker-end: url(#arrowhead);
+}
+
+.node circle {
+  fill: #ff6b6b;
+  stroke: #333;
+  stroke-width: 1;
+}
+
+.node circle.agent {
+  fill: #4ecdc4;
+}
+
+.node.fixed circle {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.node:hover circle {
+  filter: drop-shadow(0 0 8px currentColor);
+}

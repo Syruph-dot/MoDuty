@@ -2,87 +2,106 @@ import { executeToolCall, TOOL_SPECS } from "./tools.js";
 import { loadSettings } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
 import { normalizeUsage } from "./context-stats.js";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall } from "./types.js";
 
 type FetchLike = typeof fetch;
 
-interface OpenAICompatibleModelClientOptions {
-  apiKey?: string;
-  baseUrl?: string;
-  model?: string;
-  fetch?: FetchLike;
-  /** 工具调用轮数上限（默认无限；模型不再请求工具时自然终止，requestTimeoutMs 兜底防死循环） */
-  maxToolRounds?: number;
-  /** 模型调用是否使用 SSE 流式（配合 context.onEvent 消费增量 token） */
-  stream?: boolean;
-  /** 单轮模型请求超时（毫秒），默认不限制；为防死循环设为较大值 */
-  requestTimeoutMs?: number;
-}
+export type ModelTier = "high" | "low" | "exact";
 
-interface ChatMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
-  tool_call_id?: string;
-  tool_calls?: ToolCallRequest[];
-}
-
-interface ToolCallRequest {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-interface ModelRoundResult {
-  content: string;
-  toolCalls: ToolCallRequest[];
-  /** 本轮模型调用的 usage（服务商提供时） */
-  usage?: ModelUsage;
-}
-
-const APPROVAL_PATTERN = /pending approval/i;
-// 删除const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-// 删除const ZEN_BASE_PATTERN = /opencode\.ai\/zen/i;
-
-export interface ResolvedModelConfig {
-  apiKey: string;
-  baseUrl: string;
+interface ModelTierConfig {
   model: string;
-  //删除isZen: boolean;
+  baseUrl: string;
+  description: string;
 }
 
-/** 凭证解析优先级：显式参数 > settings.json（~/.momoka/settings.json）> 环境变量 > 默认值。
- * settings 是用户在软件内配置的真相源（release/dev 一致）；环境变量仅作未配置时的开发兕底。
- * 供 HTTP 层（/api/settings、/api/models）与诊断展示使用；防腐边界：provider 细节不出本模块。 */
+interface ModelTiersFile {
+  tiers: Record<ModelTier, ModelTierConfig>;
+  defaultTier: ModelTier;
+  exactModelEnvVar: string;
+}
+
+const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+let cachedTiers: ModelTiersFile | null = null;
+
+async function loadModelTiers(): Promise<ModelTiersFile> {
+  if (cachedTiers) return cachedTiers;
+  const configPath = path.join(process.cwd(), "config", "model-tiers.json");
+  try {
+    const content = await readFile(configPath, "utf8");
+    cachedTiers = JSON.parse(content) as ModelTiersFile;
+    return cachedTiers!;
+  } catch {
+    // 回退到硬编码默认值
+    cachedTiers = {
+      tiers: {
+        high: { model: "qwen-max", baseUrl: DEFAULT_DASHSCOPE, description: "复杂推理、代码生成、高质量输出" },
+        low: { model: "qwen-turbo", baseUrl: DEFAULT_DASHSCOPE, description: "日报生成、简单分类、闲聊、低成本批量" },
+        exact: { model: "", baseUrl: "", description: "手动指定精确模型" },
+      },
+      defaultTier: "high",
+      exactModelEnvVar: "MOMOKA_EXACT_MODEL",
+    };
+    return cachedTiers;
+  }
+}
+
+/** 根据 tier 解析模型配置 */
+export async function resolveModelConfigByTier(
+  tier: ModelTier = "high",
+  overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
+): Promise<{ apiKey: string; baseUrl: string; model: string; tier: ModelTier }> {
+  const settings = await loadSettings();
+  const tiers = await loadModelTiers();
+
+  const apiKey = overrides.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
+
+  if (tier === "exact") {
+    // exact 模式：必须显式提供 model 和 baseUrl（通过 overrides 或环境变量）
+    const exactModel = overrides.model || process.env[tiers.exactModelEnvVar] || "";
+    const exactBaseUrl = overrides.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE;
+    if (!exactModel) {
+      throw new Error(`exact 模式要求指定模型：通过参数 model 或环境变量 ${tiers.exactModelEnvVar}`);
+    }
+    return {
+      apiKey,
+      baseUrl: exactBaseUrl.replace(/\/+$/u, ""),
+      model: exactModel,
+      tier,
+    };
+  }
+
+  const tierConfig = tiers.tiers[tier] ?? tiers.tiers.high;
+  const baseUrl = (overrides.baseUrl || tierConfig.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
+  const model = overrides.model || tierConfig.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
+
+  return { apiKey, baseUrl, model, tier };
+}
+
+/** 兼容旧接口：默认走 high 轨道 */
 export async function resolveModelConfig(
   overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
-): Promise<ResolvedModelConfig> {
-  const settings = await loadSettings();
-  const apiKey = overrides.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
-  const baseUrl = (
-    overrides.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
-  ).replace(/\/+$/u, "");
-  const model = overrides.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
-  return { apiKey, baseUrl, model};//删除, isZen: ZEN_BASE_PATTERN.test(baseUrl) };
+): Promise<{ apiKey: string; baseUrl: string; model: string }> {
+  const { apiKey, baseUrl, model } = await resolveModelConfigByTier("high", overrides);
+  return { apiKey, baseUrl, model };
 }
 
 export interface ProviderDiagnostics {
   provider: string;
   hasKey: boolean;
   issues: string[];
-  /** key 前 8 位脱敏展示（无 key 为空串） */
   keyPrefix: string;
   model: string;
+  tier: ModelTier;
 }
 
-/** /api/config 的 provider 诊断（基于最终生效配置：settings 优先、env 兕底） */
-export async function describeEnvProviderDiagnostics(): Promise<ProviderDiagnostics> {
-  const config = await resolveModelConfig();
-  //删除const isZen = ZEN_BASE_PATTERN.test(config.baseUrl);
+/** /api/config 的 provider 诊断 */
+export async function describeEnvProviderDiagnostics(tier: ModelTier = "high"): Promise<ProviderDiagnostics> {
+  const config = await resolveModelConfigByTier(tier);
   const hasKey = Boolean(config.apiKey);
-  const provider = (config.baseUrl ? "OpenAI (兼容)" : "未配置");
+  const provider = config.baseUrl ? "OpenAI (兼容)" : "未配置";
   const issues: string[] = [];
   if (!hasKey) {
     issues.push("API key 未配置。请在软件设置界面填写（保存在 ~/.momoka/settings.json），或临时设置 OPENAI_API_KEY 环境变量。");
@@ -93,6 +112,7 @@ export async function describeEnvProviderDiagnostics(): Promise<ProviderDiagnost
     issues,
     keyPrefix: `${config.apiKey.slice(0, 8)}...`,
     model: config.model,
+    tier: config.tier,
   };
 }
 
@@ -117,37 +137,65 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+interface OpenAICompatibleModelClientOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  fetch?: FetchLike;
+  /** 工具调用轮数上限 */
+  maxToolRounds?: number;
+  /** 模型调用是否使用 SSE 流式 */
+  stream?: boolean;
+  /** 单轮模型请求超时（毫秒） */
+  requestTimeoutMs?: number;
+  /** 模型轨道：high | low | exact */
+  tier?: ModelTier;
+}
+
+interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: ToolCallRequest[];
+}
+
+interface ToolCallRequest {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+interface ModelRoundResult {
+  content: string;
+  toolCalls: ToolCallRequest[];
+  usage?: ModelUsage;
+}
+
+const APPROVAL_PATTERN = /pending approval/i;
+
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
-  const apiKey = options.apiKey || process.env.OPENAI_API_KEY || "";
-  const baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL).replace(/\/+$/u, "");
-  const model = options.model || process.env.MOMOKA_MODEL || "qwen-plus";
+  const tier = options.tier ?? "high";
   const fetchImpl = options.fetch ?? fetch;
   const maxToolRounds = options.maxToolRounds ?? Infinity;
   const stream = options.stream ?? false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
-  //删除const isZen = ZEN_BASE_PATTERN.test(baseUrl);
 
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
-      // 每次对话重新解析凭证：参数 > 配置文件(.momoka/settings.json，软件内设置的真相源) > 环境变量 > 默认值
-      // 这样软件内修改设置无需重启后端即可生效
-      const settings = await loadSettings();
-      const apiKey =
-        options.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
-      const baseUrl = (
-        options.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE
-      ).replace(/\/+$/u, "");
-      const model = options.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
-      //删除const isZen = ZEN_BASE_PATTERN.test(baseUrl);
+      // 每次 run 重新解析：参数 > 配置文件 > 环境变量 > 默认值
+      const { apiKey, baseUrl, model } = await resolveModelConfigByTier(tier, {
+        apiKey: options.apiKey,
+        baseUrl: options.baseUrl,
+        model: options.model,
+      });
 
       if (!apiKey) {
-        //if (isZen) {
-        //  throw new Error(
-        //    "OpenCode Zen 需要 API key：请前往 https://opencode.ai/auth 注册免费账号并获取 API key，然后设置 OPENAI_API_KEY 环境变量。"
-        //  );
-        //}
         throw new Error("API key 未配置：请设置 OPENAI_API_KEY 环境变量，或提供无需鉴权的 OPENAI_BASE_URL");
       }
+
       const messages: ChatMessage[] = [
         { role: "system", content: context.systemPrompt },
         { role: "user", content: input },
@@ -164,6 +212,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           requestKind: context.requestKind,
           input,
           model,
+          tier,
         });
         const roundResult = await callModelRound({
           fetchImpl,
@@ -175,7 +224,6 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           stream,
           onDelta: (text) => context.onEvent?.({ type: "token", text }),
         });
-        // 归集 usage：多轮工具调用时取 prompt tokens 峰值轮（代表本次 run 使用过的最大上下文）
         if (roundResult.usage && typeof roundResult.usage.promptTokens === "number") {
           if (!usagePeak || (roundResult.usage.promptTokens ?? 0) > (usagePeak.promptTokens ?? 0)) {
             usagePeak = roundResult.usage;
@@ -257,8 +305,6 @@ async function callModelRound(options: {
   if (stream) payload.stream = true;
 
   const headers: Record<string, string> = { "content-type": "application/json" };
-  // 统一 OpenAI 兼容鉴权
-  // （x-api-key 不会被识别，会回 Missing API key）。
   if (apiKey) {
     headers["authorization"] = `Bearer ${apiKey}`;
   }
@@ -332,7 +378,6 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
             }>;
             usage?: unknown;
           };
-          // OpenAI 兼容流式：usage 通常在最后一个数据帧（[DONE] 前）以完整统计出现
           if (parsed.usage) {
             const usage = normalizeUsage(parsed.usage);
             if (usage) lastUsage = usage;

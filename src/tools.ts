@@ -320,6 +320,7 @@ const TOOL_ARGUMENT_SCHEMAS = {
   browse_execute_js: z.object({ browser_id: z.string().min(1), script: z.string().min(1) }).strict(),
   browse_screenshot: z.object({ browser_id: z.string().min(1) }).strict(),
   browse_close: z.object({ browser_id: z.string().min(1) }).strict(),
+  web_search: z.object({ query: z.string().min(1), max_results: z.number().int().positive().max(20).optional() }).strict(),
   inspect_session: z.object({ id: z.string().min(1) }).strict(),
   search_sessions: z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).strict(),
   read_session: z.object({ id: z.string().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() }).strict(),
@@ -448,6 +449,22 @@ export const TOOL_SPECS = [
           args: { type: "array", items: { type: "string" } },
         },
         required: ["args"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "搜索网页（自动使用 DuckDuckGo HTML lite 版 lite.duckduckgo.com，避免反爬虫；复用单个搜索专用浏览器实例）。返回结构化结果：标题、URL、摘要。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 1, description: "搜索关键词" },
+          max_results: { type: "number", minimum: 1, maximum: 20, default: 10, description: "最大返回结果数" },
+        },
+        required: ["query"],
         additionalProperties: false,
       },
     },
@@ -1049,6 +1066,32 @@ async function executeBrowserTool(name: string, args: Record<string, unknown>): 
       case "browse_close": {
         await browserService.closeInstance(id);
         return `浏览器 ${id} 已关闭（${(await browserService.getInfo(id))?.mode === "incognito" ? "无痕数据已销毁" : "登录信息已保存，可下次复用"}）。`;
+      }
+      case "web_search": {
+        const query = String(args.query ?? "");
+        const maxResults = Math.min(Math.max(Number(args.max_results ?? 10), 1), 20);
+        if (!query) return "错误: query 不能为空";
+        const searchBrowserId = await browserService.getOrCreateSearchBrowser();
+        const url = "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query);
+        await browserService.navigate(searchBrowserId, url, "domcontentloaded");
+        const snapshot = await browserService.snapshot(searchBrowserId);
+        if (!snapshot) return "错误: 搜索浏览器未就绪";
+        const lines = snapshot.tree.split("\n").filter(l => l.trim());
+        const results = [];
+        for (const line of lines) {
+          const match = line.match(/\[(\d+)\] link (.+?) <(.+)>/);
+          if (match) {
+            const [, idx, title, selector] = match;
+            const ref = "[" + idx + "]";
+            const url = snapshot.refs[ref];
+            if (url && url.startsWith("http")) {
+              results.push({ title: title.trim(), url });
+              if (results.length >= maxResults) break;
+            }
+          }
+        }
+        if (results.length === 0) return "未找到相关结果";
+        return "搜索结果（前 " + results.length + " 条）：\n" + results.map((r, i) => (i + 1) + ". " + r.title + "\n   " + r.url).join("\n\n");
       }
       default:
         return `未知浏览器工具: ${name}`;

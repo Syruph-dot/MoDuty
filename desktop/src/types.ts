@@ -121,7 +121,7 @@ export interface AgentStateEvent {
    ============================================================ */
 
 /** 已注册的 widget 种类 id */
-export type WidgetKind = "ringclock" | "duty";
+export type WidgetKind = "ringclock" | "duty" | "daily" | "graph";
 
 /** 单个 widget 实例（磁贴墙上的一个具体卡片） */
 export interface WidgetInstance {

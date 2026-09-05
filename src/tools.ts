@@ -240,7 +240,7 @@ export async function runShellTool(
  */
 const MOMOKA_CLI_PATH = fileURLToPath(new URL("../bin/momoka.mjs", import.meta.url));
 const MOMOKA_CLI_COMMANDS: Record<string, Set<string>> = {
-  agent: new Set(["list", "create", "chat", "reset", "stop"]),
+  agent: new Set(["list", "create", "chat", "dispatch", "reset", "stop"]),
   session: new Set(["list", "inspect"]),
 };
 
@@ -254,7 +254,7 @@ export function validateMomokaCliArgs(args: string[]): string | null {
     const nameIdx = rest.indexOf("--name");
     if (nameIdx === -1 || !rest[nameIdx + 1]?.trim()) return "agent create 必须提供 --name <名称>";
   }
-  if (cmd === "agent" && ["chat", "reset", "stop"].includes(sub) && rest.length === 0) {
+  if (cmd === "agent" && ["chat", "dispatch", "reset", "stop"].includes(sub) && rest.length === 0) {
     return `${sub} 需要 agentId`;
   }
   if (cmd === "session" && sub === "inspect" && rest.length === 0) return "inspect 需要会话句柄（ses_<id>）";
@@ -262,6 +262,48 @@ export function validateMomokaCliArgs(args: string[]): string | null {
     if (typeof a !== "string" || a.includes("\0")) return "包含非法控制字符";
   }
   return null;
+}
+
+/**
+ * 值日生派发台账记录：当前调用者是 dispatcher 且 CLI 参数为 `agent chat <targetId> <任务>` 时，
+ * 记录“值日生→执行者”派发关系。完成后由 orchestration 层向 dispatcher 会话投递结果链接。
+ */
+async function recordDispatchIfDispatcher(
+  cliArgs: string[],
+  approvalOrigin: { sessionId?: string; runId?: string } | undefined,
+  agentRegistry: AgentRegistry | undefined,
+): Promise<void> {
+  // 只关心 agent chat/dispatch <target>：需要 registry 解析 dispatcher 与目标会话。
+  if (!agentRegistry || !approvalOrigin?.sessionId) return;
+  if (cliArgs[0] !== "agent" || (cliArgs[1] !== "chat" && cliArgs[1] !== "dispatch")) return;
+  const targetId = cliArgs[2];
+  if (!targetId || !targetId.startsWith("agt_")) return;
+  // 任务书 = 目标 id 之后的参数（去掉 --link 类开关与链接逗号串的边界由模型负责，这里尽力提取）
+  const taskWords = cliArgs.slice(3).filter((token) => !token.startsWith("--"));
+  const task = taskWords.join(" ").trim();
+
+  // 调用者必须是被识别的值日生（当前会话反查）
+  const caller = await agentRegistry.agentBySessionId(approvalOrigin.sessionId);
+  const isDispatcher =
+    caller?.kind === "dispatcher" || (caller?.name === "值日生" && caller.kind !== "worker");
+  if (!caller || !isDispatcher) return;
+  const target = await agentRegistry.getAgent(targetId);
+  if (!target) return;
+
+  // 从任务书中提取择优链接的会话句柄（&ses_xxx），留作展示线索
+  const linkedSessions: string[] = [];
+  const refRegex = /&ses_([a-z0-9]+)/gi;
+  for (const match of task.matchAll(refRegex)) {
+    linkedSessions.push(`ses_${match[1]}`);
+  }
+  await agentRegistry.recordDispatch({
+    dispatcherId: caller.id,
+    dispatcherSessionId: caller.sessionId,
+    targetAgentId: target.id,
+    targetSessionId: target.sessionId,
+    task: task.slice(0, 500),
+    linkedSessions,
+  });
 }
 
 export async function runMomokaCliTool(input: {
@@ -441,7 +483,7 @@ export const TOOL_SPECS = [
       description:
         "调用 MOMOKA CLI 驱动/管理其它 Agent 应用（让 Agent 用 Agent 应用）。" +
         "参数 args 是参数数组，首个元素为命令族（agent | session），第二个为子命令：" +
-        "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（消息可含 &ses_<id> 句柄链接相关会话）/ agent reset <agentId> / agent stop <agentId>；" +
+        "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄链接相关会话）/ agent dispatch <agentId> <消息…>（异步派发，发起后立即返回，适合“派发完即回 idle”的懒调度）/ agent reset <agentId> / agent stop <agentId>；" +
         "session list / session inspect <ses_<id>>。只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",
       parameters: {
         type: "object",
@@ -843,8 +885,14 @@ export async function executeToolCall(
     }
   }
   if (name === "run_momoka_cli") {
+    const cliArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+    // 值日生派发台账：dispatcher 调用 agent chat <target> 时记录派发关系，供完成后投递链接回调。
+    // 记录不阻塞执行；仅在能识别 dispatcher 且解析出目标时发生。
+    void recordDispatchIfDispatcher(cliArgs, approvalOrigin, agentRegistry).catch((error: unknown) => {
+      console.error("[dispatch] record dispatch failed:", error);
+    });
     return await runMomokaCliTool({
-      args: Array.isArray(args.args) ? args.args.map(String) : [],
+      args: cliArgs,
       workDir: targetWorkspace,
     });
   }

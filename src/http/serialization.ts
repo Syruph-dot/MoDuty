@@ -86,6 +86,7 @@ export function agentToSnake(record: AgentRecord, session: SessionRecord | null)
     id: record.id,
     name: record.name,
     role: record.role,
+    ...(record.kind ? { kind: record.kind } : {}),
     ...(record.model ? { model: record.model } : {}),
     workspace_dir: record.workspaceDir,
     session_id: record.sessionId,

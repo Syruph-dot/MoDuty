@@ -40,7 +40,37 @@ export function wireAgentStatePersistence(deps: OrchestrationDeps): void {
     void persistAgentState(deps, event).catch((error: unknown) => {
       console.error("[orchestration] persist agent state failed:", error);
     });
+    // 值日生派发回调：执行者 completed/error 时向 dispatcher 会话投递结果链接
+    void deliverDispatchNotification(deps, event).catch((error: unknown) => {
+      console.error("[orchestration] deliver dispatch notification failed:", error);
+    });
   });
+}
+
+/**
+ * 派发回调投递：目标执行者状态进入终态（completed/error）时，若台账中有值日生的在途派发，
+ * 向值日生会话写入一条系统消息（含 &ses_ 链接，前端渲染为可点击 chip）。
+ * - completed → 投递“成功”并把该派发标记 done（停止跟踪）；
+ * - error → 投递“出错”但仍保持 tracking，后续该执行者再跑再出错/成功会继续投递，直到 completed。
+ */
+async function deliverDispatchNotification(deps: OrchestrationDeps, event: AgentStateEvent): Promise<void> {
+  if (event.type !== "agent_state") return;
+  if (event.state !== "completed" && event.state !== "error") return;
+  const active = await deps.registry.activeDispatchesForTarget(event.agent_id);
+  if (active.length === 0) return;
+  const target = await deps.registry.getAgent(event.agent_id);
+  const targetName = target?.name ?? event.agent_id;
+  for (const dispatch of active) {
+    const sessionId = dispatch.dispatcherSessionId;
+    if (!sessionId) continue;
+    const isSuccess = event.state === "completed";
+    const sessionRef = `&ses_${dispatch.targetSessionId.replace(/^ses_/, "")}`;
+    const statusIcon = isSuccess ? "✅" : "❌";
+    const actionText = isSuccess ? "已成功完成" : "出错（可点击查看原因，需要我处理请告诉我）";
+    // role=system：历史中会以 [system] 片段呈现给值日生，作为可感知的“投递通知”而非用户指令
+    await deps.agent.sessionManager.addMessage(sessionId, "system", `${statusIcon} 你派发的执行者「${targetName}」${actionText}：${sessionRef}`);
+    await deps.registry.updateDispatchStatus(dispatch.id, event.state, isSuccess);
+  }
 }
 
 async function persistAgentState(deps: OrchestrationDeps, event: AgentStateEvent): Promise<void> {

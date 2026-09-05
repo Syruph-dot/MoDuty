@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { MomokaHttpError } from "../http-error.js";
+import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
@@ -59,11 +60,15 @@ export async function handleAgentRoutes(
     if (!name) {
       throw new MomokaHttpError(400, "name is required");
     }
+    const kind = body.kind === "dispatcher" || body.kind === "worker" ? (body.kind as "dispatcher" | "worker") : undefined;
+    // 值日生单源：kind=dispatcher 的 Agent 忽略前端传入的 system，一律使用后端 DISPATCHER 常量，避免双源漂移。
+    const effectiveRole = kind === "dispatcher" ? DISPATCHER_SYSTEM_PROMPT : role;
     const record = await runtime.registry.createAgent({
       name,
-      role,
+      role: effectiveRole,
       workspaceDir,
       model: typeof body.model === "string" ? body.model : undefined,
+      kind,
     });
     runtime.machine.seed(record.id, record.state, record.phase);
     json(response, 200, { agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)) });

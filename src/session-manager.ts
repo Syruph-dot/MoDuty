@@ -329,7 +329,8 @@ export class SessionManager {
     return results.slice(0, 100);
   }
 
-  /** 跨会话检索，按相关度排序（everything/rg 二分法的 rg 侧入口）。 */
+  /** 跨会话检索，按相关度排序（everything/rg 二分法的 rg 侧入口）。
+   * 数据源用 transcript.md（消息写入时增量维护的纯文本缓存，免 JSON.parse / extractToolCalls）。 */
   async searchSessions(query: string, limit = 20): Promise<Array<Record<string, unknown>>> {
     const sessions = await this.listSessions();
     if (!query.trim()) {
@@ -341,23 +342,53 @@ export class SessionManager {
       let score = 0;
       if (session.name.toLowerCase().includes(needle)) score += 5;
       if (session.goal.toLowerCase().includes(needle)) score += 3;
-      const messages = await this.getMessages(session.id, null);
+      // transcript 缺失（存量会话）时懒生成一次后重试
+      let content = await readFile(this.transcriptPath(session.id), "utf8").catch(() => null);
+      if (content === null) {
+        await this.regenerateTranscript(session.id).catch(() => undefined);
+        content = await readFile(this.transcriptPath(session.id), "utf8").catch(() => null);
+      }
+      if (content === null) continue;
       const turnRanges: Array<[number, number]> = [];
-      let rangeStart = -1;
       let snippet = "";
-      messages.forEach((message, index) => {
-        const hay = `${message.content ?? ""} ${JSON.stringify(extractToolCalls(message))}`.toLowerCase();
-        const hit = hay.includes(needle);
-        if (hit) {
+      let rangeStart = -1;
+      // 按 “## Turn N · role · ts” 标题切段（标题行即段首，编号取 N，跳过文件头部元数据），
+      // 逐段 includes：命中→计分并记录区间。tool 输出行（🔧）保留在段内一起参与匹配。
+      const segmentTitleRe = /^## Turn (\d+)/;
+      const lines = content.split("\n");
+      let segment: string[] = [];
+      let segmentNo = 0;
+      const flushSegment = () => {
+        if (segment.length === 0 || segmentNo === 0) {
+          segment = [];
+          return;
+        }
+        const body = segment.join("\n").toLowerCase();
+        if (body.includes(needle)) {
           score += 1;
-          if (!snippet) snippet = (message.content ?? "").slice(0, 160);
-          if (rangeStart === -1) rangeStart = index + 1;
+          if (!snippet) {
+            const firstText = segment.find((line) => !line.startsWith("## ") && !line.startsWith("🔧 ") && line.trim());
+            snippet = (firstText ?? segment[0] ?? "").slice(0, 160);
+          }
+          if (rangeStart === -1) rangeStart = segmentNo;
         } else if (rangeStart !== -1) {
-          turnRanges.push([rangeStart, index]);
+          turnRanges.push([rangeStart, segmentNo - 1]);
           rangeStart = -1;
         }
-      });
-      if (rangeStart !== -1) turnRanges.push([rangeStart, messages.length]);
+        segment = [];
+      };
+      for (const line of lines) {
+        const titleMatch = line.match(segmentTitleRe);
+        if (titleMatch) {
+          flushSegment();
+          segmentNo = Number(titleMatch[1]);
+          segment.push(line);
+        } else {
+          segment.push(line);
+        }
+      }
+      flushSegment();
+      if (rangeStart !== -1) turnRanges.push([rangeStart, segmentNo]);
       if (score > 0) hits.push(this.toSearchHit(session, score, turnRanges, snippet));
     }
     hits.sort((a, b) => Number(b.score) - Number(a.score));

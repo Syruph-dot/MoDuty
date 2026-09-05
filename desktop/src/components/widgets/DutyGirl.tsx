@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+
+import { useAgentsStore } from "../../state/agentsStore";
 
 /**
  * 值日生（Duty Girl）——调度者 Agent 的桌面形象（固定 2×3 磁贴）。
@@ -12,7 +14,8 @@ import { createPortal } from "react-dom";
  */
 
 interface DutyMessage {
-  role: "user" | "agent";
+  /** user=老师；agent=值日生；system=系统投递（如执行者完成/出错链接通知） */
+  role: "user" | "agent" | "system";
   content: string;
 }
 
@@ -22,24 +25,26 @@ interface SessionCandidate {
   goal?: string;
 }
 
+/** 把消息里的 &ses_<id> / &tile_<id> 句柄拆成 [普通文本|资源引用] 片段，供 chip 渲染。 */
+function tokenizeLinkRefs(content: string): Array<{ text: string; ref?: { kind: "ses" | "tile"; raw: string } }> {
+  const parts: Array<{ text: string; ref?: { kind: "ses" | "tile"; raw: string } }> = [];
+  const re = /&(ses_[A-Za-z0-9]+|tile_[A-Za-z0-9]+)/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    if (match.index > last) parts.push({ text: content.slice(last, match.index) });
+    const raw = match[1];
+    parts.push({ text: "", ref: { kind: raw.startsWith("ses_") ? "ses" : "tile", raw } });
+    last = match.index + match[0].length;
+  }
+  if (last < content.length) parts.push({ text: content.slice(last) });
+  return parts.length === 0 ? [{ text: content }] : parts;
+}
+
 const DUTY_AGENT_NAME = "值日生";
 const DUTY_AGENT_KEY = "momoka:duty:agentId";
 const DUTY_WELCOME = "老师好～我是值日生。复杂的事情交给我来调度吧，直接说就好！";
 
-/** 与后端 src/agent-registry.ts DISPATCHER_SYSTEM_PROMPT 保持一致的前端副本（创建走 /api/agents system 字段）。 */
-const DUTY_SYSTEM_PROMPT = 
-
-`你是 调度者，并不倾向于自己解决问题，而是通过Momoka CLI去调度Agent处理问题。
-1. 日常对话：保持角色扮演自然回应即可，不必呼叫工具。
-2. 遇到复杂任务时切换到“调度模式”：
-   - 先用 search_sessions / inspect_session / search_content 调查现有会话资源，确认有哪些可复用的上下文；
-   - 用资源句柄 &ses_<id> 链接相关会话，并在下发给执行者的指令里带上句柄，让被调度者能引用（ampersand 链接）；
-   - 通过 run_momoka_cli 调用 MOMOKA CLI 真实驱动其它 Agent：agent create 创建执行者、agent chat 向执行者下发含句柄的任务、agent reset / stop 管理执行者；
-   - 汇报时给出使用的会话句柄，简要说明调度了谁、做了什么、结果如何。
-
-安全边界：run_momoka_cli 只允许 MOMOKA 文档化的子命令；不要用它或其它工具触碰无关文件与服务端配置。`
-
-;
 
 function baseUrl(): string {
   const known = (globalThis as { __MOMOKA_BASE__?: string }).__MOMOKA_BASE__;
@@ -58,7 +63,7 @@ function ensureDutyAgentId(): Promise<string | null> {
       const res = await fetch(`${baseUrl()}/api/agents`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: DUTY_AGENT_NAME, system: DUTY_SYSTEM_PROMPT }),
+        body: JSON.stringify({ name: DUTY_AGENT_NAME, kind: "dispatcher" }),
       });
       const data = (await res.json()) as { agent?: { id: string } };
       const id = data.agent?.id ?? null;
@@ -124,6 +129,29 @@ export default function DutyGirl() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const liveRef = useRef<{ abort: () => void } | null>(null);
+  const openedAtRef = useRef(0);
+  const streamingRef = useRef(false);
+
+  /* 打开 agent 磁贴窗口（chip 点击）：把 &ses_/&tile_ 目标解析成 agentId 后 openAgent */
+  const agents = useAgentsStore((state) => state.agents);
+  const openAgentById = useAgentsStore((state) => state.openAgent);
+  const openRefTarget = useCallback(
+    (raw: string, kind: "ses" | "tile") => {
+      const id = raw.replace(/^(ses|tile)_/, "");
+      if (kind === "tile") {
+        if (agents.some((agent) => agent.id === id)) openAgentById(id);
+        return;
+      }
+      // ses_：通过 sessionId 反查绑定 agent；绑定失败则尝试把 id 当裸 agent id（兼容 &ses_<agt> 手误）
+      const bound = agents.find((agent) => agent.session_id === `ses_${id}` || agent.session_id === id);
+      if (bound) {
+        openAgentById(bound.id);
+      } else if (agents.some((agent) => agent.id === id)) {
+        openAgentById(id);
+      }
+    },
+    [agents, openAgentById],
+  );
 
   const sessions = useSessionCandidates();
   const candidates = useMemo(() => {
@@ -153,6 +181,55 @@ export default function DutyGirl() {
       liveRef.current?.abort();
     };
   }, []);
+
+  /* 打开对话框时恢复历史（值日生会话含系统投递消息 &ses_，需拉取渲染 chip）。
+     也做一次轻轮询：对话框打开且非流式时，若后端有新投递消息则增量刷新列表。 */
+  useEffect(() => {
+    if (!open || !agentId) return;
+    openedAtRef.current = Date.now();
+    let alive = true;
+    const loadHistory = async () => {
+      try {
+        const res = await fetch(`${baseUrl()}/api/agents/${encodeURIComponent(agentId)}/messages`);
+        if (!res.ok || !alive) return;
+        const data = (await res.json()) as { messages?: Array<{ role: string; content: string; status?: string }> };
+        if (!alive || !data.messages) return;
+        // 过滤掉进行中（status=streaming）占位与空 agent 消息；保留 system 投递
+        const next = data.messages
+          .filter((m) => {
+            if (m.role === "agent" && m.content === "") return false;
+            if (m.status === "streaming") return false;
+            return true;
+          })
+          .map((m) => ({
+            role: (m.role === "user" || m.role === "agent" || m.role === "system" ? m.role : "agent") as DutyMessage["role"],
+            content: m.content ?? "",
+          }));
+        setMessages((prev) => {
+          // 当前有正在进行的对话流（新消息）时不覆盖；否则以服务端为准恢复/同步
+          if (prev.some((m) => m.role === "agent" && m.content === "") && Date.now() - openedAtRef.current < 15000) {
+            return prev;
+          }
+          if (next.length === 0) return prev;
+          if (prev.length === 0) return next;
+          // 增量同步：保留本地已有尾部消息，追加服务端更新的系统投递（按内容去重）
+          const known = new Set(prev.map((m) => `${m.role}:${m.content}`));
+          const additions = next.filter((m) => !known.has(`${m.role}:${m.content}`));
+          return additions.length > 0 ? [...prev, ...additions] : prev;
+        });
+      } catch {
+        // 静默：打开失败不阻塞对话框
+      }
+    };
+    void loadHistory();
+    const timer = window.setInterval(() => {
+      if (!streamingRef.current) void loadHistory();
+    }, 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [open, agentId]);
 
   /* 对话框定位：贴磁贴右缘；视口放不下则放左缘。滚动/缩放时跟随。 */
   useEffect(() => {
@@ -212,6 +289,7 @@ export default function DutyGirl() {
     setMentionAt(null);
     setMessages((prev) => [...prev, { role: "user", content: message }, { role: "agent", content: "" }]);
     setStreaming(true);
+    streamingRef.current = true;
     setError(null);
     const controller = new AbortController();
     liveRef.current = controller;
@@ -295,6 +373,7 @@ export default function DutyGirl() {
       }
     } finally {
       setStreaming(false);
+      streamingRef.current = false;
       liveRef.current = null;
     }
   };
@@ -383,7 +462,27 @@ export default function DutyGirl() {
             ) : null}
             {messages.map((m, index) => (
               <div key={index} className={`duty-dialog__msg duty-dialog__msg--${m.role}`}>
-                {m.content || (m.role === "agent" && streaming && index === messages.length - 1 ? "…" : "")}
+                {m.content || (m.role === "agent" && streaming && index === messages.length - 1 ? "…" : "") ? (
+                  tokenizeLinkRefs(m.content || (m.role === "agent" && streaming && index === messages.length - 1 ? "…" : "")).map((part, partIndex) =>
+                    part.ref ? (
+                      <button
+                        key={partIndex}
+                        type="button"
+                        className="duty-dialog__link"
+                        title="点击打开会话"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openRefTarget(part.ref!.raw, part.ref!.kind);
+                        }}
+                      >
+                        <span className="duty-dialog__link-icon">↗</span>
+                        {part.ref.kind === "ses" ? "会话" : "Agent"}·{part.ref.raw.slice(4).slice(0, 6)}
+                      </button>
+                    ) : (
+                      <span key={partIndex}>{part.text}</span>
+                    ),
+                  )
+                ) : null}
               </div>
             ))}
             {streaming ? <div className="duty-dialog__typing">值日生正在调度…</div> : null}

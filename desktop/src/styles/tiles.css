@@ -1446,6 +1446,42 @@
   border-bottom-left-radius: 3px;
 }
 
+.duty-dialog__msg--system {
+  align-self: stretch;
+  max-width: 100%;
+  background: rgba(47, 107, 255, 0.13);
+  border: 1px solid rgba(79, 140, 255, 0.35);
+  color: #cfddfb;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+.duty-dialog__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 3px;
+  padding: 3px 9px;
+  border: 1px solid rgba(79, 140, 255, 0.6);
+  border-radius: 999px;
+  background: rgba(47, 107, 255, 0.22);
+  color: #cfe2ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: background 0.15s ease;
+}
+
+.duty-dialog__link:hover {
+  background: rgba(47, 107, 255, 0.42);
+}
+
+.duty-dialog__link-icon {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 .duty-dialog__typing {
   font-size: 11px;
   color: rgba(232, 237, 247, 0.55);

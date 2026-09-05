@@ -4,7 +4,8 @@
  * v1 最小集（只读/受控；无删除）：
  *   momoka agent list
  *   momoka agent create --name <名称> [--workspace <目录>] [--model <模型>] [--system <提示词>]
- *   momoka agent chat <agentId> <消息…>[ --link ses_xxx,ses_yyy]   （消息可含 &ses_<id> 句柄）
+ *   momoka agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄）
+ *   momoka agent dispatch <agentId> <消息…>（异步派发，立即返回；适合值日生懒调度）
  *   momoka agent reset <agentId>
  *   momoka agent stop <agentId>
  *   momoka session list
@@ -43,6 +44,25 @@ async function api(method, pathname, body) {
     throw new Error(message);
   }
   return { status: res.status, data };
+}
+
+/**
+ * 异步下发：POST /api/agents/:id/chat 后不等 SSE 结束即返回（连接断开不中止任务，
+ * 完成后由服务端把结果链接投递回值日生会话）。适合“派发即回 idle”的懒调度语义。
+ */
+async function dispatchChat(agentId, message) {
+  const res = await fetch(`${BASE}/api/agents/${agentId}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok || !res.headers.get("content-type")?.includes("text/event-stream")) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`dispatch 失败（HTTP ${res.status}）：${text.slice(0, 300)}`);
+  }
+  // 不等流：读完头即可认为已受理。连接关闭后任务由服务端继续后台执行。
+  await res.body?.cancel().catch(() => undefined);
+  return `已派发 ${agentId}（任务后台执行中，完成/出错会通过值日生会话投递链接）`;
 }
 
 async function runStreamingChat(agentId, message) {
@@ -123,6 +143,7 @@ async function main() {
     println("  momoka agent list");
     println("  momoka agent create --name <名称> [--workspace <目录>] [--model <模型>] [--system <提示词>]");
     println("  momoka agent chat <agentId> <消息…>");
+    println("  momoka agent dispatch <agentId> <消息…>");
     println("  momoka agent reset <agentId>");
     println("  momoka agent stop <agentId>");
     println("  momoka session list");
@@ -163,6 +184,15 @@ async function main() {
       if (!message.trim()) throw new Error("chat 需要消息文本");
       println(`→ ${agentId}: ${message}`);
       println((await runStreamingChat(agentId, message)) || "(无输出)");
+      return;
+    }
+    if (sub === "dispatch") {
+      // 异步派发：POST 后立即返回（后台执行，适合值日生“派发完回 idle”）
+      const { agentId, message } = tokenizeChatMessage(positional);
+      if (!agentId) throw new Error("dispatch 需要 agentId");
+      if (!message.trim()) throw new Error("dispatch 需要消息文本");
+      println(`→ ${agentId}: ${message}`);
+      println(await dispatchChat(agentId, message));
       return;
     }
     if (sub === "reset") {

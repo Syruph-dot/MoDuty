@@ -49,6 +49,9 @@ export type StreamEvent =
 /** Agent 生命周期状态（agent-registry / agent-state） */
 export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
 
+/** Agent 角色类别：缺省为普通执行者；dispatcher 为值日生（调度者，可自动记账/接收投递） */
+export type AgentKind = "dispatcher" | "worker";
+
 /** Agent running 时的子阶段（由 SSE 事件推导） */
 export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "verifying";
 
@@ -56,6 +59,7 @@ export interface AgentRecord {
   id: string; // agt_xxx
   name: string; // persona 名
   role: string; // 系统提示词 / 角色定位
+  kind?: AgentKind; // 角色类别：dispatcher（值日生）| worker / 缺省
   model?: string; // 可选，缺省用全局 model client
   workspaceDir: string; // 工作目录
   sessionId: string; // 1:1 绑定的 session（上下文串）

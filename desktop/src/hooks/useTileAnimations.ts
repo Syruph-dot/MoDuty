@@ -55,7 +55,7 @@ const DEFAULT_ENTER_EASING = (t: number) => 1 - Math.pow(1 - t, 3);
 export function useTileAnimations(options: UseTileAnimationsOptions) {
   const {
     bounds,
-    scanSpeed = 4800,
+    scanSpeed = 1600,
     enterDuration = 600,
     exitDuration = 200,
     scanStartDelay = 0,

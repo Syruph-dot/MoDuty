@@ -212,6 +212,28 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
+  // 橡皮筋越界（Android 式）：
+  // - 内容层（.tile-wall__content）在停靠点之外由 overscrollRef 驱动 translateX 真实位移
+  // - raw = 越过停靠点的“拖动/滚轮量”，经指数阻尼换算成有限位移 d（→ MAX_OVERSCROLL_PX）
+  // - 松手 / 滚轮停顿后 rAF 把 raw 衰减回 0（内容平滑弹回停靠点）
+  const overscrollRef = useRef<{ raw: number; side: -1 | 0 | 1; raf: number; wheelTimer: number | null }>({
+    raw: 0,
+    side: 0,
+    raf: 0,
+    wheelTimer: null,
+  });
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const leftArcRef = useRef<HTMLDivElement | null>(null);
+  const rightArcRef = useRef<HTMLDivElement | null>(null);
+
+  // 常量
+  const EDGE_RATIO = 0.2; // 停靠点留白 = 1/5 屏宽（磁贴阵列首/尾距屏幕边缘的空档）
+  const MAX_OVERSCROLL_PX = 150; // 越界最大位移 px（指数阻尼渐近线）
+  const MAX_RAW_PX = 4000; // 越界原始量上限（数值保护，位移仍被阻尼在 MAX_OVERSCROLL_PX）
+  const SPRING_BACK_DURATION = 340; // 弹回动画时长 ms
+  const WHEEL_RELEASE_DELAY = 160; // 滚轮停顿多久后自动弹回 ms
+
   useLayoutEffect(() => {
     const el = wallRef.current;
     if (!el) return;
@@ -325,9 +347,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // ---- Band（组带）布局：打破全局网格 —— 组带序列（x 累加，组间 120px）+ 组内局部网格 ----
   // 所有 tile（agent/widget/browser）几何与组属统一来自 tileStore；bandLayout 纯派生。
   // 可见性：agent 受墙治理筛选（wallIds），widget/browser 恒可见
+  // 额外做一次坐标平移：内容左右各留 1/5 屏宽“停靠留白”（stopMargin），使磁贴阵列首/尾
+  // 在自然停靠（scrollLeft=0 / maxScroll）时距屏幕边缘正好约 1/5 屏宽，而不是铺满。
   const bandLayout = useMemo(() => {
     if (!metrics) return null;
-    return computeBands({
+    const raw = computeBands({
       tiles,
       groups,
       metrics,
@@ -336,7 +360,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         return tile ? tile.kind !== "agent" || wallIds.has(id) : true;
       },
     });
-  }, [metrics, tiles, groups, wallIds]);
+    const m = Math.round(bounds.width * EDGE_RATIO);
+    if (m <= 0) return raw;
+    return {
+      ...raw,
+      contentWidth: raw.contentWidth + m * 2,
+      bands: raw.bands.map((b) => ({ ...b, x: b.x + m })),
+    };
+  }, [metrics, tiles, groups, wallIds, bounds.width]);
   const bands = bandLayout?.bands ?? [];
   const bandOf = bandLayout?.bandOf ?? {};
   const bandById = useMemo(() => {
@@ -412,7 +443,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           metrics && el
             ? (() => {
                 const rect = el.getBoundingClientRect();
-                const x = clientX - rect.left - metrics.padding;
+                const x = clientX - rect.left - metrics.padding + el.scrollLeft;
                 let bestId: string | null = null;
                 let bestDist = Infinity;
                 for (const b of bands) {
@@ -436,7 +467,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           const band = bandById[bandAt] ?? null;
           const step = metrics ? metrics.cellW + metrics.gap : 0;
           const rect = el!.getBoundingClientRect();
-          const x = clientX - rect.left - metrics!.padding;
+          const x = clientX - rect.left - metrics!.padding + el!.scrollLeft;
           const y = clientY - rect.top - metrics!.padding;
           h.targetGroupId = bandAt;
           h.targetAgentId = null;
@@ -643,12 +674,112 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   }, [reorderGroups]);
 
   const contentWidth = useMemo(() => {
-    if (openMode || !metrics) return "100%";
+    if (openMode || groupedMode || !metrics) return "100%";
     const w = bandLayout?.contentWidth ?? 0;
     return `${Math.max(w, 1)}px`;
-  }, [openMode, metrics, bandLayout]);
+  }, [openMode, groupedMode, metrics, bandLayout]);
+
+  // 把 overscrollRef 的 raw/side 画到内容层与左右弧上
+  const paintOverscroll = useCallback(() => {
+    const layer = contentRef.current;
+    const o = overscrollRef.current;
+    if (!layer) {
+      o.raw = 0;
+      o.side = 0;
+      return;
+    }
+    if (o.side === 0 || o.raw <= 0.01) {
+      layer.style.transform = "";
+      if (leftArcRef.current) leftArcRef.current.style.opacity = "0";
+      if (rightArcRef.current) rightArcRef.current.style.opacity = "0";
+      return;
+    }
+    // 指数阻尼：raw 越大阻力越大，位移趋近 MAX_OVERSCROLL_PX（Android 橡皮筋手感）
+    const d = MAX_OVERSCROLL_PX * (1 - Math.exp(-o.raw / MAX_OVERSCROLL_PX));
+    const t = Math.max(0, Math.min(1, d / MAX_OVERSCROLL_PX)).toFixed(3);
+    layer.style.transform = `translateX(${(o.side === -1 ? d : -d).toFixed(2)}px)`;
+    if (o.side === -1) {
+      if (leftArcRef.current) leftArcRef.current.style.opacity = t;
+      if (rightArcRef.current) rightArcRef.current.style.opacity = "0";
+    } else {
+      if (leftArcRef.current) leftArcRef.current.style.opacity = "0";
+      if (rightArcRef.current) rightArcRef.current.style.opacity = t;
+    }
+  }, []);
+
+  // 清除越界：transform/弧归零，取消回弹动画与滚轮计时器
+  const clearOverscroll = useCallback(() => {
+    const o = overscrollRef.current;
+    if (o.wheelTimer !== null) {
+      window.clearTimeout(o.wheelTimer);
+      o.wheelTimer = null;
+    }
+    if (o.raf) {
+      window.cancelAnimationFrame(o.raf);
+      o.raf = 0;
+    }
+    o.raw = 0;
+    o.side = 0;
+    paintOverscroll();
+  }, [paintOverscroll]);
+
+  // 松手 / 停顿：把 raw 平滑衰减到 0（内容从越界处弹回停靠点）
+  const releaseOverscroll = useCallback(() => {
+    const o = overscrollRef.current;
+    if (o.side === 0 || o.raw <= 0.01) {
+      clearOverscroll();
+      return;
+    }
+    if (o.wheelTimer !== null) {
+      window.clearTimeout(o.wheelTimer);
+      o.wheelTimer = null;
+    }
+    if (o.raf) window.cancelAnimationFrame(o.raf);
+    const startRaw = o.raw;
+    const start = performance.now();
+    const step = (now: number) => {
+      const p = Math.min(1, (now - start) / SPRING_BACK_DURATION);
+      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic：先快后慢
+      if (p < 1) {
+        o.raw = startRaw * (1 - eased);
+        paintOverscroll();
+        o.raf = requestAnimationFrame(step);
+      } else {
+        clearOverscroll();
+      }
+    };
+    o.raf = requestAnimationFrame(step);
+  }, [paintOverscroll, clearOverscroll]);
+
+  // 设一次越界状态（拖动画布路径用）
+  const setOverscroll = useCallback(
+    (side: -1 | 1, raw: number) => {
+      const o = overscrollRef.current;
+      o.side = side;
+      o.raw = Math.max(0, Math.min(raw, MAX_RAW_PX));
+      paintOverscroll();
+    },
+    [paintOverscroll],
+  );
+
+  // 滚轮越界累加：连续滚动持续拉出，停顿 WHEEL_RELEASE_DELAY 后自动弹回
+  const bumpOverscroll = useCallback(
+    (side: -1 | 1, amount: number) => {
+      const o = overscrollRef.current;
+      o.side = side;
+      o.raw = Math.max(0, Math.min(o.raw + Math.max(0, amount), MAX_RAW_PX));
+      paintOverscroll();
+      if (o.wheelTimer !== null) window.clearTimeout(o.wheelTimer);
+      o.wheelTimer = window.setTimeout(() => {
+        o.wheelTimer = null;
+        releaseOverscroll();
+      }, WHEEL_RELEASE_DELAY);
+    },
+    [paintOverscroll, releaseOverscroll],
+  );
 
   // 滚轮：上=左、下=右 水平滑动；Ctrl+滚轮 → 缩放（仅 free 模式；open 模式不拦截窗口滚动）
+  // 范围内自由滚动；贴住停靠点（scrollLeft=0 / maxScroll）后继续往外的量转为橡皮筋越界
   useEffect(() => {
     const el = wallRef.current;
     if (!el) return;
@@ -659,14 +790,47 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         else if (event.deltaY > 0) zoomOut();
         return;
       }
-      if (!openMode) {
-        event.preventDefault();
-        el.scrollLeft += event.deltaY;
+      if (openMode) return;
+      event.preventDefault();
+      const delta = event.deltaY;
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      const cur = el.scrollLeft;
+      if (delta < 0) {
+        // 向左（回起点）：已贴住起点 → 转左越界；跨过起点 → 余量也进越界
+        if (cur <= 0) {
+          bumpOverscroll(-1, -delta);
+          return;
+        }
+        const next = cur + delta;
+        if (next < 0) {
+          el.scrollLeft = 0;
+          bumpOverscroll(-1, -next);
+          return;
+        }
+        clearOverscroll();
+        el.scrollLeft = next;
+      } else if (delta > 0) {
+        // 向右（往终点）
+        if (cur >= maxScroll) {
+          bumpOverscroll(1, delta);
+          return;
+        }
+        const next = cur + delta;
+        if (next > maxScroll) {
+          el.scrollLeft = maxScroll;
+          bumpOverscroll(1, next - maxScroll);
+          return;
+        }
+        clearOverscroll();
+        el.scrollLeft = next;
       }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [openMode, zoomIn, zoomOut]);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      clearOverscroll();
+    };
+  }, [openMode, zoomIn, zoomOut, bumpOverscroll, clearOverscroll]);
 
   // 鼠标左键拖拽空白 → 水平平移画布（free 模式的“抓手”平移；磁贴/浮层/控件不触发）
   useEffect(() => {
@@ -682,6 +846,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest(IGNORE_SELECTOR)) return;
       panning = true;
+      clearOverscroll(); // 清除可能残留的滚轮越界/回弹动画
       startX = event.clientX;
       startScroll = el.scrollLeft;
       el.classList.add("tile-wall--panning");
@@ -690,7 +855,22 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     };
     const onMove = (event: MouseEvent) => {
       if (!panning) return;
-      el.scrollLeft = startScroll - (event.clientX - startX);
+      const rawScroll = startScroll - (event.clientX - startX);
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      // 越过停靠点：scrollLeft 已夹死，余量转成内容层橡皮筋位移
+      if (rawScroll < 0) {
+        el.scrollLeft = 0;
+        setOverscroll(-1, -rawScroll);
+        return;
+      }
+      if (rawScroll > maxScroll) {
+        el.scrollLeft = maxScroll;
+        setOverscroll(1, rawScroll - maxScroll);
+        return;
+      }
+      // 回到范围内：直接跟随，同时清掉残留越界
+      clearOverscroll();
+      el.scrollLeft = rawScroll;
     };
     const onUp = () => {
       if (!panning) return;
@@ -698,6 +878,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       el.classList.remove("tile-wall--panning");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      // 松手：在越界中 → 平滑弹回停靠点；否则清残留
+      if (overscrollRef.current.side !== 0 && overscrollRef.current.raw > 0.01) {
+        releaseOverscroll();
+      } else {
+        clearOverscroll();
+      }
     };
     el.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
@@ -706,8 +892,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       el.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      clearOverscroll();
     };
-  }, [openMode, wallRef]);
+  }, [openMode, wallRef, setOverscroll, clearOverscroll, releaseOverscroll]);
 
   // 桌面空白处右键 → 弹出菜单（New Agent / Add widget / Refresh / Change wallpaper / Zoom）
   const onContextMenu = useCallback(
@@ -723,7 +910,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       // 根据鼠标 X 位置推断落在哪个组带（仅 free 模式下的用户组）
       let contextGroupId: string | undefined;
       if (!openMode && !groupedMode && bandLayout && wallRect && metrics) {
-        const contentX = event.clientX - wallRect.left;
+        const scrollLeft = wallRef.current?.scrollLeft ?? 0;
+        const contentX = event.clientX - wallRect.left + scrollLeft;
         for (const band of bandLayout.bands) {
           if (band.editable && contentX >= band.x + metrics.padding && contentX <= band.x + metrics.padding + band.width) {
             contextGroupId = band.id;
@@ -868,6 +1056,44 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   return (
     <div className={`tile-wall${openMode ? " tile-wall--open" : ""}${settingsOpen ? " tile-wall--settings-leaving" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
+      {/* 橡皮筋越界弧：仅 free 模式；透明度由 overscrollRef 实时驱动（无发光边缘）
+          凸向朝屏幕内侧：左弧向右凸、右弧向左凸（对称于越界露出的内容边缘） */}
+      {!openMode && !groupedMode ? (
+        <>
+          <div
+            ref={leftArcRef}
+            className="tile-wall__tension-arc tile-wall__tension-arc--left"
+            style={{ opacity: 0 }}
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 60 100" preserveAspectRatio="none" style={{ width: 60, height: "100%" }}>
+              <path
+                d="M0,0 Q60,50 0,100"
+                stroke="currentColor"
+                strokeWidth="3"
+                fill="none"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+          <div
+            ref={rightArcRef}
+            className="tile-wall__tension-arc tile-wall__tension-arc--right"
+            style={{ opacity: 0 }}
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 60 100" preserveAspectRatio="none" style={{ width: 60, height: "100%" }}>
+              <path
+                d="M60,0 Q0,50 60,100"
+                stroke="currentColor"
+                strokeWidth="3"
+                fill="none"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+        </>
+      ) : null}
       {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
 
       {loading && agents.length === 0 ? (
@@ -876,11 +1102,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         </p>
       ) : null}
 
-      {/* free 模式：内容撑宽（水平滚动区），磁贴 absolute 相对墙 */}
-      {!openMode && !groupedMode ? (
-        <div className="tile-wall__sizer" style={{ width: contentWidth, height: "100%" }} aria-hidden="true" />
-      ) : null}
-
+      {/* free 模式内容层见下方 .tile-wall__content（同时承担撑宽 + 橡皮筋位移） */}
       {/* grouped 视图（方案 B）：按工作区分组，X 轴分列布局 */}
       {!openMode && groupedMode ? <GroupedWall onOpen={onOpen} /> : null}
 
@@ -903,6 +1125,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         <div className="dock-area" style={{ left: layout.dock.x, top: layout.dock.y, width: layout.dock.w, height: layout.dock.h }} aria-hidden="true" />
       ) : null}
 
+      {/* ---- 内容层 .tile-wall__content：滚动内容 + 橡皮筋位移载体（越界时整体 translateX） ---- */}
+      <div ref={contentRef} className="tile-wall__content" style={{ width: contentWidth, height: "100%" }}>
       {/* 拖拽成组：组名层（组带顶部保留行左对齐，Segoe UI Light；用户组双击可编辑） */}
       {!openMode && !groupedMode && bandLayout && metrics
         ? bandLayout.bands.map((band) => (
@@ -1162,6 +1386,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
       {/* 拖动中的量化灰色提示框（Win8 ghost） */}
       <GhostPreview />
+      </div>
 
       {/* 对齐辅助线覆盖层（expanded 拖动中可见） */}
       <SnapGuidesOverlay guides={snapGuides} wallRef={wallRef} />

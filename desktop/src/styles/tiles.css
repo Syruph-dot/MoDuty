@@ -37,12 +37,13 @@
   box-shadow: none;
 }
 
-/* 网格内容撑宽器：让横向滚动区感知磁贴实际列宽（磁贴本身 absolute 不参与文档流） */
-.tile-wall__sizer {
+/* 内容层：横向滚动内容（撑宽） + 橡皮筋越界位移载体（越界时 translateX） */
+.tile-wall__content {
+  position: relative;
   display: block;
   min-width: 100%;
   height: 100%;
-  pointer-events: none;
+  transform-origin: 0 0;
 }
 
 /* 磁贴墙横向滚动条（细而轻） */
@@ -58,6 +59,34 @@
 }
 .tile-wall::-webkit-scrollbar-thumb:hover {
   background: rgba(232, 237, 247, 0.4);
+}
+
+/* ---- 橡皮筋越界弧（Android 式 overscroll 指示；无发光边缘） */
+
+.tile-wall__tension-arc {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 100; /* 高于滚动内容，低于模态 */
+  color: #4f8cff20; /* 近无色 */
+}
+
+.tile-wall__tension-arc--left {
+  left: 0;
+}
+
+.tile-wall__tension-arc--right {
+  right: 0;
+}
+
+.tile-wall__tension-arc svg {
+  height: 100%;
+  width: 60px;
 }
 
 .tile-wall__error {

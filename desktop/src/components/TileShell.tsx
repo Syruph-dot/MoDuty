@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useTileAnimation } from "./desktop/AnimationProvider";
 
 import {
@@ -464,8 +464,10 @@ export default function TileShell({
 
   // 注册磁贴到动画系统：仅挂载时标记 isNew=true（触发进入动画），卸载时立即移除。
   // 注意不能放在渲染体里直接调用——registerTile 内部是 setState，渲染期更新会引发无限重渲染卡死。
+  // 用 useLayoutEffect：注册必须在 paint 之前完成，否则首帧会以“最终形态”渲染一帧，
+  // 随后状态变成 entering 才隐藏/播放动画，表现为磁贴先闪一下再消失重播。
   const isFirstRenderRef = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     registerTile(id, geometry, isFirstRenderRef.current);
     isFirstRenderRef.current = false;
     return () => unregisterTile(id, true);
@@ -473,7 +475,7 @@ export default function TileShell({
 
   // 几何变化（布局/拖动/尺寸）时同步到动画系统，用于视口剔除判断。
   // registerTile 已幂等：几何内容未变时 bail out，不会触发额外渲染。
-  useEffect(() => {
+  useLayoutEffect(() => {
     registerTile(id, geometry, false);
   }, [id, geometry, registerTile]);
 

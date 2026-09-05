@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useLayoutEffect, useMemo } from "react";
 import { useTileAnimations } from "../../hooks/useTileAnimations";
 
 export interface TileGeometry {
@@ -32,7 +32,7 @@ export function AnimationProvider({
   children,
   bounds,
   enabled = true,
-  scanSpeed = 4800,
+  scanSpeed = 1600,
   enterDuration = 600,
   exitDuration = 200,
   scanStartDelay = 0,
@@ -102,7 +102,8 @@ export function useRegisterTileAnimation(
 ) {
   const { registerTile, unregisterTile, getTileAnimationStyle } = useTileAnimation();
   
-  React.useEffect(() => {
+  // 注册同样用 useLayoutEffect：避免首帧以最终态渲染（先闪现再消失重播入场）
+  useLayoutEffect(() => {
     registerTile(id, geometry, isNew);
     // immediate 移除：避免依赖变化（如 geometry 更新）时 cleanup 先置 exiting 导致磁贴闪烁消失
     return () => unregisterTile(id, true);

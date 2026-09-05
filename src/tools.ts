@@ -817,7 +817,7 @@ export async function executeToolCall(
   if (name === "run_command_echo_only") {
     return runCommandEchoOnlyTool({ command: String(args.command ?? "") });
   }
-  if (name.startsWith("browse_")) {
+  if (name === "web_search" || name.startsWith("browse_")) {
     return await executeBrowserTool(name, args as Record<string, unknown>);
   }
   const sourceWorkspace = requireWorkspace(workDir);

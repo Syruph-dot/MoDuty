@@ -28,6 +28,7 @@ memory/*.md
 .mission/
 
 memory/.agents/
+memory/.dispatches.json
 
 
 # Runtime logs & build outputs (local only)

@@ -7,6 +7,7 @@ import { MemoryStore } from "./memory.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
+import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
@@ -16,11 +17,34 @@ import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
+import { loadSettings } from "./settings-store.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; workspaceManager?: WorkspaceManager; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+/**
+ * 未自定义 role 时的默认人格（Settings.agentPersona 未设置时使用）。
+ * 内容来自原 prompts/AGENTS.md 的人格段（# 文件助手 + 能力 + 行为规则），
+ * 平台规则层已拆到 prompts/SYSTEM_RULES.md，此处只保留“我是谁/怎么干活”。
+ */
+const DEFAULT_AGENT_PERSONA = `# 文件助手
+
+你是一个 Agent（代理）。
+
+## 能力
+你可以使用以下工具：
+- **时间工具**：查询当前日期和时间
+- **文件系统读写改**
+- **浏览器的唤起、使用和销毁**
+
+## 行为规则
+1. 收到任务后，先判断是否需要调用工具
+2. 工具调用按需进行，不要猜测文件是否存在——先用 list_files 确认
+3. 每次工具调用后，根据返回结果决定下一步
+4. 任务完成后给出简洁的总结
+5. 如果工具返回错误，解释原因并给出建议`;
 
 export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
@@ -46,9 +70,46 @@ export class MomokaAgentCore implements MomokaAgent {
     };
   }
 
-  async buildSystemPrompt(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null } = {}): Promise<string> {
-    let prompt = "You are MOMOKA, a concise file assistant.";
-    try { prompt = await readFile(path.join(this.projectRoot, "prompts", "AGENTS.md"), "utf8"); } catch { /* fallback */ }
+  /**
+   * 组装 system prompt：人格层（Agent role / Settings 默认人格）+ 平台规则层（SYSTEM_RULES.md） + 技能/记忆。
+   * - role：Agent 自定义 system；未显式传入且 sessionId 可反查时自动取 AgentRecord.role；
+   *   等于 DEFAULT_SYSTEM_PROMPT 视为“未自定义”，改用 Settings 默认人格；
+   * - agentPersona：Settings 默认人格，未传入时自动 loadSettings；未设置用内置 DEFAULT_AGENT_PERSONA。
+   * - 平台规则（安全/命令行/会话引用协议）对所有 Agent 固定附加。
+   */
+  async buildSystemPrompt(input: {
+    workDir?: string;
+    topic?: string;
+    message?: string;
+    sessionId?: string | null;
+    role?: string | null;
+    agentPersona?: string | null;
+  } = {}): Promise<string> {
+    let customRole = input.role?.trim() ?? "";
+    let isDispatcher = false;
+    if (input.sessionId && this.agentRegistry) {
+      const record = await this.agentRegistry.agentBySessionId(input.sessionId);
+      isDispatcher = record?.kind === "dispatcher" || (record?.name === "值日生" && record.kind !== "worker");
+      customRole = input.role?.trim() ?? record?.role?.trim() ?? "";
+    }
+    // 值日生（dispatcher）单源：无论 agents.json 里存的旧 role 如何，一律用后端 DISPATCHER 常量，
+    // 避免“代码副本 vs 实例快照”双源漂移。兼容旧实例（无 kind 但名为值日生）。
+    if (isDispatcher) {
+      customRole = DISPATCHER_SYSTEM_PROMPT;
+    }
+    let personaText = input.agentPersona?.trim();
+    if (!personaText) {
+      try { personaText = (await loadSettings()).agentPersona?.trim() ?? ""; } catch { /* settings 读取失败回落默认 */ }
+    }
+    // 人格层：自定义 role（≠默认占位）优先；否则 Settings 默认人格；再否则内置默认
+    const persona = (customRole && customRole !== DEFAULT_SYSTEM_PROMPT)
+      ? customRole
+      : (personaText || DEFAULT_AGENT_PERSONA);
+    // 平台规则层（恒定附加）
+    let rules = "";
+    try { rules = await readFile(path.join(this.projectRoot, "prompts", "SYSTEM_RULES.md"), "utf8"); } catch { /* fallback */ }
+    let prompt = persona;
+    if (rules.trim()) prompt += `\n\n${rules.trim()}`;
     const sections: string[] = [];
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
@@ -210,7 +271,7 @@ export class MomokaAgentCore implements MomokaAgent {
     const continuationOutputId = makeId("out");
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const result = await this.options.modelClient.run(buildFollowupPrompt({ topic: output.topic, outputText: output.response, judgment: { ...judgment, label }, reflection }), {
-      systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
+      systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic, sessionId }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
       sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
     await this.recordRunUsage(result, sessionId);

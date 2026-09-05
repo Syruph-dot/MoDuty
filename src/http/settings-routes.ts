@@ -35,12 +35,13 @@ export async function handleSettingsRoutes(
     return true;
   }
   if (request.method === "GET" && url.pathname === "/api/settings") {
-    // v2：返回模型池 + tier 默认指针（本地单用户配置，apiKey 与磁盘文件一致直接可编辑）
+    // v2：返回模型池 + tier 默认指针 + 默认人格（本地单用户配置，apiKey 与磁盘文件一致直接可编辑）
     const settings = await loadSettings();
     json(response, 200, {
       sandbox_enabled: ctx.agent.getSandboxEnabled(),
       modelPool: settings.modelPool,
       tierDefaults: settings.tierDefaults,
+      ...(settings.agentPersona ? { agent_persona: settings.agentPersona } : {}),
     });
     return true;
   }
@@ -48,6 +49,7 @@ export async function handleSettingsRoutes(
     const body = await readJsonBody(request) as {
       modelPool?: ModelPoolEntry[];
       tierDefaults?: Partial<TierDefaults>;
+      agent_persona?: string | null;
       // v1 兼容：不再支持单组写入，收到时给出指引
       apiKey?: string;
       baseUrl?: string;
@@ -59,7 +61,7 @@ export async function handleSettingsRoutes(
       });
       return true;
     }
-    const patch: { modelPool?: ModelPoolEntry[]; tierDefaults?: Partial<TierDefaults> } = {};
+    const patch: { modelPool?: ModelPoolEntry[]; tierDefaults?: Partial<TierDefaults>; agentPersona?: string | null } = {};
     if (Array.isArray(body.modelPool)) {
       patch.modelPool = body.modelPool.map((item) => ({ ...item, baseUrl: item.baseUrl?.trim() ?? "", model: item.model?.trim() ?? "" }));
     }
@@ -71,6 +73,10 @@ export async function handleSettingsRoutes(
           patch.tierDefaults[key] = typeof value === "string" && value.trim() ? value.trim() : null;
         }
       }
+    }
+    const persona = typeof body.agent_persona === "string" ? body.agent_persona.trim() : body.agent_persona ?? undefined;
+    if (body.agent_persona !== undefined) {
+      patch.agentPersona = persona || null;
     }
     await saveSettings(patch);
     json(response, 200, { ok: true });

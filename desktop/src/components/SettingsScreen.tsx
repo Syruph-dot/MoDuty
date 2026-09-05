@@ -35,6 +35,8 @@ export default function SettingsScreen() {
   const [pool, setPool] = useState<ModelPoolEntryView[]>([]);
   const [defaults, setDefaults] = useState<TierDefaultsView>({ high: null, low: null, exact: null });
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [agentPersona, setAgentPersona] = useState("");
+  const [personaDirty, setPersonaDirty] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,8 @@ export default function SettingsScreen() {
       setPool(settings.modelPool ?? []);
       setDefaults(settings.tierDefaults ?? { high: null, low: null, exact: null });
       setSandboxEnabled(settings.sandbox_enabled);
+      setAgentPersona(settings.agent_persona ?? "");
+      setPersonaDirty(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -205,6 +209,23 @@ export default function SettingsScreen() {
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const savePersona = async () => {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const trimmed = agentPersona.trim();
+      await updateSettings({ agent_persona: trimmed || null });
+      setSaved(true);
+      setPersonaDirty(false);
+      void load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -431,6 +452,47 @@ export default function SettingsScreen() {
                     />
                     <span style={{ fontSize: 13 }}>{sandboxEnabled ? "已开启" : "已关闭"}</span>
                   </label>
+                </div>
+              </div>
+            </section>
+            <section className="settings-group">
+              <h3 className="settings-group__title">默认 Agent 人格</h3>
+              <div className="settings-card">
+                <div className="settings-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                  <div className="settings-row__label">未自定义 role 的 Agent 使用此人格作为 system prompt 首层</div>
+                  <div className="settings-row__desc">留空 = 使用内置默认（文件助手/工具行为）；修改后对所有新建及未自定义的 Agent 生效。平台规则（安全/会话引用）固定附加，不受此处影响。</div>
+                  <textarea
+                    value={agentPersona}
+                    onChange={(event) => {
+                      setAgentPersona(event.target.value);
+                      setPersonaDirty(true);
+                      setSaved(false);
+                    }}
+                    rows={9}
+                    spellCheck={false}
+                    style={{
+                      width: "100%",
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                      fontSize: 13,
+                      lineHeight: 1.55,
+                      padding: "8px 10px",
+                      background: "rgba(255,255,255,0.06)",
+                      border: "1px solid rgba(255,255,255,0.14)",
+                      borderRadius: 8,
+                      color: "#e8edf7",
+                      outline: "none",
+                    }}
+                    placeholder={"# 文件助手\n\n你是一个 Agent（代理）。\n\n## 能力…（内置默认；留空保存即恢复默认）"}
+                  />
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button type="button" className="settings-btn" disabled={saving || !personaDirty} onClick={() => void savePersona()}>
+                      {saving ? "保存中…" : "保存人格"}
+                    </button>
+                    <span style={{ fontSize: 12, color: "rgba(232,237,247,0.45)" }}>
+                      {personaDirty ? "有未保存修改" : "已同步"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </section>

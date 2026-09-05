@@ -159,9 +159,10 @@ export interface MomokaSettingsView {
   sandbox_enabled: boolean;
   modelPool: ModelPoolEntryView[];
   tierDefaults: TierDefaultsView;
+  agent_persona?: string;
 }
 
-/** 读取当前设置（v2：模型池 + 默认指针） */
+/** 读取当前设置（v2：模型池 + 默认指针 + 默认人格） */
 export async function fetchSettings(): Promise<MomokaSettingsView> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
@@ -171,10 +172,11 @@ export async function fetchSettings(): Promise<MomokaSettingsView> {
   return data;
 }
 
-/** 保存设置（v2：整表保存模型池 / 默认指针） */
+/** 保存设置（v2：整表保存模型池 / 默认指针 / 默认人格） */
 export async function updateSettings(input: {
   modelPool?: ModelPoolEntryView[];
   tierDefaults?: Partial<TierDefaultsView>;
+  agent_persona?: string | null;
 }): Promise<void> {
   const base = await awaitApiBase();
   await jsonOrThrow(

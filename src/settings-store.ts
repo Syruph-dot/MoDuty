@@ -46,6 +46,8 @@ export interface TierDefaults {
 export interface MomokaSettings {
   modelPool: ModelPoolEntry[];
   tierDefaults: TierDefaults;
+  /** 全局默认 Agent 人格（role 未自定义时的“我是谁/怎么干活”描述）；未设置用内置默认 */
+  agentPersona?: string;
 }
 
 /** v1 遗留信息（仅当用户还没保存过 v2 时通过迁移合成，供诊断展示） */
@@ -63,6 +65,7 @@ const SETTINGS_PATH = path.join(SETTINGS_DIR, "settings.json");
 interface RawSettingsFile {
   modelPool?: unknown;
   tierDefaults?: { high?: unknown; low?: unknown; exact?: unknown };
+  agentPersona?: unknown;
   // v1 字段
   apiKey?: unknown;
   baseUrl?: unknown;
@@ -144,6 +147,9 @@ export async function loadSettings(): Promise<MomokaSettings> {
     return {
       modelPool: pool,
       tierDefaults: normalizeTierDefaults(raw.tierDefaults),
+      ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
+        ? { agentPersona: raw.agentPersona }
+        : {}),
     };
   }
 
@@ -164,10 +170,19 @@ export async function loadSettings(): Promise<MomokaSettings> {
         },
       ],
       tierDefaults: { high: LEGACY_ENTRY_ID, low: null, exact: null },
+      ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
+        ? { agentPersona: raw.agentPersona }
+        : {}),
     };
   }
 
-  return { modelPool: [], tierDefaults: emptyDefaults() };
+  return {
+    modelPool: [],
+    tierDefaults: emptyDefaults(),
+    ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
+      ? { agentPersona: raw.agentPersona }
+      : {}),
+  };
 }
 
 /** 读 v1 遗留原始字段（仅用于日志/兼容提示） */
@@ -185,6 +200,7 @@ export async function loadLegacyInfo(): Promise<MomokaLegacyInfo> {
 export async function saveSettings(patch: {
   modelPool?: ModelPoolEntry[];
   tierDefaults?: Partial<TierDefaults>;
+  agentPersona?: string | null;
 }): Promise<void> {
   const current = await loadSettings();
   const raw = await readRaw();
@@ -217,7 +233,17 @@ export async function saveSettings(patch: {
     }
   }
 
-  const next: MomokaSettings = { modelPool: nextPool, tierDefaults: nextDefaults };
+  const next: MomokaSettings = {
+    modelPool: nextPool,
+    tierDefaults: nextDefaults,
+    ...(patch.agentPersona !== undefined
+      ? patch.agentPersona && patch.agentPersona.trim()
+        ? { agentPersona: patch.agentPersona }
+        : {}
+      : current.agentPersona
+        ? { agentPersona: current.agentPersona }
+        : {}),
+  };
   const payload = raw && Array.isArray((raw as RawSettingsFile).modelPool)
     ? next // 已是 v2
     : { ...next }; // v1 → v2（写掉旧字段）

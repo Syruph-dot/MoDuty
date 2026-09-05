@@ -460,7 +460,13 @@ export default function TileShell({
   }, [isDragging, dragMode]);
 
   // 进入/退出动画样式
-  const { getTileAnimationStyle } = useTileAnimation();
+  const { registerTile, getTileAnimationStyle } = useTileAnimation();
+
+  // 注册磁贴到动画系统（首次渲染为 isNew=true）
+  const isFirstRenderRef = useRef(true);
+  registerTile(id, geometry, isFirstRenderRef.current);
+  if (isFirstRenderRef.current) isFirstRenderRef.current = false;
+
   const animStyle = getTileAnimationStyle?.(id) ?? null;
 
   const onTileContextMenu = (event: React.MouseEvent) => {

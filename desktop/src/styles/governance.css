@@ -488,11 +488,30 @@
   width: 220px;
   height: 150px;
   position: relative;
+  /* 进入动画：挂载即播放一次；stagger 延迟由组件内联 animation-delay 控制 */
+  animation: mo-tile-enter 480ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+@keyframes mo-tile-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-24px) translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) translateY(0) scale(1);
+  }
 }
 .ws-group__tile .agent-tile {
   width: 100%;
   height: 100%;
   border-radius: 6px;
+}
+
+/* 动效偏好：用户要求减弱动画时关闭分组磁贴进入动画 */
+@media (prefers-reduced-motion: reduce) {
+  .ws-group__tile {
+    animation: none;
+  }
 }
 
 .grouped-wall__empty {

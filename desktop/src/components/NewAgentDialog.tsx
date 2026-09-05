@@ -111,7 +111,7 @@ export default function NewAgentDialog() {
             className="dialog__input"
             value={form.model}
             onChange={(event) => setForm({ ...form, model: event.target.value })}
-            placeholder="qwen-plus"
+            placeholder="如 hy3-free / deepseek-chat（缺省用全局）"
           />
         </label>
 

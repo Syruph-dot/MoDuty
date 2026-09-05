@@ -18,6 +18,8 @@ interface AnimationContextValue {
   unregisterTile: (id: string, immediate?: boolean) => void;
   getTileAnimationStyle: (id: string) => React.CSSProperties | null;
   registerTilesBatch: (tiles: AnimationTile[]) => void;
+  /** 整墙重新进入：从设置等全屏界面返回时重播入场扫描 */
+  replayEnter: () => void;
 }
 
 const AnimationContext = React.createContext<AnimationContextValue | null>(null);
@@ -30,10 +32,10 @@ export function AnimationProvider({
   children,
   bounds,
   enabled = true,
-  scanSpeed = 800,
+  scanSpeed = 4800,
   enterDuration = 600,
   exitDuration = 200,
-  scanStartDelay = 100,
+  scanStartDelay = 0,
   viewportMargin = 1.5,
 }: {
   children: React.ReactNode;
@@ -50,6 +52,7 @@ export function AnimationProvider({
     unregisterTile,
     registerTilesBatch,
     getTileAnimationStyle,
+    replayEnter,
   } = useTileAnimations({
     bounds,
     scanSpeed,
@@ -66,8 +69,9 @@ export function AnimationProvider({
       unregisterTile,
       getTileAnimationStyle,
       registerTilesBatch,
+      replayEnter,
     }),
-    [registerTile, unregisterTile, getTileAnimationStyle, registerTilesBatch]
+    [registerTile, unregisterTile, getTileAnimationStyle, registerTilesBatch, replayEnter]
   );
 
   return (
@@ -100,7 +104,8 @@ export function useRegisterTileAnimation(
   
   React.useEffect(() => {
     registerTile(id, geometry, isNew);
-    return () => unregisterTile(id);
+    // immediate 移除：避免依赖变化（如 geometry 更新）时 cleanup 先置 exiting 导致磁贴闪烁消失
+    return () => unregisterTile(id, true);
   }, [id, geometry, isNew, registerTile, unregisterTile]);
 
   return getTileAnimationStyle(id);

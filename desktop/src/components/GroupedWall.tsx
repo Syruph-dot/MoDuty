@@ -175,10 +175,12 @@ export default function GroupedWall({ onOpen }: { onOpen: (agent: Agent) => void
               </button>
               {!collapsed ? (
                 <div className="ws-group__tiles">
-                  {group.agents.map((agent) => (
+                  {group.agents.map((agent, tileIndex) => (
                     <div
                       key={agent.id}
                       className="ws-group__tile"
+                      // 进入动画：按组内索引 stagger（上限 15，避免超多磁贴时延迟过长）
+                      style={{ animationDelay: `${Math.min(tileIndex, 15) * 45}ms` }}
                       onContextMenu={(event) => onGroupContextMenu(event, agent)}
                     >
                       <AgentTile

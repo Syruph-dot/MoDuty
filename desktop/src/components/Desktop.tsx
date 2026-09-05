@@ -9,7 +9,7 @@ import GroupedWall from "./GroupedWall";
 import LeftSidePanel from "./LeftSidePanel";
 import RightCharm from "./RightCharm";
 import TileShell from "./TileShell";
-import { AnimationProvider } from "./desktop/AnimationProvider";
+import { AnimationProvider, useTileAnimation } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
 import { computeBands, UNGROUPED_BAND_ID, SYSTEM_BAND_ID, type Band } from "../lib/bandLayout";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
@@ -41,6 +41,24 @@ const EMPTY_TILE: TileGeometry = { x: 0, y: 0, w: 0, h: 0 };
  * - 左栏（240px，左缘 hover 滑出）：Agent/Browser 分类 + 排序 + 卡片，单击打开
  * - 新建 Agent / widget / browser 都经 insertTile 在鼠标 X 轴列插入并重排
  */
+/**
+ * 全屏设置关闭后：重播整墙进入动画（从设置返回初始页时磁贴重新向右滑入放大淡入）。
+ * 必须在 AnimationProvider 内渲染。useLayoutEffect 保证与墙 class 移除同帧生效，避免闪烁。
+ */
+function WallEnterReplay() {
+  const { replayEnter } = useTileAnimation();
+  const settingsOpen = useDialogStore((state) => state.settingsOpen);
+  const prevOpen = useRef(settingsOpen);
+  useLayoutEffect(() => {
+    if (prevOpen.current && !settingsOpen) {
+      // 设置页刚关闭：重播入场
+      replayEnter();
+    }
+    prevOpen.current = settingsOpen;
+  }, [settingsOpen, replayEnter]);
+  return null;
+}
+
 export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) {
   const agents = useAgentsStore((state) => state.agents);
   const openAgentIds = useAgentsStore((state) => state.openAgentIds);
@@ -107,6 +125,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const openWidgetPicker = useDialogStore((state) => state.openWidgetPicker);
   const openWallpaper = useDialogStore((state) => state.openWallpaper);
   const openSettings = useDialogStore((state) => state.openSettings);
+  const settingsOpen = useDialogStore((state) => state.settingsOpen);
   const openRenameWidget = useDialogStore((state) => state.openRenameWidget);
   const snapGuides = useSnapGuideStore((state) => state.guides);
   const zoom = useZoomStore((state) => state.level);
@@ -848,7 +867,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   return (
-    <div className={`tile-wall${openMode ? " tile-wall--open" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
+    <div className={`tile-wall${openMode ? " tile-wall--open" : ""}${settingsOpen ? " tile-wall--settings-leaving" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
       {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
 
       {loading && agents.length === 0 ? (
@@ -945,6 +964,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
       {/* ---- 广义 Tile 统一拖放：agent / widget 完全同一路径（不特殊化到 session） ---- */}
       <AnimationProvider bounds={bounds}>
+        <WallEnterReplay />
         {agents.map((agent) => {
         // 分组视图：Agent 磁贴由 GroupedWall 统一渲染（非自由网格）
         if (groupedMode) return null;
@@ -1153,9 +1173,10 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         </button>
       ) : null}
 
-      {/* Win8 左右栏：右缘 45px 模态切换 + 左缘 240px hover 滑出分类卡片 */}
+      {/* Win8 左右栏：右缘 45px 模态切换 + 左缘 240px hover 滑出分类卡片
+          全屏设置页打开时停用左栏（其左缘热区会干扰设置页左侧导航），右栏保留 */}
       <RightCharm />
-      <LeftSidePanel />
+      {!settingsOpen ? <LeftSidePanel /> : null}
     </div>
   );
 }

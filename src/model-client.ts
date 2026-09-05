@@ -1,91 +1,116 @@
 import { executeToolCall, TOOL_SPECS } from "./tools.js";
-import { loadSettings } from "./settings-store.js";
+import { findPoolEntry, loadSettings, type ModelPoolEntry } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
 import { normalizeUsage } from "./context-stats.js";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall } from "./types.js";
 
 type FetchLike = typeof fetch;
 
 export type ModelTier = "high" | "low" | "exact";
 
-interface ModelTierConfig {
-  model: string;
-  baseUrl: string;
-  description: string;
+/** 去除末尾斜杠，空值原样返回 */
+function normalizeBaseUrl(value: string | undefined | null): string {
+  return value ? value.replace(/\/+$/u, "") : "";
 }
 
-interface ModelTiersFile {
-  tiers: Record<ModelTier, ModelTierConfig>;
-  defaultTier: ModelTier;
-  exactModelEnvVar: string;
+/** 由池条目构造运行时模型配置 */
+function resolveFromEntry(entry: ModelPoolEntry, tier: ModelTier): { apiKey: string; baseUrl: string; model: string; tier: ModelTier } {
+  return { apiKey: entry.apiKey ?? "", baseUrl: normalizeBaseUrl(entry.baseUrl), model: entry.model, tier };
 }
 
-const DEFAULT_DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-
-let cachedTiers: ModelTiersFile | null = null;
-
-async function loadModelTiers(): Promise<ModelTiersFile> {
-  if (cachedTiers) return cachedTiers;
-  const configPath = path.join(process.cwd(), "config", "model-tiers.json");
-  try {
-    const content = await readFile(configPath, "utf8");
-    cachedTiers = JSON.parse(content) as ModelTiersFile;
-    return cachedTiers!;
-  } catch {
-    // 回退到硬编码默认值
-    cachedTiers = {
-      tiers: {
-        high: { model: "qwen-max", baseUrl: DEFAULT_DASHSCOPE, description: "复杂推理、代码生成、高质量输出" },
-        low: { model: "qwen-turbo", baseUrl: DEFAULT_DASHSCOPE, description: "日报生成、简单分类、闲聊、低成本批量" },
-        exact: { model: "", baseUrl: "", description: "手动指定精确模型" },
-      },
-      defaultTier: "high",
-      exactModelEnvVar: "MOMOKA_EXACT_MODEL",
-    };
-    return cachedTiers;
-  }
-}
-
-/** 根据 tier 解析模型配置 */
+/**
+ * 根据 tier 解析模型配置。
+ *
+ * high / low / exact 本质是“模型池指针”：
+ * - high / low → settings.tierDefaults.high / low 指向的池条目；
+ * - exact      → tierDefaults.exact 指向的池条目，或显式 entryId / (model + baseUrl)；
+ * - overrides.entryId → 直接使用指定池条目（不写死任何厂商端点）。
+ */
 export async function resolveModelConfigByTier(
   tier: ModelTier = "high",
-  overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
+  overrides: { apiKey?: string; baseUrl?: string; model?: string; entryId?: string } = {},
 ): Promise<{ apiKey: string; baseUrl: string; model: string; tier: ModelTier }> {
   const settings = await loadSettings();
-  const tiers = await loadModelTiers();
 
-  const apiKey = overrides.apiKey || settings.apiKey || process.env.OPENAI_API_KEY || "";
-
-  if (tier === "exact") {
-    // exact 模式：必须显式提供 model 和 baseUrl（通过 overrides 或环境变量）
-    const exactModel = overrides.model || process.env[tiers.exactModelEnvVar] || "";
-    const exactBaseUrl = overrides.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE;
-    if (!exactModel) {
-      throw new Error(`exact 模式要求指定模型：通过参数 model 或环境变量 ${tiers.exactModelEnvVar}`);
+  // 1) 显式指定池条目（最高优先）
+  if (overrides.entryId) {
+    const entry = settings.modelPool.find((item) => item.id === overrides.entryId);
+    if (!entry) {
+      throw new Error(`模型池中不存在条目「${overrides.entryId}」：请在设置页检查模型池`);
     }
+    if (!entry.enabled) {
+      throw new Error(`模型池条目「${entry.name}」已停用，请先在设置页启用`);
+    }
+    const base = resolveFromEntry(entry, tier);
     return {
-      apiKey,
-      baseUrl: exactBaseUrl.replace(/\/+$/u, ""),
-      model: exactModel,
+      apiKey: overrides.apiKey || base.apiKey,
+      baseUrl: normalizeBaseUrl(overrides.baseUrl || base.baseUrl),
+      model: overrides.model || base.model,
       tier,
     };
   }
 
-  const tierConfig = tiers.tiers[tier] ?? tiers.tiers.high;
-  const baseUrl = (overrides.baseUrl || tierConfig.baseUrl || settings.baseUrl || process.env.OPENAI_BASE_URL || DEFAULT_DASHSCOPE).replace(/\/+$/u, "");
-  const model = overrides.model || tierConfig.model || settings.model || process.env.MOMOKA_MODEL || "qwen-plus";
+  // 2) exact：默认指针 → 否则要求显式 model（配合 baseUrl）
+  if (tier === "exact") {
+    const exactEntry = findPoolEntry(settings, settings.tierDefaults.exact);
+    if (exactEntry) {
+      const base = resolveFromEntry(exactEntry, "exact");
+      return {
+        apiKey: overrides.apiKey || base.apiKey,
+        baseUrl: normalizeBaseUrl(overrides.baseUrl || base.baseUrl),
+        model: overrides.model || base.model,
+        tier,
+      };
+    }
+    const exactModel = overrides.model || process.env.MOMOKA_EXACT_MODEL || "";
+    if (!exactModel) {
+      throw new Error("exact 模式未指定模型：请在设置页将某模型条目标为“精确”默认，或提供 model/entryId");
+    }
+    const exactBaseUrl = normalizeBaseUrl(overrides.baseUrl || process.env.OPENAI_BASE_URL);
+    if (!exactBaseUrl) {
+      throw new Error("exact 模式需要 Base URL：提供 baseUrl 参数，或在设置页配置模型池");
+    }
+    return { apiKey: overrides.apiKey || process.env.OPENAI_API_KEY || "", baseUrl: exactBaseUrl, model: exactModel, tier };
+  }
 
-  return { apiKey, baseUrl, model, tier };
+  // 3) high / low：tier 默认指针 → 池条目
+  const defaultEntryId = settings.tierDefaults[tier];
+  const entry = findPoolEntry(settings, defaultEntryId);
+  if (entry) {
+    const base = resolveFromEntry(entry, tier);
+    return {
+      apiKey: overrides.apiKey || base.apiKey,
+      baseUrl: normalizeBaseUrl(overrides.baseUrl || base.baseUrl),
+      model: overrides.model || base.model,
+      tier,
+    };
+  }
+
+  throw new Error(
+    tier === "high"
+      ? "高消费默认模型未设置：请在“设置 → 模型池”中把某个模型条目标为高消费默认"
+      : "低消费默认模型未设置：请在“设置 → 模型池”中把某个模型条目标为低消费默认",
+  );
 }
 
-/** 兼容旧接口：默认走 high 轨道 */
+/**
+ * 兼容旧接口 / 工具直连：
+ * - 传了 overrides.baseUrl/model/apiKey → 直连模式（拉模型列表等场景，不要求池配置）；
+ * - 否则默认走 high 轨道（tierDefaults.high 池条目）。
+ */
 export async function resolveModelConfig(
   overrides: { apiKey?: string; baseUrl?: string; model?: string } = {},
 ): Promise<{ apiKey: string; baseUrl: string; model: string }> {
-  const { apiKey, baseUrl, model } = await resolveModelConfigByTier("high", overrides);
-  return { apiKey, baseUrl, model };
+  if (overrides.baseUrl || overrides.model || overrides.apiKey) {
+    const baseUrl = normalizeBaseUrl(overrides.baseUrl || process.env.OPENAI_BASE_URL);
+    const model = overrides.model || process.env.MOMOKA_MODEL || "";
+    if (!baseUrl) {
+      throw new Error("Base URL 未提供（请填写 Base URL 或设置 OPENAI_BASE_URL 环境变量）");
+    }
+    return { apiKey: overrides.apiKey || process.env.OPENAI_API_KEY || "", baseUrl, model };
+  }
+  const config = await resolveModelConfigByTier("high");
+  return { apiKey: config.apiKey, baseUrl: config.baseUrl, model: config.model };
 }
 
 export interface ProviderDiagnostics {
@@ -99,7 +124,20 @@ export interface ProviderDiagnostics {
 
 /** /api/config 的 provider 诊断 */
 export async function describeEnvProviderDiagnostics(tier: ModelTier = "high"): Promise<ProviderDiagnostics> {
-  const config = await resolveModelConfigByTier(tier);
+  let config: { apiKey: string; baseUrl: string; model: string; tier: ModelTier };
+  try {
+    config = await resolveModelConfigByTier(tier);
+  } catch (error) {
+    // 未配置模型服务时不抛错，而是以诊断信息呈现
+    return {
+      provider: "未配置",
+      hasKey: false,
+      issues: [error instanceof Error ? error.message : String(error)],
+      keyPrefix: "",
+      model: "",
+      tier,
+    };
+  }
   const hasKey = Boolean(config.apiKey);
   const provider = config.baseUrl ? "OpenAI (兼容)" : "未配置";
   const issues: string[] = [];

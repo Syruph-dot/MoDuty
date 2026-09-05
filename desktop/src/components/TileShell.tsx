@@ -460,12 +460,22 @@ export default function TileShell({
   }, [isDragging, dragMode]);
 
   // 进入/退出动画样式
-  const { registerTile, getTileAnimationStyle } = useTileAnimation();
+  const { registerTile, unregisterTile, getTileAnimationStyle } = useTileAnimation();
 
-  // 注册磁贴到动画系统（首次渲染为 isNew=true）
+  // 注册磁贴到动画系统：仅挂载时标记 isNew=true（触发进入动画），卸载时立即移除。
+  // 注意不能放在渲染体里直接调用——registerTile 内部是 setState，渲染期更新会引发无限重渲染卡死。
   const isFirstRenderRef = useRef(true);
-  registerTile(id, geometry, isFirstRenderRef.current);
-  if (isFirstRenderRef.current) isFirstRenderRef.current = false;
+  useEffect(() => {
+    registerTile(id, geometry, isFirstRenderRef.current);
+    isFirstRenderRef.current = false;
+    return () => unregisterTile(id, true);
+  }, [id, registerTile, unregisterTile]);
+
+  // 几何变化（布局/拖动/尺寸）时同步到动画系统，用于视口剔除判断。
+  // registerTile 已幂等：几何内容未变时 bail out，不会触发额外渲染。
+  useEffect(() => {
+    registerTile(id, geometry, false);
+  }, [id, geometry, registerTile]);
 
   const animStyle = getTileAnimationStyle?.(id) ?? null;
 

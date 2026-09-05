@@ -1,0 +1,309 @@
+/* ============================================================
+ * SettingsScreen — Win8 风格全屏设置
+ * 磁贴墙退出（.tile-wall--settings-leaving）由 Desktop 根 class 触发；
+ * 本文件提供设置页浮入/浮出与布局样式。
+ * ============================================================ */
+
+/* 设置页容器：fixed 全屏覆盖（高于 ControlBar 与磁贴墙） */
+.settings-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  overflow: hidden;
+  background: #141b2b;
+  color: #e8edf7;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  animation: momoka-settings-in 400ms cubic-bezier(0.16, 1, 0.3, 1) 90ms backwards;
+}
+.settings-screen--exit {
+  pointer-events: none;
+  animation: momoka-settings-out 260ms cubic-bezier(0.5, 0, 0.75, 0) forwards;
+}
+
+/* 自左向右浮入：设置页从左侧推入到大平面 */
+@keyframes momoka-settings-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@keyframes momoka-settings-out {
+  to { transform: translateX(-100%); opacity: 0.85; }
+}
+
+/* 磁贴墙退出动画：进入设置时整墙磁贴快速退场（复刻 tile exiting：scale→0 + 淡出） */
+.tile-wall--settings-leaving .tile-shell {
+  animation: momoka-tile-leave 240ms cubic-bezier(0.5, 0, 0.8, 0.35) both;
+  pointer-events: none !important;
+}
+@keyframes momoka-tile-leave {
+  to { opacity: 0; transform: scale(0.15); }
+}
+
+/* 左侧分类导航（Win8 Charms / Metro 组织列） */
+.settings-nav {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.28);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 18px 10px;
+  gap: 4px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.settings-nav__brand {
+  font-size: 17px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  padding: 6px 12px 16px;
+  color: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 10px;
+  line-height: 1.25;
+}
+.settings-nav__brand small {
+  display: block;
+  font-size: 11px;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 3px;
+}
+.settings-nav__item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 14px;
+  text-align: left;
+  padding: 9px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: background 120ms ease, color 120ms ease, padding-left 120ms ease;
+  font-family: inherit;
+}
+.settings-nav__item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.95);
+}
+.settings-nav__item--active {
+  background: rgba(0, 120, 215, 0.28);
+  color: #fff;
+  padding-left: 18px;
+}
+.settings-nav__item--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: #0078d7;
+}
+.settings-nav__spacer { flex: 1; }
+.settings-nav__back {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms ease;
+  font-family: inherit;
+}
+.settings-nav__back:hover { background: rgba(255, 255, 255, 0.08); }
+
+/* 右侧内容大平面 */
+.settings-main {
+  flex: 1;
+  overflow: auto;
+  padding: 30px 38px 40px;
+}
+.settings-main__title {
+  font-size: 26px;
+  font-weight: 200;
+  letter-spacing: 0.01em;
+  margin: 0 0 4px;
+  color: rgba(255, 255, 255, 0.96);
+}
+.settings-main__sub {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0 0 22px;
+}
+
+/* Win8 设置组：分组标题 + 卡片 */
+.settings-group { margin-bottom: 26px; }
+.settings-group__title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.42);
+  margin: 0 0 8px;
+  padding-left: 2px;
+}
+.settings-card {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.settings-card + .settings-card { margin-top: 10px; }
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+.settings-row__label {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.92);
+}
+.settings-row__desc {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+.settings-row__grow { flex: 1; }
+
+/* 磁贴徽标（高/低/指定） */
+.settings-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.55);
+  background: transparent;
+  font-family: inherit;
+  transition: all 120ms ease;
+}
+.settings-badge:hover { border-color: rgba(255, 255, 255, 0.5); color: #fff; }
+.settings-badge--active {
+  border-color: #4caf50;
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.12);
+}
+
+/* 模型池条目行 */
+.settings-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.settings-entry--dim { opacity: 0.55; }
+.settings-entry__name {
+  font-weight: 600;
+  min-width: 130px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.94);
+}
+.settings-entry__meta {
+  font-size: 12px;
+  opacity: 0.72;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 编辑抽屉 */
+.settings-drawer {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  background: rgba(255, 255, 255, 0.045);
+}
+.settings-drawer__title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.settings-field { margin-bottom: 8px; display: block; }
+.settings-field__label {
+  display: block;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 3px;
+}
+.settings-field input[type="text"],
+.settings-field input[type="password"] {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: #e8edf7;
+  font-family: inherit;
+  outline: none;
+}
+.settings-field input:focus { border-color: #0078d7; }
+
+.settings-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  gap: 8px;
+}
+.settings-actions__right { display: flex; gap: 8px; }
+
+.settings-btn {
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.settings-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.settings-btn--primary {
+  background: #0078d7;
+  border-color: #0078d7;
+  color: #fff;
+}
+.settings-btn--primary:hover { background: #006cc1; }
+.settings-btn--danger { color: #e57373; }
+.settings-btn--small { font-size: 12px; padding: 3px 8px; }
+.settings-btn[disabled] { opacity: 0.5; cursor: default; }
+
+.settings-msg {
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  margin: 8px 0;
+}
+.settings-msg--error {
+  color: #ffb4b4;
+  background: rgba(229, 115, 115, 0.12);
+  border: 1px solid rgba(229, 115, 115, 0.3);
+}
+.settings-msg--ok {
+  color: #8ce99a;
+  background: rgba(76, 175, 80, 0.12);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+.settings-hint { font-size: 11.5px; opacity: 0.55; margin-top: 12px; line-height: 1.6; }
+.settings-kbd {
+  font-family: Consolas, monospace;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  padding: 0 4px;
+}

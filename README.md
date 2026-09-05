@@ -20,7 +20,7 @@ MoDuty 是一个 TypeScript-first 的智能文件助手 Agent，运行在 SophDo
 ### 环境要求
 
 - Node.js ≥ 22
-- 一个兼容 OpenAI API 的 API Key（推荐阿里云 DashScope / 通义千问）
+- 一个兼容 OpenAI API 的 API Key（任意 OpenAI 兼容服务，如 OpenCode Zen）
 
 ### 1. 克隆项目
 
@@ -41,24 +41,19 @@ npm install
 
 ```bash
 # .env
-MOMOKA_MODEL=qwen3.6-flash
+MOMOKA_MODEL=hy3-free
 ```
 
-> **API Key** 通过环境变量设置（优先顺序）：
-> - `ALIYUN_API_KEY` — 阿里云 DashScope 密钥
-> - `OPENAI_API_KEY` — 通用 OpenAI 兼容密钥
+> **API Key** 通过环境变量设置（也可在软件内“设置”页保存到 `~/.momoka/settings.json`）：
+> - `OPENAI_API_KEY` — OpenAI 兼容服务密钥
 >
-> 默认 Base URL 为 `https://dashscope.aliyuncs.com/compatible-mode/v1`（阿里云 DashScope 兼容模式）。
-> 可通过 `OPENAI_BASE_URL` 环境变量覆盖为任何 OpenAI 兼容服务。
+> Base URL 通过 `OPENAI_BASE_URL` 或软件设置页配置为任意 OpenAI 兼容服务；未配置时后端会给出明确提示，不会隐式连接任何厂商。
 
 ```bash
-# 示例：使用阿里云 DashScope
-export ALIYUN_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# 示例：使用 OpenAI
-export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-export OPENAI_BASE_URL=https://api.openai.com/v1
-```
+# 示例：使用 OpenCode Zen
+OPENAI_BASE_URL=https://opencode.ai/zen/v1
+OPENAI_API_KEY=zen_xxxxxxxxxxxxxxxxxxxxxxxxx
+``````
 
 ### 4. 构建并启动 Web 服务器
 
@@ -228,7 +223,7 @@ MoDuty/
 ├── src/
 │   ├── index.ts           # 对外 package 入口
 │   ├── agent.ts           # MomokaAgent 接口化核心
-│   ├── model-client.ts    # OpenAI/DashScope compatible 模型客户端
+│   ├── model-client.ts    # OpenAI 兼容模型客户端（端点由设置/环境变量决定）
 │   ├── http.ts            # HTTP API adapter
 │   ├── server.ts          # Node HTTP server 启动入口
 │   ├── memory.ts          # 记忆系统：输出账本、批注账本、偏好存储
@@ -301,9 +296,8 @@ MoDuty/
 
 ## 注意
 
-- 默认使用 **阿里云 DashScope 兼容模式**，一个阿里云 API Key 即可使用通义千问系列模型
-- 也支持任意 OpenAI 兼容 API（通过 `OPENAI_BASE_URL` 切换）
-- 模型名称通过 `MOMOKA_MODEL` 环境变量指定
+- 模型端点与密钥完全由用户配置（软件设置页 `~/.momoka/settings.json` 或 `OPENAI_BASE_URL`/`OPENAI_API_KEY`/`MOMOKA_MODEL` 环境变量）
+- 支持任意 OpenAI 兼容 API；未配置时后端给出明确报错，不会隐式回退到任何厂商
 - 首次使用时，确保 memory 目录（`memory/`）已创建
 
 ## 协议

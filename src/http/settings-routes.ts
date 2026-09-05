@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { saveSettings } from "../settings-store.js";
+import { loadSettings, saveSettings, type ModelPoolEntry, type TierDefaults } from "../settings-store.js";
 import { describeEnvProviderDiagnostics, fetchUpstreamModels, resolveModelConfig, UpstreamHttpError } from "../model-client.js";
 import { json, readJsonBody, send } from "./http-utils.js";
 import type { RouteContext } from "./route-context.js";
@@ -35,21 +35,43 @@ export async function handleSettingsRoutes(
     return true;
   }
   if (request.method === "GET" && url.pathname === "/api/settings") {
-    const config = await resolveModelConfig();
+    // v2：返回模型池 + tier 默认指针（本地单用户配置，apiKey 与磁盘文件一致直接可编辑）
+    const settings = await loadSettings();
     json(response, 200, {
       sandbox_enabled: ctx.agent.getSandboxEnabled(),
-      apiKey_masked: config.apiKey ? `${config.apiKey.slice(0, 8)}...` : "",
-      baseUrl: config.baseUrl,
-      model: config.model,
+      modelPool: settings.modelPool,
+      tierDefaults: settings.tierDefaults,
     });
     return true;
   }
   if (request.method === "POST" && url.pathname === "/api/settings") {
-    const body = await readJsonBody(request);
-    const patch: { apiKey?: string; baseUrl?: string; model?: string } = {};
-    if (typeof body.apiKey === "string") patch.apiKey = body.apiKey;
-    if (typeof body.baseUrl === "string") patch.baseUrl = body.baseUrl.replace(/\/+$/u, "");
-    if (typeof body.model === "string") patch.model = body.model;
+    const body = await readJsonBody(request) as {
+      modelPool?: ModelPoolEntry[];
+      tierDefaults?: Partial<TierDefaults>;
+      // v1 兼容：不再支持单组写入，收到时给出指引
+      apiKey?: string;
+      baseUrl?: string;
+      model?: string;
+    };
+    if (body.apiKey !== undefined || body.baseUrl !== undefined || body.model !== undefined) {
+      json(response, 400, {
+        error: "旧版单组设置已由“模型池”取代：请使用 { modelPool, tierDefaults } 保存，或删除 ~/.momoka/settings.json 后重新在设置页配置",
+      });
+      return true;
+    }
+    const patch: { modelPool?: ModelPoolEntry[]; tierDefaults?: Partial<TierDefaults> } = {};
+    if (Array.isArray(body.modelPool)) {
+      patch.modelPool = body.modelPool.map((item) => ({ ...item, baseUrl: item.baseUrl?.trim() ?? "", model: item.model?.trim() ?? "" }));
+    }
+    if (body.tierDefaults && typeof body.tierDefaults === "object") {
+      patch.tierDefaults = {};
+      for (const key of ["high", "low", "exact"] as const) {
+        if (key in body.tierDefaults) {
+          const value = body.tierDefaults[key];
+          patch.tierDefaults[key] = typeof value === "string" && value.trim() ? value.trim() : null;
+        }
+      }
+    }
     await saveSettings(patch);
     json(response, 200, { ok: true });
     return true;

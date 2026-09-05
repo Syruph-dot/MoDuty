@@ -1,6 +1,7 @@
 import { appWindow } from "@tauri-apps/api/window";
 
 import { useAgentsStore } from "../state/agentsStore";
+import { useDialogStore } from "../state/dialogStore";
 
 /**
  * 浮动控制条（无边框全屏窗口的窗口控制 + 磁贴墙治理入口）。
@@ -10,6 +11,7 @@ import { useAgentsStore } from "../state/agentsStore";
  */
 export default function ControlBar() {
   const inTauri = typeof window !== "undefined" && "__TAURI__" in window;
+  const settingsOpen = useDialogStore((state) => state.settingsOpen);
   const filterBarOpen = useAgentsStore((state) => state.filterBarOpen);
   const toggleFilterBar = useAgentsStore((state) => state.toggleFilterBar);
   const setArchiveOpen = useAgentsStore((state) => state.setArchiveOpen);
@@ -18,8 +20,9 @@ export default function ControlBar() {
 
   return (
     <>
-      {/* 治理栏入口（方案 A/B/D）：搜索筛选 / 归档库 / 视图切换 —— 固定在左侧（用户偏好：治理控件在左） */}
-      <div className="control-bar control-bar--governance" role="toolbar" aria-label="磁贴墙治理入口">
+      {/* 治理栏入口（方案 A/B/D）：搜索筛选 / 归档库 / 视图切换 —— 仅开始界面显示（设置页隐藏） */}
+      {!settingsOpen ? (
+        <div className="control-bar control-bar--governance" role="toolbar" aria-label="磁贴墙治理入口">
         <button
           type="button"
           className={`control-bar__btn control-bar__btn--mgmt${filterBarOpen ? " control-bar__btn--active" : ""}`}
@@ -50,8 +53,9 @@ export default function ControlBar() {
           {viewMode === "grouped" ? "▦" : "▤"}
         </button>
       </div>
+      ) : null}
 
-      {/* 窗口控制（无边框窗口）：保留右上角 */}
+      {/* 窗口控制（无边框窗口）：保留右上角（设置页同样可见，便于关闭窗口） */}
       {inTauri ? (
         <div className="control-bar control-bar--window" role="toolbar" aria-label="Window controls">
           <button

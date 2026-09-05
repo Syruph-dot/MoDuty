@@ -49,16 +49,19 @@ export interface UseTileAnimationsOptions {
   enterEasing?: (t: number) => number;
 }
 
+/** 默认进入缓动：cubic ease-out。模块级常量保证引用稳定，避免 rAF effect 因每次渲染新建函数而反复重启 */
+const DEFAULT_ENTER_EASING = (t: number) => 1 - Math.pow(1 - t, 3);
+
 export function useTileAnimations(options: UseTileAnimationsOptions) {
   const {
     bounds,
-    scanSpeed = 800,
+    scanSpeed = 4800,
     enterDuration = 600,
     exitDuration = 200,
-    scanStartDelay = 100,
+    scanStartDelay = 0,
     viewportMargin = 1.5,
     enableScanner = true,
-    enterEasing = (t) => 1 - Math.pow(1 - t, 3), // cubic ease-out
+    enterEasing = DEFAULT_ENTER_EASING,
   } = options;
 
   const [tileStates, setTileStates] = useState<Map<string, TileAnimationState>>(new Map());
@@ -91,7 +94,7 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
     );
   }, [viewportRect]);
 
-  // 注册/更新磁贴
+  // 注册/更新磁贴。幂等：几何内容无变化时返回 prev（bail out），避免无意义的渲染循环
   const registerTile = useCallback((
     id: string,
     geometry: { x: number; y: number; w: number; h: number },
@@ -99,18 +102,43 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
   ) => {
     setTileStates((prev) => {
       const existing = prev.get(id);
-      if (existing && !isNew) {
+      const sameGeo =
+        !!existing &&
+        existing.geometry.x === geometry.x &&
+        existing.geometry.y === geometry.y &&
+        existing.geometry.w === geometry.w &&
+        existing.geometry.h === geometry.h;
+
+      if (existing && sameGeo) {
+        // 完全相同 → bail out，不产生新状态引用
+        return prev;
+      }
+      if (existing && isNew && existing.phase !== "entering") {
+        // 已注册但要求重新入场（如组件重挂载）→ 重置为 entering
+        return new Map(prev).set(id, {
+          ...existing,
+          geometry,
+          phase: "entering",
+          enterProgress: 0,
+          exitProgress: 0,
+          scanTriggerTime: enableScanner ? null : performance.now(),
+        });
+      }
+      if (existing) {
         // 更新几何，保持动画状态
         return new Map(prev).set(id, { ...existing, geometry });
       }
-      // 新磁贴：进入态
+      // 新磁贴（此前不在动画系统内）：一律进入态。
+      // 注意不能依赖 isNew 区分：React StrictMode 会二次执行 mount effect——
+      // 首次 register(isNew=true) 后 cleanup 删除、二次 register(isNew=false) 时已无 existing，
+      // 若按 isNew 建 idle 将导致磁贴永远不播进入动画（页面一直无入场效果）。
       return new Map(prev).set(id, {
         id,
         geometry,
-        phase: isNew ? "entering" : "idle",
-        enterProgress: isNew ? 0 : 1,
+        phase: "entering",
+        enterProgress: 0,
         exitProgress: 0,
-        scanTriggerTime: isNew && enableScanner ? null : performance.now(),
+        scanTriggerTime: enableScanner ? null : performance.now(),
       });
     });
   }, [enableScanner]);
@@ -151,6 +179,10 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
         scanLineRef.current = Infinity; // 无扫描器 = 立即触发所有
       }
 
+      // 兜底：扫描线越过扩展视口右边界后，仍未触发的 entering 磁贴全部强制开始，
+      // 防止布局/bounds 抖动或 effect 重启导致磁贴永远停在 opacity:0
+      const scanFinished = !!viewportRect && scanLineRef.current >= viewportRect.right;
+
       setTileStates((prev) => {
         const next = new Map(prev);
         let hasChanges = false;
@@ -158,7 +190,7 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
         for (const [id, state] of prev) {
           const { phase, scanTriggerTime, geometry } = state;
 
-          // 视口检查
+          // 视口检查（exiting 分支用于直接移除视口外的磁贴）
           const inViewport = isInExtendedViewport(geometry);
 
           if (phase === "entering") {
@@ -166,7 +198,7 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
             let shouldStart = false;
             if (enableScanner) {
               const tileRight = geometry.x + geometry.w;
-              if (scanLineRef.current >= tileRight && scanTriggerTime === null) {
+              if (scanTriggerTime === null && (scanLineRef.current >= tileRight || scanFinished)) {
                 shouldStart = true;
               }
             } else {
@@ -185,10 +217,6 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
                 next.set(id, { ...state, enterProgress: enterEasing(elapsed) });
               }
               hasChanges = true;
-            } else if (!enableScanner) {
-              // 无扫描器，直接开始
-              next.set(id, { ...state, scanTriggerTime: now, enterProgress: 0 });
-              hasChanges = true;
             }
           } else if (phase === "exiting") {
             if (!inViewport) {
@@ -204,7 +232,6 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
               hasChanges = true;
             }
           } else if (phase === "idle" || phase === "entered") {
-            // 更新几何信息
             // 几何变化由外部 registerTile 处理
           }
 
@@ -252,8 +279,8 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
         const p = enterProgress;
         const scale = 0 + p * 1; // 0 → 1
         const opacity = 0 + p * 1; // 0 → 1
-        const tx = -300 * (1 - p); // -300 → 0
-        const ty = 40 * (1 - p);   // 40 → 0
+        const tx = -900 * (1 - p); // -900 → 0
+        const ty = 20 * (1 - p);   // 20 → 0
         return {
           transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
           opacity,
@@ -317,11 +344,40 @@ export function useTileAnimations(options: UseTileAnimationsOptions) {
     });
   }, [enableScanner]);
 
+  /**
+   * 整墙重新进入：把现有磁贴（entered/idle）重置为 entering，并从左端重启扫描线。
+   * 用于从全屏设置返回初始页时重播“向右滑入放大淡入”入场。
+   */
+  const replayEnter = useCallback(() => {
+    scanLineRef.current = -Infinity;
+    scannerStartTimeRef.current = enableScanner ? performance.now() + scanStartDelay : null;
+    setTileStates((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [id, state] of prev) {
+        if (state.phase === "exiting" || state.phase === "entering") {
+          next.set(id, state);
+          continue;
+        }
+        next.set(id, {
+          ...state,
+          phase: "entering",
+          enterProgress: 0,
+          exitProgress: 0,
+          scanTriggerTime: enableScanner ? null : performance.now(),
+        });
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [enableScanner, scanStartDelay]);
+
   return {
     tileStates,
     registerTile,
     unregisterTile,
     registerTilesBatch,
+    replayEnter,
     getTileAnimationStyle,
     isInExtendedViewport,
     scanLineX: scanLineRef.current,

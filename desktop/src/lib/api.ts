@@ -140,14 +140,28 @@ export async function renameAgent(id: string, name: string): Promise<Agent> {
   return data.agent;
 }
 
-export interface MomokaSettingsView {
-  apiKey_masked: string;
+export interface ModelPoolEntryView {
+  id: string;
+  name: string;
   baseUrl: string;
+  apiKey?: string;
   model: string;
-  sandbox_enabled: boolean;
+  enabled: boolean;
 }
 
-/** 读取当前设置（apiKey 仅返回前 8 位掩码） */
+export interface TierDefaultsView {
+  high: string | null;
+  low: string | null;
+  exact: string | null;
+}
+
+export interface MomokaSettingsView {
+  sandbox_enabled: boolean;
+  modelPool: ModelPoolEntryView[];
+  tierDefaults: TierDefaultsView;
+}
+
+/** 读取当前设置（v2：模型池 + 默认指针） */
 export async function fetchSettings(): Promise<MomokaSettingsView> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
@@ -157,11 +171,10 @@ export async function fetchSettings(): Promise<MomokaSettingsView> {
   return data;
 }
 
-/** 保存设置（空字段表示不修改，例如留空 apiKey 则不覆盖已有密钥） */
+/** 保存设置（v2：整表保存模型池 / 默认指针） */
 export async function updateSettings(input: {
-  apiKey?: string;
-  baseUrl?: string;
-  model?: string;
+  modelPool?: ModelPoolEntryView[];
+  tierDefaults?: Partial<TierDefaultsView>;
 }): Promise<void> {
   const base = await awaitApiBase();
   await jsonOrThrow(
@@ -172,6 +185,20 @@ export async function updateSettings(input: {
     }),
     "POST /api/settings",
   );
+}
+
+/** 切换沙箱模式（运行时工具执行约束） */
+export async function updateSandbox(enabled: boolean): Promise<boolean> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/settings/sandbox`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+    "POST /api/settings/sandbox",
+  )) as { sandbox_enabled: boolean };
+  return data.sandbox_enabled;
 }
 
 /** 按当前 Base URL + Key 从官方拉取模型列表；overrides 用当前表单未保存的新值覆盖（走后端代理，避免 webview CORS） */

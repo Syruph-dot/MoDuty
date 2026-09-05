@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    {
+      "id": "ses_30620c1873eb",
+      "name": "值日生",
+      "goal": "值日生",
+      "type": "session",
+      "updatedAt": "2026-09-05T04:11:52.175Z"
+    },
+    {
+      "id": "ses_417ee3855987",
+      "name": "新建Agent444",
+      "goal": "新建Agent444",
+      "type": "session",
+      "updatedAt": "2026-09-05T04:29:46.197Z"
+    }
+  ],
+  "links": []
+}

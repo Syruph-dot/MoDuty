@@ -1,0 +1,16 @@
+{
+  "tiers": {
+    "high": {
+      "description": "复杂推理、代码生成、高质量输出",
+      "model": "qwen-max",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    },
+    "low": {
+      "description": "日报生成、简单分类、闲聊、低成本批量",
+      "model": "qwen-turbo",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  },
+  "defaultTier": "high",
+  "exactModelEnvVar": "MOMOKA_EXACT_MODEL"
+}

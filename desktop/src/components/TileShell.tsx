@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useTileAnimation } from "./desktop/AnimationProvider";
 
 import {
   useDrag,
@@ -458,6 +459,10 @@ export default function TileShell({
     return () => window.removeEventListener("momoka:wall-scroll", onWallScroll);
   }, [isDragging, dragMode]);
 
+  // 进入/退出动画样式
+  const { getTileAnimationStyle } = useTileAnimation();
+  const animStyle = getTileAnimationStyle?.(id) ?? null;
+
   const onTileContextMenu = (event: React.MouseEvent) => {
     // 展开态（打开的对话窗口）不弹卡片菜单，避免与窗口内交互冲突
     if (mode === "expanded") return;
@@ -523,7 +528,7 @@ export default function TileShell({
   const visualH = geometry.h + dragOffset.h;
 
   const animMs = displacedPreview ? DISPLACE_DURATION_MS : ANIM_DURATION_MS;
-  const style: CSSProperties = {
+  const baseStyle: CSSProperties = {
     position: "absolute",
     left: visualX,
     top: visualY,
@@ -532,6 +537,9 @@ export default function TileShell({
     zIndex: isDragging ? 1000 : zIndex ?? 1,
     transition: isDragging ? "none" : ["left", "top", "width", "height"].map((prop) => `${prop} ${animMs}ms ${ANIM_EASE}`).join(", "),
   };
+
+  // 合并进入/退出动画样式
+  const style: CSSProperties = animStyle ? { ...baseStyle, ...animStyle } : baseStyle;
 
   // 3D 翻转容器：rotateY 0（第一态）↔ 180（第二态），与位置/尺寸共用同一条减速曲线
   const flipStyle: CSSProperties = {

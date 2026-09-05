@@ -9,6 +9,7 @@ import GroupedWall from "./GroupedWall";
 import LeftSidePanel from "./LeftSidePanel";
 import RightCharm from "./RightCharm";
 import TileShell from "./TileShell";
+import { AnimationProvider } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
 import { computeBands, UNGROUPED_BAND_ID, SYSTEM_BAND_ID, type Band } from "../lib/bandLayout";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
@@ -943,7 +944,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         : null}
 
       {/* ---- 广义 Tile 统一拖放：agent / widget 完全同一路径（不特殊化到 session） ---- */}
-      {agents.map((agent) => {
+      <AnimationProvider bounds={bounds}>
+        {agents.map((agent) => {
         // 分组视图：Agent 磁贴由 GroupedWall 统一渲染（非自由网格）
         if (groupedMode) return null;
         const isOpen = openAgentIds.includes(agent.id);
@@ -1136,6 +1138,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           </TileShell>
         );
       })}
+      </AnimationProvider>
 
       {/* 拖动中的量化灰色提示框（Win8 ghost） */}
       <GhostPreview />

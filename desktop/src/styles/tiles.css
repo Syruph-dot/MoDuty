@@ -435,12 +435,32 @@
   animation: dot-pulse 1.4s ease-in-out infinite;
 }
 
+.state-dot--requiring {
+  background: #ff8f4f;
+  animation: dot-pulse 0.7s ease-in-out infinite;
+}
+
 .state-dot--completed {
   background: #35c07e;
 }
 
 .state-dot--error {
   background: #e85a5a;
+}
+
+/* 磁贴“有待回答提问”角标 */
+.agent-tile__ask-badge {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ff8f4f;
+  color: #1c1f27;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  flex: none;
+  animation: dot-pulse 0.7s ease-in-out infinite;
 }
 
 .agent-tile__badge {

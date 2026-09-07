@@ -1,4 +1,4 @@
-import type { Agent, BrowserInfo } from "../types";
+import type { Agent, BrowserInfo, QuestionSetView } from "../types";
 
 /**
  * API base 解析（异步）：
@@ -94,6 +94,33 @@ export async function createAgent(input: { name: string; workspace_dir?: string;
 export async function deleteAgent(id: string): Promise<void> {
   const base = await awaitApiBase();
   await jsonOrThrow(await fetch(`${base}/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }), "DELETE /api/agents/:id");
+}
+
+/** 桌面问答：拉取某 Agent 的待答问题集 */
+export async function fetchAgentQuestions(agentId: string): Promise<QuestionSetView[]> {
+  const base = await awaitApiBase();
+  const data = (await jsonOrThrow(
+    await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/questions`),
+    "GET /api/agents/:id/questions",
+  )) as { questions: QuestionSetView[] };
+  return data.questions ?? [];
+}
+
+/** 桌面问答：提交答案（answers 按问题下标逐题作答；choiceIndex=-1 表示自定义文本） */
+export async function submitQuestionAnswers(
+  agentId: string,
+  setId: string,
+  answers: Array<{ questionIndex: number; choiceIndex: number; customText?: string }>,
+): Promise<void> {
+  const base = await awaitApiBase();
+  await jsonOrThrow(
+    await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/questions/${encodeURIComponent(setId)}/answer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ answers }),
+    }),
+    "POST /api/agents/:id/questions/:qid/answer",
+  );
 }
 
 /**

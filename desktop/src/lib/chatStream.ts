@@ -5,6 +5,7 @@ export interface ChatStreamHandlers {
   onToolStart(name: string, args: string): void;
   onToolResult(name: string, result: string): void;
   onApprovalRequested(name: string, args: string): void;
+  onQuestionRequested?(name: string, args: string): void;
   onDone(): void;
   onError(message: string): void;
 }
@@ -60,6 +61,9 @@ export async function runChatStream(
             break;
           case "approval_requested":
             handlers.onApprovalRequested(String(frame.name ?? ""), String(frame.args ?? "{}"));
+            break;
+          case "question_requested":
+            handlers.onQuestionRequested?.(String(frame.name ?? ""), String(frame.args ?? "{}"));
             break;
           case "done":
             handlers.onDone();

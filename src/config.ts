@@ -25,26 +25,91 @@ export function defaultPaths(projectRoot: string) {
   const dataRoot = resolveDataRoot(projectRoot);
   return {
     projectRoot,
-    promptsDir: path.join(projectRoot, "prompts"),
-    skillsDir: path.join(projectRoot, "skills"),
-    memoryDir: path.join(projectRoot, "memory"),
+    promptsDir: resolvePromptsDir(projectRoot),
+    skillsDir: resolveSkillsDir(projectRoot),
+    memoryDir: path.join(projectRoot, "memory"), // 兼容：旧位置仍用于迁移读取
     dataDir: dataRoot,
-    staticDir: path.join(projectRoot, "static"),
-    logsDir: path.join(projectRoot, "logs"),
+    workspacesDir: resolveWorkspacesRoot(dataRoot),
+    staticDir: resolveStaticDir(projectRoot),
+    logsDir: resolveLogsDir(dataRoot),
   };
 }
 
 /**
  * 解析运行时数据根目录。优先级：
  * 1) MOMOKA_DATA_DIR 环境变量
- * 2) %USERPROFILE%/.momoka/data (Windows) / ~/.momoka/data (Unix)
- * 3) 兼容旧位置 projectRoot/memory
+ * 2) MOMOKA_DATA_ROOT 环境变量（别名，兼容性）
+ * 3) %USERPROFILE%/.momoka/data (Windows) / ~/.momoka/data (Unix)
+ * 4) 兼容旧位置 projectRoot/memory
  */
 export function resolveDataRoot(projectRoot: string): string {
   if (process.env.MOMOKA_DATA_DIR) {
     return path.resolve(process.env.MOMOKA_DATA_DIR);
   }
+  if (process.env.MOMOKA_DATA_ROOT) {
+    return path.resolve(process.env.MOMOKA_DATA_ROOT);
+  }
   return path.join(os.homedir(), ".momoka", "data");
+}
+
+/**
+ * 解析工作区根目录。优先级：
+ * 1) MOMOKA_WORKSPACES 环境变量
+ * 2) dataRoot/workspaces
+ */
+export function resolveWorkspacesRoot(dataRoot: string): string {
+  if (process.env.MOMOKA_WORKSPACES) {
+    return path.resolve(process.env.MOMOKA_WORKSPACES);
+  }
+  return path.join(dataRoot, "workspaces");
+}
+
+/**
+ * 解析提示词目录。优先级：
+ * 1) MOMOKA_PROMPTS_DIR 环境变量
+ * 2) projectRoot/prompts
+ */
+export function resolvePromptsDir(projectRoot: string): string {
+  if (process.env.MOMOKA_PROMPTS_DIR) {
+    return path.resolve(process.env.MOMOKA_PROMPTS_DIR);
+  }
+  return path.join(projectRoot, "prompts");
+}
+
+/**
+ * 解析技能目录。优先级：
+ * 1) MOMOKA_SKILLS_DIR 环境变量
+ * 2) projectRoot/skills
+ */
+export function resolveSkillsDir(projectRoot: string): string {
+  if (process.env.MOMOKA_SKILLS_DIR) {
+    return path.resolve(process.env.MOMOKA_SKILLS_DIR);
+  }
+  return path.join(projectRoot, "skills");
+}
+
+/**
+ * 解析静态资源目录。优先级：
+ * 1) MOMOKA_STATIC_DIR 环境变量
+ * 2) projectRoot/static
+ */
+export function resolveStaticDir(projectRoot: string): string {
+  if (process.env.MOMOKA_STATIC_DIR) {
+    return path.resolve(process.env.MOMOKA_STATIC_DIR);
+  }
+  return path.join(projectRoot, "static");
+}
+
+/**
+ * 解析日志目录。优先级：
+ * 1) MOMOKA_LOGS_DIR 环境变量
+ * 2) dataRoot/logs
+ */
+export function resolveLogsDir(dataRoot: string): string {
+  if (process.env.MOMOKA_LOGS_DIR) {
+    return path.resolve(process.env.MOMOKA_LOGS_DIR);
+  }
+  return path.join(dataRoot, "logs");
 }
 
 export async function loadLocalEnv(projectRoot: string = resolveProjectRoot()): Promise<boolean> {

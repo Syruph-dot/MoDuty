@@ -8,6 +8,7 @@ import { DispatchLedger, type DispatchRecord } from "./dispatch-ledger.js";
 import { QuestionStore, type QuestionItem, type QuestionAnswer, type QuestionSet } from "./question-store.js";
 import { atomicWriteJson, withFileLock } from "./write-queue.js";
 import type { AgentKind, AgentPhase, AgentRecord, AgentState, ContextStats } from "./types.js";
+import { resolveWorkspacesRoot } from "./config.js";
 
 export interface CreateAgentInput {
   name: string;
@@ -101,7 +102,9 @@ export const DISPATCHER_SYSTEM_PROMPT =
 - run_momoka_cli 只允许 MOMOKA 文档化的子命令；不要用它或其它工具触碰无关文件与服务端配置。`;
 
 /** 未提供 workspace 时的默认根目录：每 Agent 一个以 agentId 命名的子目录。 */
-const DEFAULT_WORKSPACE_ROOT = path.join(os.homedir(), ".momoka", "workspaces");
+function defaultWorkspaceRoot(dataDir: string): string {
+  return resolveWorkspacesRoot(dataDir);
+}
 
 function shortId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -118,6 +121,7 @@ export class AgentRegistry {
   readonly dispatches: DispatchLedger;
   /** 问答存储（Agent → 桌面用户的结构化提问） */
   readonly questions: QuestionStore;
+  private readonly dataDir: string;
 
   constructor(
     private readonly memoryDir: string,
@@ -126,9 +130,9 @@ export class AgentRegistry {
     dataDir?: string,
   ) {
     this.registryFile = registryFile ?? path.join(memoryDir, ".agents", "agents.json");
-    const dataRoot = dataDir ?? memoryDir;
-    this.dispatches = new DispatchLedger(dataRoot);
-    this.questions = new QuestionStore(dataRoot);
+    this.dataDir = dataDir ?? memoryDir;
+    this.dispatches = new DispatchLedger(this.dataDir);
+    this.questions = new QuestionStore(this.dataDir);
   }
 
   /** 按会话反查 Agent（工具执行上下文只有 sessionId） */
@@ -189,7 +193,7 @@ export class AgentRegistry {
     const id = shortId("agt");
     // role（系统提示词）与 workspace 不再由调用方强制提供：空则补默认。
     const role = input.role.trim() || DEFAULT_SYSTEM_PROMPT;
-    const workspaceDir = input.workspaceDir.trim() || path.join(DEFAULT_WORKSPACE_ROOT, id);
+    const workspaceDir = input.workspaceDir.trim() || path.join(defaultWorkspaceRoot(this.dataDir), id);
 
     // 1:1 绑定：自动创建 session（name → goal, workspaceDir → folderPath）
     await mkdir(workspaceDir, { recursive: true });

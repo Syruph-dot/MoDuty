@@ -5,7 +5,7 @@ import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
-import { checkHasPendingApproval, orchestrationOf } from "./agent-orchestration.js";
+import { checkHasPendingApproval, checkHasPendingQuestion, driveQuestionAnswered, orchestrationOf } from "./agent-orchestration.js";
 import { abortChatStreamByAgent, registerChatStream, unregisterChatStream } from "./chat-streams.js";
 import { agentToSnake, chatToSnake } from "./serialization.js";
 
@@ -80,6 +80,48 @@ export async function handleAgentRoutes(
     const runtime = ensureAgents(ctx);
     const record = await requireAgent(runtime.registry, decodeURIComponent(agentMessagesMatch[1] ?? ""));
     json(response, 200, { messages: await agent.sessionManager.getMessages(record.sessionId) });
+    return true;
+  }
+
+  // 桌面问答：拉取某 Agent 的待答问题集（RequiringInput 状态时磁贴/窗口调用）
+  const agentQuestionsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/questions$/);
+  if (agentQuestionsMatch && request.method === "GET") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentQuestionsMatch[1] ?? ""));
+    json(response, 200, { questions: await runtime.registry.pendingQuestionsForAgent(record.id) });
+    return true;
+  }
+
+  // 提交答案：把答案以 user 消息写入会话（resume 历史完整）→ 驱动状态机脱离 requiring_input → 续跑
+  const questionAnswerMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/questions\/([^/]+)\/answer$/);
+  if (questionAnswerMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(questionAnswerMatch[1] ?? ""));
+    const setId = decodeURIComponent(questionAnswerMatch[2] ?? "");
+    const body = await readJsonBody(request) as { answers?: Array<{ questionIndex?: unknown; choiceIndex?: unknown; customText?: unknown }> };
+    const raw = Array.isArray(body.answers) ? body.answers : [];
+    const answers = raw.map((item) => ({
+      questionIndex: Number(item.questionIndex ?? 0),
+      choiceIndex: Number(item.choiceIndex ?? -1),
+      ...(typeof item.customText === "string" ? { customText: item.customText } : {}),
+    }));
+    const set = await runtime.registry.answerQuestionSet(setId, answers);
+    if (!set) throw new MomokaHttpError(409, "Question set not found or already answered");
+    // 把问答摘要写入会话（user 角色）：后续 resume chat 会读到这些历史
+    const lines = set.questions.map((question, index) => {
+      const answer = answers.find((item) => item.questionIndex === index);
+      const chosen = answer && answer.choiceIndex >= 0 && answer.choiceIndex < question.options.length
+        ? question.options[answer.choiceIndex]
+        : answer?.customText?.trim() ?? "（未作答）";
+      return `Q${index + 1}: ${question.prompt}\n  答案: ${chosen}`;
+    });
+    await agent.sessionManager.addMessage(record.sessionId, "user", `用户对提问的回答：\n${lines.join("\n")}`);
+    // Agent 联动：脱离 requiring_input → 异步续跑（不阻塞答案响应）
+    const deps = orchestrationOf(ctx);
+    void driveQuestionAnswered(deps, record).catch((error: unknown) => {
+      console.error("[question] 答案后驱失败:", error);
+    });
+    json(response, 200, { success: true, question: set });
     return true;
   }
 
@@ -160,7 +202,7 @@ async function streamAgentChat(
   record: AgentRecord,
   message: string,
 ): Promise<void> {
-  const { agent, machine, workspaces } = orchestrationOf(ctx);
+  const { agent, machine, workspaces, registry } = orchestrationOf(ctx);
   const startedAt = Date.now(); // 运行耗时：无论正常结束/异常/取消都记一次
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -186,7 +228,8 @@ async function streamAgentChat(
       signal: controller.signal,
     });
     const hasPendingApproval = await checkHasPendingApproval(workspaces, record);
-    if (!hasPendingApproval) {
+    const hasPendingQuestion = await checkHasPendingQuestion(registry, record);
+    if (!hasPendingApproval && !hasPendingQuestion) {
       machine.complete(record.id);
     }
     sseData(response, { type: "done", ...chatToSnake(result) });

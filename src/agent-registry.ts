@@ -5,6 +5,7 @@ import path from "node:path";
 import { SessionManager } from "./session-manager.js";
 import { modelContextWindow } from "./context-stats.js";
 import { DispatchLedger, type DispatchRecord } from "./dispatch-ledger.js";
+import { QuestionStore, type QuestionItem, type QuestionAnswer, type QuestionSet } from "./question-store.js";
 import { atomicWriteJson, withFileLock } from "./write-queue.js";
 import type { AgentKind, AgentPhase, AgentRecord, AgentState, ContextStats } from "./types.js";
 
@@ -115,6 +116,8 @@ export class AgentRegistry {
   private readonly registryFile: string;
   /** 派发台账（值日生 → 执行者）；memoryDir 与 agents.json 同级 */
   readonly dispatches: DispatchLedger;
+  /** 问答存储（Agent → 桌面用户的结构化提问） */
+  readonly questions: QuestionStore;
 
   constructor(
     private readonly memoryDir: string,
@@ -123,6 +126,7 @@ export class AgentRegistry {
   ) {
     this.registryFile = registryFile ?? path.join(memoryDir, ".agents", "agents.json");
     this.dispatches = new DispatchLedger(memoryDir);
+    this.questions = new QuestionStore(memoryDir);
   }
 
   /** 按会话反查 Agent（工具执行上下文只有 sessionId） */
@@ -153,6 +157,19 @@ export class AgentRegistry {
 
   dropDispatchesForTarget(targetAgentId: string): Promise<void> {
     return this.dispatches.dropByTarget(targetAgentId);
+  }
+
+  /** 问答薄封装 */
+  createQuestionSet(input: { agentId: string; sessionId: string; questions: QuestionItem[] }): Promise<QuestionSet> {
+    return this.questions.create(input);
+  }
+
+  pendingQuestionsForAgent(agentId: string): Promise<QuestionSet[]> {
+    return this.questions.pendingForAgent(agentId);
+  }
+
+  answerQuestionSet(setId: string, answers: QuestionAnswer[]): Promise<QuestionSet | null> {
+    return this.questions.answer(setId, answers);
   }
 
   async listAgents(): Promise<AgentRecord[]> {
@@ -216,6 +233,8 @@ export class AgentRegistry {
       await this.sessions.deleteSession(target.sessionId).catch(() => undefined);
       // 清理该执行者的在途派发跟踪（不阻塞删除）
       void this.dispatches.dropByTarget(agentId).catch(() => undefined);
+      // 清理该 Agent 的待答问题
+      void this.questions.dropByAgent(agentId).catch(() => undefined);
       return true;
     });
   }

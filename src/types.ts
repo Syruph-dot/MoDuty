@@ -44,10 +44,11 @@ export type StreamEvent =
   | { type: "token"; text: string }
   | { type: "tool_start"; name: string; args: string }
   | { type: "tool_result"; name: string; result: string }
-  | { type: "approval_requested"; name: string; args: string; result: string };
+  | { type: "approval_requested"; name: string; args: string; result: string }
+  | { type: "question_requested"; name: string; args: string; result: string };
 
 /** Agent 生命周期状态（agent-registry / agent-state） */
-export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
+export type AgentState = "idle" | "running" | "waiting_approval" | "requiring_input" | "completed" | "error";
 
 /** Agent 角色类别：缺省为普通执行者；dispatcher 为值日生（调度者，可自动记账/接收投递） */
 export type AgentKind = "dispatcher" | "worker";

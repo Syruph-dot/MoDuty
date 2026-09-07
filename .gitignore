@@ -29,6 +29,7 @@ memory/*.md
 
 memory/.agents/
 memory/.dispatches.json
+memory/.questions.json
 
 
 # Runtime logs & build outputs (local only)

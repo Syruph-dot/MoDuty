@@ -93,8 +93,8 @@ export class AgentStateMachine {
         if (current.state === "idle" || current.state === "completed" || current.state === "error") {
           next = "running";
         }
-        if (current.state === "waiting_approval") {
-          return null; // 审批中忽略模型事件
+        if (current.state === "waiting_approval" || current.state === "requiring_input") {
+          return null; // 等待人工决策/输入中忽略模型事件
         }
         nextPhase = phaseForTool(event.name);
         break;
@@ -105,6 +105,10 @@ export class AgentStateMachine {
         break;
       case "approval_requested":
         next = "waiting_approval";
+        nextPhase = undefined;
+        break;
+      case "question_requested":
+        next = "requiring_input";
         nextPhase = undefined;
         break;
     }
@@ -150,9 +154,17 @@ export class AgentStateMachine {
     return this.transition(agentId, decision === "approved" ? "running" : "idle", undefined);
   }
 
+  /** 用户已提交问题答案：requiring_input → running（随后由 orchestration 续跑） */
+  answerReceived(agentId: string): AgentStateEvent | null {
+    if (this.getState(agentId)?.state !== "requiring_input") {
+      return null;
+    }
+    return this.transition(agentId, "running", undefined);
+  }
+
   /**
    * 显式复位（窗口"重试"第一步）：非运行态的人工清理入口。
-   * error / waiting_approval / completed → idle；running 与 idle 不动（running 正在执行不可复位）。
+   * error / waiting_approval / requiring_input / completed → idle；running 与 idle 不动（running 正在执行不可复位）。
    */
   reset(agentId: string): AgentStateEvent | null {
     const current = this.getState(agentId);

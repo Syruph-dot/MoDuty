@@ -213,6 +213,7 @@ interface ModelRoundResult {
 }
 
 const APPROVAL_PATTERN = /pending approval/i;
+const QUESTION_PATTERN = /pending question/i;
 
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const tier = options.tier ?? "high";
@@ -308,6 +309,9 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           context.onEvent?.({ type: "tool_result", name: tool, result });
           if (APPROVAL_PATTERN.test(result)) {
             context.onEvent?.({ type: "approval_requested", name: tool, args, result });
+          }
+          if (QUESTION_PATTERN.test(result)) {
+            context.onEvent?.({ type: "question_requested", name: tool, args, result });
           }
           toolCalls.push({ tool, args, result: result.slice(0, 500) });
           messages.push({

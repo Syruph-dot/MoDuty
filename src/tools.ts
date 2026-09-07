@@ -368,6 +368,12 @@ const TOOL_ARGUMENT_SCHEMAS = {
   read_session: z.object({ id: z.string().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() }).strict(),
   search_content: z.object({ id: z.string().min(1).optional(), query: z.string().min(1) }).strict(),
   search_files: z.object({ query: z.string().min(1), scope: z.string().optional() }).strict(),
+  ask_question: z.object({
+    questions: z.array(z.object({
+      prompt: z.string().min(1),
+      options: z.array(z.string()).min(1).max(8),
+    })).min(1).max(6),
+  }).strict(),
 };
 
 export const TOOL_SPECS = [
@@ -507,6 +513,35 @@ export const TOOL_SPECS = [
           max_results: { type: "number", minimum: 1, maximum: 20, default: 10, description: "最大返回结果数" },
         },
         required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_question",
+      description: "向桌面用户发起结构化提问（选择题）。参数 questions 为问题数组（一次最多 6 题）：每题包含 prompt（题干）与 options（选项，2-8 个）。桌面会把问题渲染成单选卡片，最后一项固定为“自定义”输入，用户可逐题作答后提交；你的本次工具调用会返回 pending 等待，用户提交答案后系统会自动把答案写回会话并让你继续。用于需要用户明确选择/确认的场景（如复用哪个会话、选择方案）。不要用它问可以自行检索/推断的问题。",
+      parameters: {
+        type: "object",
+        properties: {
+          questions: {
+            type: "array",
+            minItems: 1,
+            maxItems: 6,
+            description: "问题列表：prompt 题干 + options 选项",
+            items: {
+              type: "object",
+              properties: {
+                prompt: { type: "string", minLength: 1, description: "题干" },
+                options: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" }, description: "候选项；桌面会自动附加“自定义”输入项作为最后一个选项" },
+              },
+              required: ["prompt", "options"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["questions"],
         additionalProperties: false,
       },
     },
@@ -883,6 +918,30 @@ export async function executeToolCall(
     } catch (error) {
       return formatToolError(error, "文件检索失败");
     }
+  }
+  if (name === "ask_question") {
+    if (!agentRegistry) return "错误：提问工具不可用（缺少 agentRegistry）。";
+    const sessionId = approvalOrigin?.sessionId;
+    const questions = (Array.isArray(args.questions) ? args.questions : []) as Array<{ prompt?: unknown; options?: unknown }>;
+    const clean = questions
+      .map((item) => ({
+        prompt: String(item.prompt ?? "").trim(),
+        options: Array.isArray(item.options) ? item.options.map((option) => String(option).trim()).filter(Boolean) : [],
+      }))
+      .filter((item) => item.prompt && item.options.length >= 1);
+    if (clean.length === 0) return "错误：ask_question 需要至少一个含题干与选项的问题。";
+    if (!sessionId) {
+      // 无会话上下文（如审批后手动触发）无法定位归属 Agent——把问题作为不可交互提示返回
+      return `错误：ask_question 需要会话上下文（当前没有 sessionId）。请改用普通文本向用户提问。`;
+    }
+    const agent = await agentRegistry.agentBySessionId(sessionId);
+    if (!agent) return "错误：无法定位当前会话对应的 Agent，无法发起桌面提问。";
+    const set = await agentRegistry.createQuestionSet({
+      agentId: agent.id,
+      sessionId: agent.sessionId,
+      questions: clean,
+    });
+    return `桌面用户问题已发出（${clean.length} 题，等待回答）。用户提交后系统会把答案写回会话并让你继续（pending question: ${set.id}）。请停止当前工具循环，等待用户回答。`;
   }
   if (name === "run_momoka_cli") {
     const cliArgs = Array.isArray(args.args) ? args.args.map(String) : [];

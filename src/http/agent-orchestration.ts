@@ -91,6 +91,12 @@ export async function checkHasPendingApproval(workspaces: WorkspaceManager, reco
   return await workspaces.hasPendingApproval(record.workspaceDir);
 }
 
+/** 检查某 Agent 是否有未答的桌面提问（requiring_input 时不 complete，保持等待用户作答） */
+export async function checkHasPendingQuestion(registry: AgentRegistry, record: AgentRecord): Promise<boolean> {
+  const pending = await registry.pendingQuestionsForAgent(record.id);
+  return pending.length > 0;
+}
+
 /**
  * 审批通过后续跑：把工具结果交给模型继续推理（从断点继续，不是从头跑）。
  * 异步执行，不阻塞审批响应；失败时状态机转 error。
@@ -127,5 +133,27 @@ export async function driveApprovalDecision(
   deps.machine.decide(bound.id, decision);
   if (decision === "approved") {
     void resumeAgentAfterApproval(deps, bound);
+  }
+}
+
+/**
+ * 桌面用户提交问题答案后的 Agent 联动：
+ * 脱离 requiring_input → 把“用户已回答 + 答案摘要”作为新一轮 chat 的 user 消息续跑。
+ * 答案内容已由路由层以 user 消息写入会话（保证 resume 历史完整），此处仅驱动状态机 + 续跑。
+ */
+export async function driveQuestionAnswered(deps: OrchestrationDeps, record: AgentRecord): Promise<void> {
+  try {
+    deps.machine.answerReceived(record.id);
+    await deps.agent.chat({
+      message: "桌面用户已回答你刚才的提问，答案已记录在上面的消息中。请根据用户的回答继续完成任务。",
+      sessionId: record.sessionId,
+      onEvent: (event) => {
+        deps.machine.consumeEvent(record.id, event);
+      },
+    });
+    deps.machine.complete(record.id);
+  } catch (error) {
+    console.error("[question] 答案后续跑失败:", error);
+    deps.machine.fail(record.id);
   }
 }

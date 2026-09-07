@@ -71,6 +71,7 @@ export const STATE_LABELS: Record<AgentState, string> = {
   idle: "空闲",
   running: "运行中",
   waiting_approval: "等待审批",
+  requiring_input: "等待回答",
   completed: "已完成",
   error: "错误",
 };

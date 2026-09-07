@@ -9,6 +9,7 @@ export const STATE_LABELS: Record<AgentState, string> = {
   idle: "idle",
   running: "running",
   waiting_approval: "waiting approval",
+  requiring_input: "awaiting input",
   completed: "completed",
   error: "error",
 };
@@ -17,6 +18,7 @@ export const STATE_DOT_CLASS: Record<AgentState, string> = {
   idle: "state-dot--idle",
   running: "state-dot--running",
   waiting_approval: "state-dot--waiting",
+  requiring_input: "state-dot--requiring",
   completed: "state-dot--completed",
   error: "state-dot--error",
 };
@@ -244,6 +246,9 @@ function AgentTile({
       <div className="agent-tile__footer">
         <span className={`state-dot ${STATE_DOT_CLASS[agent.state]}`} aria-hidden="true" />
         <span className="agent-tile__footer-time">{formatShortTime(agent.last_active_at)}</span>
+        {agent.state === "requiring_input" ? (
+          <span className="agent-tile__ask-badge" aria-label="有待回答的问题">?</span>
+        ) : null}
       </div>
 
       {/* running 边框扫描层（interactionv2 .pre 边框滚动效果；快慢由 phase 驱动） */}

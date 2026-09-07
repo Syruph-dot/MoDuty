@@ -1,6 +1,6 @@
 // MoDuty 前后端共享数据形状（与后端 snake_case 对齐）
 
-export type AgentState = "idle" | "running" | "waiting_approval" | "completed" | "error";
+export type AgentState = "idle" | "running" | "waiting_approval" | "requiring_input" | "completed" | "error";
 export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "verifying";
 
 /** 磁贴在桌面上的几何（绝对定位），持久化到 localStorage */
@@ -113,6 +113,17 @@ export interface AgentStateEvent {
   state: AgentState;
   phase?: AgentPhase;
   context_stats?: ContextStats | null;
+}
+
+/** 桌面问答视图（/api/agents/:id/questions 返回） */
+export interface QuestionSetView {
+  id: string;
+  agentId: string;
+  sessionId: string;
+  createdAt: string;
+  status: "pending" | "answered";
+  questions: Array<{ prompt: string; options: string[] }>;
+  answers?: Array<{ questionIndex: number; choiceIndex: number; customText?: string }>;
 }
 /* ============================================================
    桌面 widget（HTML 组件磁贴）：RingClock 等

@@ -14,7 +14,7 @@ import {
 } from "../lib/agentFilter";
 import type { AgentState } from "../types";
 
-const STATE_KEYS: AgentState[] = ["idle", "running", "waiting_approval", "completed", "error"];
+const STATE_KEYS: AgentState[] = ["idle", "running", "waiting_approval", "requiring_input", "completed", "error"];
 const TIME_RANGE_KEYS: TimeRangeKey[] = ["all", "today", "week", "month", "older"];
 const SORT_KEYS: SortKey[] = ["active", "created", "messages"];
 const GROUP_BY_KEYS: GroupByKey[] = ["pinyin", "name", "workspace", "state", "month"];

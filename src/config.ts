@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
@@ -21,14 +22,29 @@ export function resolveProjectRoot(projectRoot?: string): string {
 }
 
 export function defaultPaths(projectRoot: string) {
+  const dataRoot = resolveDataRoot(projectRoot);
   return {
     projectRoot,
     promptsDir: path.join(projectRoot, "prompts"),
     skillsDir: path.join(projectRoot, "skills"),
     memoryDir: path.join(projectRoot, "memory"),
+    dataDir: dataRoot,
     staticDir: path.join(projectRoot, "static"),
     logsDir: path.join(projectRoot, "logs"),
   };
+}
+
+/**
+ * 解析运行时数据根目录。优先级：
+ * 1) MOMOKA_DATA_DIR 环境变量
+ * 2) %USERPROFILE%/.momoka/data (Windows) / ~/.momoka/data (Unix)
+ * 3) 兼容旧位置 projectRoot/memory
+ */
+export function resolveDataRoot(projectRoot: string): string {
+  if (process.env.MOMOKA_DATA_DIR) {
+    return path.resolve(process.env.MOMOKA_DATA_DIR);
+  }
+  return path.join(os.homedir(), ".momoka", "data");
 }
 
 export async function loadLocalEnv(projectRoot: string = resolveProjectRoot()): Promise<boolean> {

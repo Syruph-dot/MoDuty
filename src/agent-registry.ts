@@ -123,10 +123,12 @@ export class AgentRegistry {
     private readonly memoryDir: string,
     private readonly sessions: SessionManager,
     registryFile?: string,
+    dataDir?: string,
   ) {
     this.registryFile = registryFile ?? path.join(memoryDir, ".agents", "agents.json");
-    this.dispatches = new DispatchLedger(memoryDir);
-    this.questions = new QuestionStore(memoryDir);
+    const dataRoot = dataDir ?? memoryDir;
+    this.dispatches = new DispatchLedger(dataRoot);
+    this.questions = new QuestionStore(dataRoot);
   }
 
   /** 按会话反查 Agent（工具执行上下文只有 sessionId） */

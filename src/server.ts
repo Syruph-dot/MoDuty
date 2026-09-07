@@ -39,7 +39,8 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
     workspaceManager: workspaces,
   });
   // Agent Desktop：多 Agent 注册表（1:1 绑定 session）+ 生命周期状态机
-  const registry = new AgentRegistry(defaultPaths(projectRoot).memoryDir, agent.sessionManager);
+  const paths = defaultPaths(projectRoot);
+  const registry = new AgentRegistry(paths.memoryDir, agent.sessionManager, undefined, paths.dataDir);
   // 让 Agent 核心能解析 &tile_<agentId> 别名 → 其绑定的 session
   agent.agentRegistry = registry;
   const machine = new AgentStateMachine();

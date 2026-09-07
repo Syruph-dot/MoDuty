@@ -56,8 +56,9 @@ export class MomokaAgentCore implements MomokaAgent {
   constructor(private readonly options: MomokaAgentOptions) {
     this.projectRoot = resolveProjectRoot(options.projectRoot);
     initSettings(this.projectRoot);
-    this.memoryStore = new MemoryStore(defaultPaths(this.projectRoot).memoryDir);
-    this.sessionManager = new SessionManager(defaultPaths(this.projectRoot).memoryDir);
+    const paths = defaultPaths(this.projectRoot);
+    this.memoryStore = new MemoryStore(paths.dataDir);
+    this.sessionManager = new SessionManager(paths.dataDir);
     this.workspaces = options.workspaceManager ?? new WorkspaceManager();
     this.agentRegistry = options.agentRegistry;
   }

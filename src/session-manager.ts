@@ -3,6 +3,15 @@ import path from "node:path";
 
 import { atomicWrite, atomicWriteJson, withFileLock } from "./write-queue.js";
 import { refreshSessionGraph } from "./relation-graph.js";
+import {
+  type StoredMessage,
+  type Turn,
+  messageToDisk,
+  messageFromDisk,
+  buildTurns,
+  turnsToTranscript,
+  appendTurnToTranscript,
+} from "./serialization.js";
 
 export interface SessionRecord {
   id: string;
@@ -12,6 +21,10 @@ export interface SessionRecord {
   createdAt: string;
   messageCount: number;
   lastMessageAt: string;
+  /** 当前轮次号（下一个将创建的 turn index，从 1 开始） */
+  turnIndex?: number;
+  /** 最后完成的 turn id */
+  lastCompletedTurnId?: string;
 }
 
 export interface SessionMessage {
@@ -20,6 +33,15 @@ export interface SessionMessage {
   content: string;
   timestamp: string;
   [key: string]: unknown;
+}
+
+export interface StoredMessageCompatible extends SessionMessage {
+  status?: "streaming" | "done" | "stopped" | "error";
+  toolCalls?: Array<{ tool: string; args: string; result: string; status?: string }>;
+  outputId?: string;
+  matchedSkills?: string[];
+  segments?: string[];
+  timeline?: Array<"text" | number>;
 }
 
 function shortId(prefix: string): string {
@@ -55,12 +77,13 @@ export class SessionManager {
       createdAt: now,
       messageCount: 0,
       lastMessageAt: now,
+      turnIndex: 1,
     };
     return await withFileLock(this.sessionsFile, async () => {
       const sessions = await this.listSessions();
       sessions.unshift(session);
       await this.writeSessions(sessions);
-      await this.writeMessages(session.id, []);
+      await this.writeMessagesUpsert(session.id, []);
       return session;
     });
   }
@@ -82,38 +105,70 @@ export class SessionManager {
     });
   }
 
-  async addMessage(sessionId: string, role: string, content: string, extra: Record<string, unknown> = {}): Promise<SessionMessage> {
-    const messages = await this.getMessages(sessionId, null);
-    const message: SessionMessage = {
+  /** 读取原始消息列表（内存态 StoredMessage） */
+  async getStoredMessages(sessionId: string): Promise<StoredMessage[]> {
+    try {
+      const parsed = JSON.parse(await readFile(this.messagesPath(sessionId), "utf8")) as unknown;
+      const messages = Array.isArray(parsed)
+        ? (parsed as Array<Record<string, unknown>>).map(messageFromDisk)
+        : [];
+      return messages;
+    } catch {
+      return [];
+    }
+  }
+
+  /** 对外暴露的消息列表（兼容旧 SessionMessage 格式） */
+  async getMessages(sessionId: string, limit: number | null = 200): Promise<SessionMessage[]> {
+    const messages = await this.getStoredMessages(sessionId);
+    return limit === null ? messages : messages.slice(-limit);
+  }
+
+  /** 写入消息列表（幂等 upsert：同 id 只保留最新） */
+  private async writeMessagesUpsert(sessionId: string, messages: StoredMessage[]): Promise<void> {
+    // 去重：同 id 保留最后一个（通常是完成态覆盖 streaming 中间态）
+    const seen = new Map<string, StoredMessage>();
+    for (const msg of messages) {
+      seen.set(msg.id, msg);
+    }
+    const deduped = Array.from(seen.values());
+    const filePath = this.messagesPath(sessionId);
+    await atomicWriteJson(filePath, deduped.map(messageToDisk));
+    refreshSessionGraph(this.sessionsDir, sessionId, this);
+  }
+
+  /** 追加消息（非流式）：幂等 upsert + 更新会话元数据 + 增量 transcript */
+  async addMessage(sessionId: string, role: string, content: string, extra: Record<string, unknown> = {}): Promise<StoredMessage> {
+    const messages = await this.getStoredMessages(sessionId);
+    const message: StoredMessage = {
       id: shortId("msg"),
-      role,
+      role: role as StoredMessage["role"],
       content,
       timestamp: new Date().toISOString(),
       ...extra,
-    };
+    } as StoredMessage;
     messages.push(message);
-    return await withFileLock(this.messagesPath(sessionId), async () => {
-      const all = await this.getMessages(sessionId, null);
+    await withFileLock(this.messagesPath(sessionId), async () => {
+      const all = await this.getStoredMessages(sessionId);
       all.push(message);
-      await this.writeMessages(sessionId, all);
+      await this.writeMessagesUpsert(sessionId, all);
       await this.updateSession(sessionId, {
         messageCount: all.length,
         lastMessageAt: message.timestamp,
       });
-      // 自包含明文 transcript 随消息增量重写，供 rg 检索与 read_session 区间读取。
-      await this.regenerateTranscript(sessionId).catch(() => undefined);
-      return message;
+      // 增量 transcript：仅当该消息使某个 turn 完成时追加
+      await this.maybeAppendTurnTranscript(sessionId).catch(() => undefined);
     });
+    return message;
   }
 
   // ===== 流式消息（agent 输出随 token 增量落盘；连接只是在线投影）=====
-  // 防抖缓冲：避免每个 token 都全量读写一次磁盘。
   private readonly streamTimers = new Map<string, NodeJS.Timeout>();
   private readonly streamPending = new Map<string, { messageId: string; pending: string }>();
 
   /** 开始一条流式 agent 消息：先落盘空消息（status=streaming），返回消息 id */
-  async beginStreamingMessage(sessionId: string): Promise<SessionMessage> {
-    const message: SessionMessage = {
+  async beginStreamingMessage(sessionId: string): Promise<StoredMessage> {
+    const message: StoredMessage = {
       id: shortId("msg"),
       role: "agent",
       content: "",
@@ -121,9 +176,9 @@ export class SessionManager {
       status: "streaming",
     };
     await withFileLock(this.messagesPath(sessionId), async () => {
-      const messages = await this.getMessages(sessionId, null);
+      const messages = await this.getStoredMessages(sessionId);
       messages.push(message);
-      await this.writeMessages(sessionId, messages);
+      await this.writeMessagesUpsert(sessionId, messages);
     });
     return message;
   }
@@ -149,13 +204,9 @@ export class SessionManager {
       this.streamTimers.delete(sessionId);
     }
     const entry = this.streamPending.get(sessionId);
-    if (!entry) {
-      return;
-    }
+    if (!entry) return;
     this.streamPending.delete(sessionId);
-    if (!entry.pending) {
-      return;
-    }
+    if (!entry.pending) return;
     await withFileLock(this.messagesPath(sessionId), () =>
       this.flushStreamingBufferLocked(sessionId, entry.messageId, entry.pending),
     );
@@ -163,13 +214,11 @@ export class SessionManager {
 
   /** flush 的锁内实现（假定调用方已持有 messagesPath 锁） */
   private async flushStreamingBufferLocked(sessionId: string, messageId: string, pending: string): Promise<void> {
-    const messages = await this.getMessages(sessionId, null);
+    const messages = await this.getStoredMessages(sessionId);
     const message = messages.find((m) => m.id === messageId);
-    if (!message) {
-      return;
-    }
+    if (!message) return;
     message.content += pending;
-    await this.writeMessages(sessionId, messages);
+    await this.writeMessagesUpsert(sessionId, messages);
   }
 
   /**
@@ -178,11 +227,11 @@ export class SessionManager {
    */
   async updateStreamingMessage(sessionId: string, messageId: string, patch: Record<string, unknown>): Promise<void> {
     await withFileLock(this.messagesPath(sessionId), async () => {
-      const messages = await this.getMessages(sessionId, null);
+      const messages = await this.getStoredMessages(sessionId);
       const message = messages.find((m) => m.id === messageId);
       if (!message) return;
       Object.assign(message, patch);
-      await this.writeMessages(sessionId, messages);
+      await this.writeMessagesUpsert(sessionId, messages);
     });
   }
 
@@ -190,36 +239,50 @@ export class SessionManager {
   async finishStreamingMessage(sessionId: string, messageId: string, extra: Record<string, unknown> = {}): Promise<void> {
     await this.flushStreamingBuffer(sessionId);
     await withFileLock(this.messagesPath(sessionId), async () => {
-      const messages = await this.getMessages(sessionId, null);
+      const messages = await this.getStoredMessages(sessionId);
       const message = messages.find((m) => m.id === messageId);
-      if (!message) {
-        return;
-      }
+      if (!message) return;
       Object.assign(message, extra);
-      message.status = (extra.status as string | undefined) ?? "done";
-      await this.writeMessages(sessionId, messages);
+      message.status = (extra.status as StoredMessage["status"] | undefined) ?? "done";
+      await this.writeMessagesUpsert(sessionId, messages);
       await this.updateSession(sessionId, {
         messageCount: messages.length,
         lastMessageAt: message.timestamp,
       });
-      await this.regenerateTranscript(sessionId).catch(() => undefined);
+      // 收尾时尝试追加完成的 turn 到 transcript
+      await this.maybeAppendTurnTranscript(sessionId).catch(() => undefined);
     });
   }
 
-  async getMessages(sessionId: string, limit: number | null = 200): Promise<SessionMessage[]> {
-    try {
-      const parsed = JSON.parse(await readFile(this.messagesPath(sessionId), "utf8")) as unknown;
-      const messages = Array.isArray(parsed) ? parsed.filter((item): item is SessionMessage => typeof item === "object" && item !== null && !Array.isArray(item)) : [];
-      return limit === null ? messages : messages.slice(-limit);
-    } catch {
-      return [];
-    }
+  /** 检查是否有新完成的 turn，若有则增量追加到 transcript.md */
+  private async maybeAppendTurnTranscript(sessionId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (!session) return;
+    const messages = await this.getStoredMessages(sessionId);
+    const turns = buildTurns(messages);
+    const lastAppendedId = session.lastCompletedTurnId;
+    const newCompleted = turns.filter((t) => t.completed && t.id !== lastAppendedId);
+    if (newCompleted.length === 0) return;
+    const transcriptPath = this.transcriptPath(sessionId);
+    const appended = newCompleted.map(appendTurnToTranscript).join("");
+    if (!appended) return;
+    await withFileLock(transcriptPath, async () => {
+      let existing = "";
+      try { existing = await readFile(transcriptPath, "utf8"); } catch { /* ignore */ }
+      await atomicWrite(transcriptPath, existing + appended);
+    });
+    const latest = newCompleted[newCompleted.length - 1];
+    await this.updateSession(sessionId, { lastCompletedTurnId: latest.id });
   }
 
   // ---- 会话检索 / 检视 / 读取（Session-as-a-Resource）----
 
   transcriptPath(sessionId: string): string {
     return path.join(this.sessionsDir, sessionId, "transcript.md");
+  }
+
+  turnsPath(sessionId: string): string {
+    return path.join(this.sessionsDir, sessionId, "turns.json");
   }
 
   /** 回填缺失 transcript.md（存量会话迁移/懒生成用），返回新建数量。 */
@@ -237,37 +300,27 @@ export class SessionManager {
     return created;
   }
 
-  /** 把 messages.json 重算为自包含明文 transcript.md（含工具调用与结果）。每次 addMessage 增量重写。 */
+  /** 重新生成 transcript.md（基于 Turn，仅输出 completed 轮次） */
   async regenerateTranscript(sessionId: string): Promise<void> {
     const session = await this.getSession(sessionId);
-    const messages = await this.getMessages(sessionId, null);
-    const lines: string[] = [];
-    lines.push(`# Session: ${session?.name ?? sessionId} (${sessionId})`);
-    if (session) {
-      lines.push(`goal: ${session.goal}`);
-      lines.push(`created: ${session.createdAt}`);
-      lines.push(`turns: ${messages.length}`);
-    }
-    lines.push("");
-    messages.forEach((message, index) => {
-      lines.push(`## Turn ${index + 1} · ${message.role} · ${message.timestamp}`);
-      lines.push("");
-      lines.push(message.content || "");
-      for (const call of extractToolCalls(message)) {
-        const result = call.result.length > 2000 ? `${call.result.slice(0, 2000)}…[截断]` : call.result;
-        lines.push(`🔧 ${call.tool}(${call.args}) -> ${result}`);
-      }
-      lines.push("");
-    });
+    const messages = await this.getStoredMessages(sessionId);
+    const turns = buildTurns(messages);
+    const content = turnsToTranscript(turns, session?.name ?? sessionId, sessionId, session?.goal ?? "", session?.createdAt ?? "");
     const filePath = this.transcriptPath(sessionId);
-    await withFileLock(filePath, () => atomicWrite(filePath, lines.join("\n")));
+    await withFileLock(filePath, () => atomicWrite(filePath, content));
+    // 同步更新 lastCompletedTurnId
+    const lastCompleted = [...turns].reverse().find((t) => t.completed);
+    if (lastCompleted) {
+      await this.updateSession(sessionId, { lastCompletedTurnId: lastCompleted.id });
+    }
   }
 
   /** 检视会话元数据（句柄层，不返回历史内容）。 */
   async inspectSession(sessionId: string): Promise<Record<string, unknown>> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
-    const messages = await this.getMessages(sessionId, null);
+    const messages = await this.getStoredMessages(sessionId);
+    const turns = buildTurns(messages);
     return {
       id: session.id,
       name: session.name,
@@ -275,7 +328,8 @@ export class SessionManager {
       createdAt: session.createdAt,
       messageCount: session.messageCount,
       lastMessageAt: session.lastMessageAt,
-      turnRange: [1, Math.max(1, messages.length)],
+      turnCount: turns.length,
+      completedTurns: turns.filter((t) => t.completed).length,
       topics: deriveTopics(session.goal),
       hasTranscript: true,
     };
@@ -285,22 +339,28 @@ export class SessionManager {
   async readSessionTranscript(sessionId: string, from: number, to: number): Promise<string> {
     const session = await this.getSession(sessionId);
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
-    const messages = await this.getMessages(sessionId, null);
-    const total = messages.length;
+    const messages = await this.getStoredMessages(sessionId);
+    const turns = buildTurns(messages);
+    const total = turns.length;
     let lo = Number.isFinite(from) && from > 0 ? Math.floor(from) : 1;
     let hi = Number.isFinite(to) && to > 0 ? Math.floor(to) : total;
     lo = Math.max(1, lo);
     hi = Math.min(total, hi);
     if (lo > hi) [lo, hi] = [hi, lo];
+    const selected = turns.slice(lo - 1, hi);
     const lines: string[] = [];
-    for (let i = lo - 1; i < hi; i += 1) {
-      const message = messages[i];
-      lines.push(`## Turn ${i + 1} · ${message.role} · ${message.timestamp}`);
+    for (const turn of selected) {
+      lines.push(`## Turn ${turn.index} · user · ${turn.userMessage.timestamp}`);
       lines.push("");
-      lines.push(message.content || "");
-      for (const call of extractToolCalls(message)) {
-        const result = call.result.length > 2000 ? `${call.result.slice(0, 2000)}…[截断]` : call.result;
-        lines.push(`🔧 ${call.tool}(${call.args}) -> ${result}`);
+      lines.push(turn.userMessage.content || "");
+      if (turn.agentMessage) {
+        lines.push(`## Turn ${turn.index} · agent · ${turn.agentMessage.timestamp}`);
+        lines.push("");
+        lines.push(turn.agentMessage.content || "");
+        for (const call of turn.agentMessage.toolCalls ?? []) {
+          const result = call.result.length > 2000 ? `${call.result.slice(0, 2000)}…[截断]` : call.result;
+          lines.push(`🔧 ${call.tool}(${call.args}) -> ${result}`);
+        }
       }
       lines.push("");
     }
@@ -315,7 +375,6 @@ export class SessionManager {
     for (const id of ids) {
       let content = await readFile(this.transcriptPath(id), "utf8").catch(() => null);
       if (!content) {
-        // 存量会话可能还没有 transcript：懒生成后再试一次
         await this.regenerateTranscript(id).catch(() => undefined);
         content = await readFile(this.transcriptPath(id), "utf8").catch(() => null);
       }
@@ -329,8 +388,7 @@ export class SessionManager {
     return results.slice(0, 100);
   }
 
-  /** 跨会话检索，按相关度排序（everything/rg 二分法的 rg 侧入口）。
-   * 数据源用 transcript.md（消息写入时增量维护的纯文本缓存，免 JSON.parse / extractToolCalls）。 */
+  /** 跨会话检索，按相关度排序。数据源用 transcript.md（增量维护的纯文本缓存）。 */
   async searchSessions(query: string, limit = 20): Promise<Array<Record<string, unknown>>> {
     const sessions = await this.listSessions();
     if (!query.trim()) {
@@ -342,7 +400,6 @@ export class SessionManager {
       let score = 0;
       if (session.name.toLowerCase().includes(needle)) score += 5;
       if (session.goal.toLowerCase().includes(needle)) score += 3;
-      // transcript 缺失（存量会话）时懒生成一次后重试
       let content = await readFile(this.transcriptPath(session.id), "utf8").catch(() => null);
       if (content === null) {
         await this.regenerateTranscript(session.id).catch(() => undefined);
@@ -352,8 +409,6 @@ export class SessionManager {
       const turnRanges: Array<[number, number]> = [];
       let snippet = "";
       let rangeStart = -1;
-      // 按 “## Turn N · role · ts” 标题切段（标题行即段首，编号取 N，跳过文件头部元数据），
-      // 逐段 includes：命中→计分并记录区间。tool 输出行（🔧）保留在段内一起参与匹配。
       const segmentTitleRe = /^## Turn (\d+)/;
       const lines = content.split("\n");
       let segment: string[] = [];
@@ -419,13 +474,6 @@ export class SessionManager {
     return path.join(this.sessionsDir, sessionId, "messages.json");
   }
 
-  private async writeMessages(sessionId: string, messages: SessionMessage[]): Promise<void> {
-    const filePath = this.messagesPath(sessionId);
-    await atomicWriteJson(filePath, messages.map(messageToDisk));
-    // 消息变更后增量刷新 &ses_ 关联图（无缓存时忽略）
-    refreshSessionGraph(this.sessionsDir, sessionId, this);
-  }
-
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {
     await atomicWriteJson(this.sessionsFile, sessions.map(sessionToDisk));
   }
@@ -440,6 +488,8 @@ function sessionFromDisk(raw: Record<string, unknown>): SessionRecord {
     createdAt: String(raw.created_at ?? raw.createdAt ?? ""),
     messageCount: Number(raw.message_count ?? raw.messageCount ?? 0),
     lastMessageAt: String(raw.last_message_at ?? raw.lastMessageAt ?? ""),
+    turnIndex: typeof raw.turn_index === "number" ? raw.turn_index : typeof raw.turnIndex === "number" ? raw.turnIndex : undefined,
+    lastCompletedTurnId: raw.last_completed_turn_id ? String(raw.last_completed_turn_id) : raw.lastCompletedTurnId ? String(raw.lastCompletedTurnId) : undefined,
   };
 }
 
@@ -452,39 +502,9 @@ function sessionToDisk(session: SessionRecord): Record<string, unknown> {
     created_at: session.createdAt,
     message_count: session.messageCount,
     last_message_at: session.lastMessageAt,
+    turn_index: session.turnIndex,
+    last_completed_turn_id: session.lastCompletedTurnId,
   };
-}
-
-function messageToDisk(message: SessionMessage): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...message };
-  if ("outputId" in out) {
-    out.output_id = out.outputId;
-    delete out.outputId;
-  }
-  if ("matchedSkills" in out) {
-    out.matched_skills = out.matchedSkills;
-    delete out.matchedSkills;
-  }
-  if ("toolCalls" in out) {
-    out.tool_calls = out.toolCalls;
-    delete out.toolCalls;
-  }
-  return out;
-}
-
-/** 从消息里抽工具调用；兼容内存态(toolCalls)与落盘态(tool_calls)。 */
-function extractToolCalls(message: SessionMessage): Array<{ tool: string; args: string; result: string }> {
-  const record = message as Record<string, unknown>;
-  const raw = record.toolCalls ?? record.tool_calls;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((item) => {
-    const entry = item as Record<string, unknown>;
-    return {
-      tool: String(entry.tool ?? entry.name ?? ""),
-      args: String(entry.args ?? entry.arguments ?? "{}"),
-      result: String(entry.result ?? entry.output ?? ""),
-    };
-  });
 }
 
 /** 从 goal 里粗略抽关键词作为 topic 提示（仅用于 inspect 展示）。 */

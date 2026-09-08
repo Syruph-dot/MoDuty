@@ -149,6 +149,12 @@ export class MomokaAgentCore implements MomokaAgent {
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       workDir = session.folderPath;
       await this.sessionManager.addMessage(sessionId, "user", message);
+      // 自动生成标题：若是首条用户消息（messageCount 从 0 变 1），生成标题并更新会话
+      const updatedSession = await this.sessionManager.getSession(sessionId);
+      if (updatedSession && updatedSession.messageCount === 1) {
+        const title = await this.generateTitle(message);
+        await this.sessionManager.updateSession(sessionId, { name: title });
+      }
       history = buildBoundedHistory((await this.sessionManager.getMessages(sessionId, null)).slice(0, -1)).text;
     }
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
@@ -320,6 +326,34 @@ export class MomokaAgentCore implements MomokaAgent {
     const agent = (await this.options.agentRegistry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
     if (!agent) return;
     await this.options.agentRegistry.updateContextStats(agent.id, buildContextStats(result.usage, agent.model));
+  }
+
+  /**
+   * 根据首条用户消息自动生成会话标题（2-8 字）。
+   * 使用模型生成简短标题，失败时回落到内容截取。
+   */
+  private async generateTitle(message: string): Promise<string> {
+    try {
+      const prompt = `请为以下用户消息生成一个 2-8 字的简短标题，只输出标题本身，不要任何解释或标点：
+
+${message}`;
+      const { output } = await this.options.modelClient.run(prompt, {
+        systemPrompt: "你是一个标题生成助手，只输出 2-8 字的简短标题。",
+        topic: "title_generation",
+        workDir: this.projectRoot,
+        tracePath: "",
+        sessionId: null,
+        runId: "title_gen",
+        matchedSkills: [],
+        requestKind: "chat",
+        onEvent: undefined,
+        signal: undefined,
+      });
+      const title = output.trim().slice(0, 12);
+      return title || message.slice(0, 8);
+    } catch {
+      return message.slice(0, 8);
+    }
   }
 
   async createSession(goal: string, folderPath: string) {

@@ -492,7 +492,7 @@ export class SessionManager {
     };
   }
 
-  private async updateSession(sessionId: string, updates: Partial<SessionRecord>): Promise<void> {
+  async updateSession(sessionId: string, updates: Partial<SessionRecord>): Promise<void> {
     await withFileLock(this.sessionsFile, async () => {
       const sessions = await this.listSessions();
       const updated = sessions.map((session) => session.id === sessionId ? { ...session, ...updates } : session);

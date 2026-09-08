@@ -286,6 +286,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [roleDraft, setRoleDraft] = useState("");
   const [roleSaving, setRoleSaving] = useState(false);
   const [roleError, setRoleError] = useState("");
+  /** 选中消息片段 → 生成 &msg_ 引用块 */
+  const [quote, setQuote] = useState<{ x: number; y: number; text: string; messageId: string } | null>(null);
 
   const startEdit = (message: DisplayMessage): void => {
     if (!message.messageId || streaming) return;
@@ -403,6 +405,50 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     }
   };
 
+  /** 捕获消息列表中的选区：落在 [data-mk] 消息上且能解析出 messageId 才显示引用按钮 */
+  const captureQuote = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("textarea, input, .agent-window__composer")) {
+      setQuote(null);
+      return;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setQuote(null);
+      return;
+    }
+    const text = selection.toString().trim();
+    if (text.length < 2 || text.length > 600) {
+      setQuote(null);
+      return;
+    }
+    const anchorNode = selection.anchorNode?.nodeType === Node.TEXT_NODE ? selection.anchorNode.parentElement : (selection.anchorNode as HTMLElement | null);
+    const mkEl = anchorNode?.closest?.("[data-mk]") as HTMLElement | null;
+    if (!mkEl) return;
+    const key = mkEl.dataset.mk ?? "";
+    const message = messages.find((candidate) => candidate.key === key);
+    const messageId = message?.messageId;
+    if (!messageId) return;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = Math.max(8, rect.right - 70);
+    let y = Math.max(8, rect.bottom + 8);
+    if (x + 150 > vw) x = vw - 158;
+    if (y + 34 > vh) y = Math.max(8, rect.top - 42);
+    setQuote({ x, y, text, messageId });
+  };
+
+  /** 把引用块追加到输入框：&msg_<短id> 「选中文本」；发送时由后端展开源消息全文 */
+  const appendQuote = (): void => {
+    if (!quote) return;
+    const shortId = quote.messageId.startsWith("msg_") ? quote.messageId.slice(4) : quote.messageId;
+    const block = `\n\n&msg_${shortId} 「${quote.text}」`;
+    setInput((prev) => `${prev}${block}`.trimStart());
+    setQuote(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   /** 检索全部会话 transcript（后端 /api/sessions/search 返回 matchedTurns） */
   const runSearch = async (): Promise<void> => {
     const query = searchQuery.trim();
@@ -507,6 +553,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
                 result: item.result,
                 collapsed: message.status === "streaming" ? false : !!item.result,
               },
+              ...(message.id ? { messageId: message.id } : {}),
             });
           } else {
             restored.push({
@@ -514,6 +561,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
               role: "agent",
               content: item.content,
               status: message.status,
+              ...(message.id ? { messageId: message.id } : {}),
             });
           }
         });
@@ -1081,7 +1129,19 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         </div>
       ) : null}
 
-      <div className="agent-window__list" ref={listRef} aria-live="polite">
+      {quote ? (
+        <button
+          type="button"
+          className="agent-window__quote-btn"
+          style={{ left: quote.x, top: quote.y }}
+          onClick={appendQuote}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          ⤴ 引用到输入框
+        </button>
+      ) : null}
+
+      <div className="agent-window__list" ref={listRef} aria-live="polite" onMouseUp={captureQuote}>
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (

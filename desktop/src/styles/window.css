@@ -315,6 +315,24 @@
   }
 }
 
+/* 消息选区 → &msg_ 引用块按钮 */
+.agent-window__quote-btn {
+  position: fixed;
+  z-index: 200;
+  background: #2f6fe0;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.agent-window__quote-btn:hover {
+  background: #3d7df0;
+}
+
 .agent-window__list {
   flex: 1;
   overflow-y: auto;

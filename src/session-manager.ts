@@ -508,6 +508,24 @@ export class SessionManager {
     return { format, content, filename };
   }
 
+  /** 按消息 id 全局查找（跨会话）：返回源会话与消息，供 &msg_<id> 引用展开/回溯 */
+  async findMessageById(messageId: string): Promise<{ sessionId: string; sessionName: string; message: SessionMessage } | null> {
+    const sessions = await this.listSessions(true);
+    for (const session of sessions) {
+      let messages: SessionMessage[] = [];
+      try {
+        messages = await this.getStoredMessages(session.id);
+      } catch {
+        continue;
+      }
+      const message = messages.find((item) => item.id === messageId);
+      if (message) {
+        return { sessionId: session.id, sessionName: session.name, message };
+      }
+    }
+    return null;
+  }
+
   /** 在 transcript.md 内做内容 grep（rg 侧）。id 省略则跨所有会话。 */
   async searchContentInSession(sessionId: string | undefined, query: string): Promise<Array<{ session: string; line: number; text: string }>> {
     const results: Array<{ session: string; line: number; text: string }> = [];

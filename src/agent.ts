@@ -136,6 +136,28 @@ export class MomokaAgentCore implements MomokaAgent {
     return sections.length > 0 ? `${prompt}\n\n${sections.join("\n\n")}` : prompt;
   }
 
+  /** 展开消息引用句柄 &msg_<messageId>（去掉 msg_ 前缀的短 id）：替换为源消息全文，供模型精确回溯 */
+  private async expandMessageRefs(text: string): Promise<string> {
+    const tokenRe = /&msg_([A-Za-z0-9_-]+)/g;
+    const matches = text.match(tokenRe);
+    if (!matches) return text;
+    let out = text;
+    const seen = new Set<string>();
+    for (const token of matches) {
+      const shortId = token.replace(/^&msg_/, "");
+      const fullId = shortId.startsWith("msg_") ? shortId : `msg_${shortId}`;
+      if (seen.has(fullId)) continue;
+      seen.add(fullId);
+      const ref = await this.sessionManager.findMessageById(fullId);
+      if (!ref) continue;
+      const block = `\n\n[引用消息 · ${ref.sessionName}]
+${ref.message.content}`;
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(escaped, "g"), block);
+    }
+    return out;
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const message = request.message.trim();
     if (!message) throw new MomokaHttpError(400, "Message cannot be empty");
@@ -157,6 +179,8 @@ export class MomokaAgentCore implements MomokaAgent {
       }
       history = buildBoundedHistory((await this.sessionManager.getMessages(sessionId, null)).slice(0, -1)).text;
     }
+    // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
+    const expandedMessage = await this.expandMessageRefs(message);
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const topic = request.topic?.trim() || message.slice(0, 80);
     // 流式落盘：agent 输出随 token 增量写入会话日志。
@@ -222,8 +246,8 @@ export class MomokaAgentCore implements MomokaAgent {
     };
     let result: ModelRunResult;
     try {
-      result = await this.options.modelClient.run([history, "## Current User Request", message].filter(Boolean).join("\n\n"), {
-        systemPrompt: await this.buildSystemPrompt({ workDir, topic, message, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+      result = await this.options.modelClient.run([history, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"), {
+        systemPrompt: await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
         onEvent, signal: request.signal,
         sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
       });

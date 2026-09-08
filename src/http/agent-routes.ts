@@ -253,6 +253,28 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // System Prompt (Role) 获取/更新
+  const agentRoleMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/role$/);
+  if (agentRoleMatch && request.method === "GET") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentRoleMatch[1] ?? ""));
+    json(response, 200, { role: record.role });
+    return true;
+  }
+  if (agentRoleMatch && request.method === "PUT") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentRoleMatch[1] ?? ""));
+    const body = await readJsonBody(request) as { role?: unknown };
+    const role = typeof body.role === "string" ? body.role : "";
+    if (!role.trim()) {
+      throw new MomokaHttpError(400, "role is required");
+    }
+    const updated = await runtime.registry.updateAgentRole(record.id, role);
+    if (!updated) throw new MomokaHttpError(404, "Agent not found");
+    json(response, 200, { success: true, agent: agentToSnake(updated, await agent.sessionManager.getSession(updated.sessionId)) });
+    return true;
+  }
+
   // Session 归档/取消归档
   const sessionArchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
   if (sessionArchiveMatch && request.method === "POST") {

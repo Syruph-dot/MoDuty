@@ -322,6 +322,19 @@ export class AgentRegistry {
     });
   }
 
+  /** 更新 Agent 的 role（系统提示词） */
+  async updateAgentRole(id: string, role: string): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((a) => a.id === id);
+      if (index === -1) return null;
+      const updated = { ...agents[index], role, lastActiveAt: new Date().toISOString() };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
   /**
    * 列出「孤儿 session」：磁盘上存在但没有 Agent 绑定它的 session。
    * 用来识别/清理旧 chat.html 时代残留的会话。

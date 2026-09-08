@@ -218,6 +218,21 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // 截断会话消息：从指定 messageId 开始删除后续消息（用于原地编辑分叉）
+  const truncateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/messages\/truncate$/);
+  if (truncateMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(truncateMatch[1] ?? ""));
+    const body = await readJsonBody(request) as { messageId?: unknown };
+    const messageId = typeof body.messageId === "string" ? body.messageId : "";
+    if (!messageId) {
+      throw new MomokaHttpError(400, "messageId is required");
+    }
+    const truncated = await agent.sessionManager.truncateMessages(record.sessionId, messageId);
+    json(response, 200, { success: true, messages: truncated });
+    return true;
+  }
+
   return false;
 }
 

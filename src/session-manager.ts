@@ -315,6 +315,33 @@ export class SessionManager {
     }
   }
 
+  /**
+   * 截断会话消息：从指定 messageId 开始删除后续所有消息（含该消息）。
+   * 用于"原地编辑 + 截断分叉重发"：用户编辑某条消息后，从该消息开始重新生成分支。
+   * 返回被截断后的消息数组（用于前端重新渲染）。
+   */
+  async truncateMessages(sessionId: string, fromMessageId: string): Promise<StoredMessage[]> {
+    return await withFileLock(this.messagesPath(sessionId), async () => {
+      const messages = await this.getStoredMessages(sessionId);
+      const index = messages.findIndex((m) => m.id === fromMessageId);
+      if (index === -1) {
+        throw new Error(`Message not found: ${fromMessageId}`);
+      }
+      // 保留 fromMessageId 之前的消息，丢弃该消息及之后的所有消息
+      const truncated = messages.slice(0, index);
+      await this.writeMessagesUpsert(sessionId, truncated);
+      // 更新会话元数据
+      const lastMsg = truncated[truncated.length - 1];
+      await this.updateSession(sessionId, {
+        messageCount: truncated.length,
+        lastMessageAt: lastMsg?.timestamp ?? new Date().toISOString(),
+      });
+      // 重新生成 transcript（基于截断后的消息）
+      await this.regenerateTranscript(sessionId);
+      return truncated;
+    });
+  }
+
   /** 检视会话元数据（句柄层，不返回历史内容）。 */
   async inspectSession(sessionId: string): Promise<Record<string, unknown>> {
     const session = await this.getSession(sessionId);

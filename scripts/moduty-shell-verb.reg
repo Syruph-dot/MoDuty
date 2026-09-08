@@ -1,0 +1,27 @@
+Windows Registry Editor Version 5.00
+
+; MoDuty Shell Verb - File Context Menu
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoDuty.SendToDispatcher]
+@="Send to MoDuty Dispatcher"
+"Icon"="C:\\Windows\\System32\\shell32.dll"
+"Position"="Top"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+
+; MoDuty Shell Verb - Folder Context Menu
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoDuty.SendToDispatcher]
+@="Send to MoDuty Dispatcher"
+"Icon"="C:\\Windows\\System32\\shell32.dll"
+"Position"="Top"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+
+; MoDuty Shell Verb - Desktop Background Context Menu
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\MoDuty.SendToDispatcher]
+@="Send to MoDuty Dispatcher"
+"Icon"="C:\\Windows\\System32\\shell32.dll"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%V\""

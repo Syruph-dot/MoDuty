@@ -1,0 +1,11 @@
+Windows Registry Editor Version 5.00
+
+; Commands
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\MoDuty.SendToDispatcher\command]
+@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%V\""

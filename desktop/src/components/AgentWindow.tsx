@@ -41,6 +41,8 @@ interface DisplayMessage {
   role: "user" | "agent" | "tool";
   content: string;
   status?: string;
+  /** 推理/思考内容（流式累积，独立于 content） */
+  reasoning?: string;
   toolCard?: {
     name: string;
     args: string;
@@ -112,6 +114,12 @@ const MessageItem = memo(function MessageItem({
   return (
     <div className={`msg msg--${message.role}`}>
       <div className="msg__bubble" dangerouslySetInnerHTML={{ __html: html }} />
+      {message.reasoning ? (
+        <details className="msg__reasoning" open>
+          <summary className="msg__reasoning-summary">💭 思考过程</summary>
+          <div className="msg__reasoning-content">{message.reasoning}</div>
+        </details>
+      ) : null}
     </div>
   );
 });
@@ -440,6 +448,16 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             if (tokenRaf === null) {
               tokenRaf = requestAnimationFrame(flushTokens);
             }
+          },
+          onReasoning: (chunk) => {
+            // 推理内容直接追加到当前 agent 消息的 reasoning 字段
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.key === currentAgentKey
+                  ? { ...m, reasoning: (m.reasoning ?? "") + chunk }
+                  : m,
+              ),
+            );
           },
           onToolStart: (name, args) => {
             // tool call 分界：先把缓冲 token 落进旧消息，再切换 currentAgentKey

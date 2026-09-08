@@ -161,20 +161,6 @@ export class UpstreamHttpError extends Error {
   }
 }
 
-/** 拉取 OpenAI 兼容上游的 /models 列表（供 /api/models） */
-export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Promise<string[]> {
-  const upstream = await fetch(`${baseUrl}/models`, {
-    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
-  });
-  if (!upstream.ok) {
-    throw new UpstreamHttpError(upstream.status, `models 请求失败: HTTP ${upstream.status}`);
-  }
-  const data = (await upstream.json()) as { data?: Array<{ id?: string }> };
-  return (data.data ?? [])
-    .map((m) => m.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-}
-
 interface OpenAICompatibleModelClientOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -188,6 +174,20 @@ interface OpenAICompatibleModelClientOptions {
   requestTimeoutMs?: number;
   /** 模型轨道：high | low | exact */
   tier?: ModelTier;
+}
+
+/** 拉取 OpenAI 兼容上游的 /models 列表（供 /api/models） */
+export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const upstream = await fetch(`${baseUrl}/models`, {
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+  });
+  if (!upstream.ok) {
+    throw new UpstreamHttpError(upstream.status, `models 请求失败: HTTP ${upstream.status}`);
+  }
+  const data = (await upstream.json()) as { data?: Array<{ id?: string }> };
+  return (data.data ?? [])
+    .map((m) => m.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
 interface ChatMessage {
@@ -262,6 +262,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           signal,
           stream,
           onDelta: (text) => context.onEvent?.({ type: "token", text }),
+          onReasoning: (text) => context.onEvent?.({ type: "reasoning", text }),
         });
         if (roundResult.usage && typeof roundResult.usage.promptTokens === "number") {
           if (!usagePeak || (roundResult.usage.promptTokens ?? 0) > (usagePeak.promptTokens ?? 0)) {
@@ -336,8 +337,9 @@ async function callModelRound(options: {
   signal?: AbortSignal;
   stream: boolean;
   onDelta: (text: string) => void;
+  onReasoning: (text: string) => void;
 }): Promise<ModelRoundResult> {
-  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, onDelta } = options;
+  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, onDelta, onReasoning } = options;
   const payload: Record<string, unknown> = {
     model,
     messages,
@@ -379,10 +381,21 @@ async function callModelRound(options: {
     };
   }
 
-  return await parseSseRound(response, onDelta);
+  return await parseSseRound(response, onDelta, onReasoning);
 }
 
-async function parseSseRound(response: Response, onDelta: (text: string) => void): Promise<ModelRoundResult> {
+interface DeltaWithReasoning {
+  content?: string | null;
+  reasoning?: string;
+  reasoning_content?: string;
+  tool_calls?: Array<{
+    index?: number;
+    id?: string;
+    function?: { name?: string; arguments?: string };
+  }>;
+}
+
+async function parseSseRound(response: Response, onDelta: (text: string) => void, onReasoning?: (text: string) => void): Promise<ModelRoundResult> {
   if (!response.body) {
     return { content: "", toolCalls: [] };
   }
@@ -409,14 +422,7 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
         try {
           const parsed = JSON.parse(data) as {
             choices?: Array<{
-              delta?: {
-                content?: string | null;
-                tool_calls?: Array<{
-                  index?: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
+              delta?: DeltaWithReasoning;
             }>;
             usage?: unknown;
           };
@@ -429,6 +435,12 @@ async function parseSseRound(response: Response, onDelta: (text: string) => void
             contentParts.push(delta.content);
             onDelta(delta.content);
           }
+          // 推理/思考内容（DeepSeek/Qwen 等上游在 delta.reasoning 或 delta.reasoning_content 中返回）
+          const reasoningText = delta.reasoning ?? delta.reasoning_content;
+          if (typeof reasoningText === "string" && reasoningText.length > 0 && onReasoning) {
+            onReasoning(reasoningText);
+          }
+
           for (const piece of delta.tool_calls ?? []) {
             const index = piece.index ?? 0;
             const current = accumulated.get(index) ?? { id: "", name: "", args: "" };

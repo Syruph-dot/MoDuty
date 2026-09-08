@@ -2,6 +2,7 @@
 
 export interface ChatStreamHandlers {
   onToken(text: string): void;
+  onReasoning(text: string): void;
   onToolStart(name: string, args: string): void;
   onToolResult(name: string, result: string): void;
   onApprovalRequested(name: string, args: string): void;
@@ -52,6 +53,9 @@ export async function runChatStream(
         switch (frame.type) {
           case "token":
             handlers.onToken(String(frame.text ?? ""));
+            break;
+          case "reasoning":
+            handlers.onReasoning(String(frame.text ?? ""));
             break;
           case "tool_start":
             handlers.onToolStart(String(frame.name ?? ""), String(frame.args ?? "{}"));

@@ -42,6 +42,7 @@ export interface ModelClient {
 
 export type StreamEvent =
   | { type: "token"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "tool_start"; name: string; args: string }
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; name: string; args: string; result: string }

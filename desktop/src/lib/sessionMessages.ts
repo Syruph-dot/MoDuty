@@ -92,3 +92,81 @@ export function buildRestoredSequence(
 ): Array<{ seq: BuiltSequenceItem[]; message: StoredMessageLike }> {
   return messages.map((message) => ({ seq: buildMessageSequence(message), message }));
 }
+
+/**
+ * 历史恢复：消息去重 + 中间态合并
+ * - 按 message.id 去重：保留最后一次出现（通常完成态覆盖 streaming 中间态）
+ * - 合并中间态：将 status=streaming 的消息与后续 done/error/stopped 状态合并
+ * - 过滤无效消息：空 agent 消息（仅作占位）在恢复时过滤
+ */
+export interface DedupOptions {
+  mergeStreaming?: boolean;
+  filterEmptyAgent?: boolean;
+}
+
+export function deduplicateAndMergeMessages(
+  messages: StoredMessageLike[],
+  options: DedupOptions = {},
+): StoredMessageLike[] {
+  const { mergeStreaming = true, filterEmptyAgent = true } = options;
+
+  const seen = new Map<string, StoredMessageLike>();
+  for (const msg of messages) {
+    if (msg.id) {
+      seen.set(msg.id, msg);
+    }
+  }
+  let deduped = Array.from(seen.values());
+
+  // Merge streaming intermediate states
+  const byId = new Map<string, StoredMessageLike[]>();
+  for (const msg of deduped) {
+    if (!msg.id) continue;
+    const arr = byId.get(msg.id) ?? [];
+    arr.push(msg);
+    byId.set(msg.id, arr);
+  }
+
+  const merged = new Map<string, StoredMessageLike>();
+  for (const [id, arr] of byId) {
+    if (arr.length === 1) {
+      merged.set(id, arr[0]);
+      continue;
+    }
+    const final = arr.find((m) => m.status && m.status !== "streaming");
+    const streaming = arr.find((m) => m.status === "streaming");
+    if (final) {
+      const mergedMsg = { ...final };
+      if (streaming) {
+        if (streaming.content && (!final.content || final.content.length < streaming.content.length)) {
+          mergedMsg.content = streaming.content;
+        }
+        if (streaming.toolCalls && streaming.toolCalls.length > (final.toolCalls?.length ?? 0)) {
+          mergedMsg.toolCalls = streaming.toolCalls;
+        }
+      } else if (streaming) {
+        merged.set(id, streaming);
+      } else {
+        merged.set(id, arr[arr.length - 1]);
+      }
+    }
+    // Simplified: take last non-streaming or last
+    const finalMsg = arr.filter((m) => m.status && m.status !== "streaming").pop() ?? arr[arr.length - 1];
+    merged.set(id, finalMsg);
+  }
+
+  deduped = Array.from(merged.values());
+
+  // Filter empty agent messages
+  deduped = deduped.filter((m) => !(m.role === "agent" && !m.content && !m.toolCalls?.length));
+
+  return deduped;
+}
+
+export function restoreSessionHistory(
+  messages: StoredMessageLike[],
+  options: DedupOptions = {},
+): StoredMessageLike[] {
+  const deduped = deduplicateAndMergeMessages(messages, options);
+  return deduped.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+}

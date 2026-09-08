@@ -66,6 +66,8 @@ interface TileShellProps {
   onDropToDock?: (id: string) => void;
   /** T3 草稿纸模式：expanded 松手时把最终世界 X 交回父级（并做释放惯性） */
   onWorldXCommit?: (x: number) => void;
+  /** Y 错位提交：解锁后松手把最终 Y（top）交回父级（与 X 一同提交） */
+  onWorldYCommit?: (y: number) => void;
   /** T4 expanded 被点击激活（置顶） */
   onActivate?: () => void;
   /** T5 边缘丢弃：传给壳的视口宽（px）与当前内容滚动量，用于左右极端判定 */
@@ -105,6 +107,8 @@ const MIN_H = 120;
 const MAX_W = 1200;
 const MAX_H = 900;
 const SCREEN_EDGE = 0;
+/** Y 锁定阈值 px：拖拽垂直位移未超此值前 Y 保持不动；一旦超过即解锁，XY 都跟手（进入错位） */
+const Y_LOCK_PX = 10;
 
 /**
  * 根据拖拽模式把 delta 应用到原始 geometry 上（像素跟手；free+resize 时仅用于视觉）：
@@ -187,6 +191,7 @@ export default function TileShell({
   onDropToDock,
   onOpenTile,
   onWorldXCommit,
+  onWorldYCommit,
   onActivate,
   edgeViewportWidth = 0,
   edgeScrollX = 0,
@@ -223,6 +228,8 @@ export default function TileShell({
   /** T5：拖拽进入屏幕左/右极端（中心越出视口）时置位，松手 → 复用现有关闭逻辑 */
   const [edgeSide, setEdgeSide] = useState<0 | 1 | -1>(0);
   const edgeSideRef = useRef<0 | 1 | -1>(0);
+  /** Y 锁定状态：本次拖拽垂直位移未超 Y_LOCK_PX 前锁定（不产生 Y 位移），一旦超阈值即解锁（XY 都跟手） */
+  const paperYUnlockRef = useRef(false);
   // 拖动/点击抑制：真实拖动（位移超阈值）后短暂抑制 click/双击，
   // 避免“拖一下没到位→松手”被浏览器合成 click/双击而意外打开磁贴
   const suppressClock = useRef<{ active: boolean; timer: number | null }>({ active: false, timer: null });
@@ -389,8 +396,8 @@ export default function TileShell({
     }
   };
 
-  // T3：草稿纸模式释放后的减速惯性动画（世界 X 平移，rAF 指数衰减）
-  const startPaperInertia = (dragTotal: number, v0: number) => {
+  // T3：草稿纸模式释放后的减速惯性动画（世界 X 平移，rAF 指数衰减）；Y 在解锁时随起始错位值一次性落位
+  const startPaperInertia = (dragTotal: number, v0: number, commitY: number) => {
     cancelPaperInertia();
     const state = { raf: 0, offsetX: dragTotal, v: v0, lastT: performance.now(), dragTotal };
     paperInertiaRef.current = state;
@@ -406,10 +413,11 @@ export default function TileShell({
         paperInertiaRef.current = null;
         const base = originRef.current?.x ?? geometry.x;
         onWorldXCommit?.(base + cur.offsetX);
+        onWorldYCommit?.(commitY);
         setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
         return;
       }
-      setDragOffset((prev) => ({ x: cur.offsetX, y: prev.y, w: 0, h: 0 }));
+      setDragOffset((prev) => ({ x: cur.offsetX, y: commitY - geometry.y, w: 0, h: 0 }));
       cur.raf = requestAnimationFrame(step);
     };
     state.raf = requestAnimationFrame(step);
@@ -426,8 +434,17 @@ export default function TileShell({
       if (!originRef.current) return;
       const next = applyDelta(originRef.current, dx, dy, dragMode);
       if (paperMode) {
-        // T3 草稿纸：像素跟手（不吸附、不 clamp），并记录释放瞬时速度（px/ms）
-        setDragOffset({ x: next.x - geometry.x, y: next.y - geometry.y, w: 0, h: 0 });
+        // T3 草稿纸：X 像素跟手；Y 在垂直位移阈值内锁定（dragOffset.y=0），超阈值后解锁并跟随（错位）
+        const dyFromStart = next.y - geometry.y;
+        if (!paperYUnlockRef.current && Math.abs(dyFromStart) > Y_LOCK_PX) {
+          paperYUnlockRef.current = true;
+        }
+        setDragOffset({
+          x: next.x - geometry.x,
+          y: paperYUnlockRef.current ? dyFromStart : 0,
+          w: 0,
+          h: 0,
+        });
         // T5：屏幕中心 = 世界 X − 内容滚动量；越出左右视口 → 丢弃意图
         let side: 0 | 1 | -1 = 0;
         if (edgeViewportWidth > 0) {
@@ -485,12 +502,15 @@ export default function TileShell({
           if (edgeSideRef.current !== 0) {
             onDropToDock?.(id);
           } else {
-            // T3：松手 → 速度足够时执行减速惯性；否则直接落位提交世界 X
+            // Y 错位：仅解锁后提交（锁定态 Y 保持原 top，不写）
+            const finalY = originRef.current.y + (paperYUnlockRef.current ? dy : 0);
+            // T3：松手 → 速度足够时执行减速惯性（X）；否则直接落位提交世界 X/Y
             const vx = paperVelRef.current || 0;
             if (Math.abs(vx) > 0.5) {
-              startPaperInertia(dx, vx);
+              startPaperInertia(dx, vx, finalY);
             } else {
               onWorldXCommit?.(originRef.current.x + dx);
+              onWorldYCommit?.(finalY);
             }
           }
         } else {
@@ -622,6 +642,7 @@ export default function TileShell({
     originRef.current = { ...geometry };
     paperVelRef.current = 0;
     paperLastMoveRef.current = null;
+    paperYUnlockRef.current = false;
     edgeSideRef.current = 0;
     setEdgeSide(0);
     if (paperMode) {

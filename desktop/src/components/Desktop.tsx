@@ -141,6 +141,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const [relatedAgentIds, setRelatedAgentIds] = useState<string[]>([]);
   /** T1：打开卡片的世界 X（右舞台自由草稿坐标；首次打开时回退到该磁贴自由网格 X 并在此记录） */
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
+  /** Y 错位：默认锁 Y（top=stage.y）；拖拽突破阈值后写入，右键归位清空 */
+  const [openWorldY, setOpenWorldY] = useState<Record<string, number>>({});
+  const resetOpenWorldY = useCallback(() => setOpenWorldY({}), []);
+  const commitOpenWorldY = useCallback((id: string, y: number) => {
+    setOpenWorldY((prev) => ({ ...prev, [id]: Math.round(y) }));
+  }, []);
   /** T2：内容层当前横向滚动量（open 模式 dock 视口补偿用） */
   const [wallScrollX, setWallScrollX] = useState(0);
   /** T4：打开卡片 z 层级序（后位 = 顶层；点击激活置顶） */
@@ -421,6 +427,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 关闭卡片后清理其世界 X：重开时重新回退到磁贴当前自由网格 X
   useEffect(() => {
     setOpenWorldX((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const id of openAgentIds) {
+        if (Number.isFinite(prev[id])) next[id] = prev[id];
+      }
+      for (const key of Object.keys(prev)) {
+        if (!openAgentIds.includes(key)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+    // Y 错位同生命周期管理：关闭后丢弃，重新打开回到默认 top
+    setOpenWorldY((prev) => {
       let changed = false;
       const next: Record<string, number> = {};
       for (const id of openAgentIds) {
@@ -1007,6 +1025,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 桌面空白处右键 → 弹出菜单（New Agent / Add widget / Refresh / Change wallpaper / Zoom）
   const onContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {      // 点在磁贴上不响应（仅空白桌面）
+      if (openMode) {
+        event.preventDefault();
+        // 有错位卡时右键整理：所有磁贴 Y 归位（回到默认 top），X 保留
+        if (Object.keys(openWorldY).length > 0) {
+          resetOpenWorldY();
+        }
+        return;
+      }
       if (event.target instanceof Element && event.target.closest(".tile-shell")) {
         return;
       }
@@ -1102,7 +1128,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       ];
       showContextMenu({ x: event.clientX, y: event.clientY }, items);
     },
-    [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load, zoom, zoomIn, zoomOut],
+    [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load, zoom, zoomIn, zoomOut, openMode, openWorldY, resetOpenWorldY],
   );
 
   // ---- 广义 Tile 统一拖放：所有类型（agent/widget/browser）唯一写路径 = tileStore ----
@@ -1317,7 +1343,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             ? isOpen
               ? {
                   x: Number.isFinite(openWorldX[agent.id]) ? openWorldX[agent.id] : 0,
-                  y: layout.stage.y,
+                  y: Number.isFinite(openWorldY[agent.id]) ? openWorldY[agent.id] : layout.stage.y,
                   w: layout.stage.w,
                   h: layout.stage.h,
                 }
@@ -1366,6 +1392,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onCommitDisplaced={commitDisplacedTiles}
             onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
             onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
+            onWorldYCommit={isOpen ? (y) => commitOpenWorldY(agent.id, y) : undefined}
             onActivate={isOpen ? () => raiseAgent(agent.id) : undefined}
             edgeViewportWidth={openMode ? bounds.width : 0}
             edgeScrollX={openMode ? wallScrollX : 0}

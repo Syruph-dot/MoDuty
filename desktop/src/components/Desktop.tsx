@@ -143,6 +143,24 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
   /** T2：内容层当前横向滚动量（open 模式 dock 视口补偿用） */
   const [wallScrollX, setWallScrollX] = useState(0);
+  /** T4：打开卡片 z 层级序（后位 = 顶层；点击激活置顶） */
+  const [openZOrder, setOpenZOrder] = useState<string[]>([]);
+  const raiseAgent = useCallback((id: string) => {
+    setOpenZOrder((prev) => {
+      const rest = prev.filter((x) => x !== id);
+      if (rest.length === prev.length && prev[prev.length - 1] === id) return prev;
+      return [...rest, id];
+    });
+  }, []);
+  const commitOpenWorldX = useCallback((id: string, x: number) => {
+    setOpenWorldX((prev) => ({ ...prev, [id]: Math.round(x) }));
+  }, []);
+  const zRankOf = (id: string): number => {
+    const pos = openZOrder.indexOf(id);
+    if (pos >= 0) return pos + 1;
+    const idx = openAgentIds.indexOf(id);
+    return idx >= 0 ? idx + 1 : 0;
+  };
 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
@@ -379,6 +397,21 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     for (const b of bands) m[b.id] = b;
     return m;
   }, [bands]);
+
+  // T4：打开/关闭时维护 z 序（移除已关、追加新开）
+  useEffect(() => {
+    setOpenZOrder((prev) => {
+      let next = prev.filter((id) => openAgentIds.includes(id));
+      let changed = next.length !== prev.length;
+      for (const id of openAgentIds) {
+        if (!next.includes(id)) {
+          next.push(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [openAgentIds]);
 
   // T1：打开卡片首次落位 → 世界 X 取该磁贴自由网格 X（gridToPixels）；此后由拖拽/打开列表驱动，不做田字格重排
   useEffect(() => {
@@ -1301,7 +1334,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             mode={tileMode}
             dragHandleSelector={isOpen ? ".agent-window__header" : undefined}
             dockRightEdgeX={layout?.dockRightEdgeX}
-            zIndex={isOpen ? 20 : openMode ? (inDock ? 1 : 0) : 1}
+            zIndex={isOpen ? 20 + zRankOf(agent.id) : openMode ? (inDock ? 1 : 0) : 1}
             displacedPreview={!!displacedGrid && tileMode === "free"}
             gridClamp={gridClamp}
             bandX={bandX}
@@ -1312,6 +1345,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onCommit={(next) => handleTileDrop(agent.id, next)}
             onCommitDisplaced={commitDisplacedTiles}
             onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
+            onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
+            onActivate={isOpen ? () => raiseAgent(agent.id) : undefined}
             contextMenuItems={!openMode ? buildAgentMenu(agent) : undefined}
             onOpenTile={tileMode === "expanded" ? undefined : () => onOpen(agent)}
           >

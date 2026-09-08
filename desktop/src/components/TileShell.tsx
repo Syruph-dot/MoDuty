@@ -64,6 +64,10 @@ interface TileShellProps {
   dockRightEdgeX?: number;
   /** expanded 模式：拖到左坞松手后触发（关闭该磁贴） */
   onDropToDock?: (id: string) => void;
+  /** T3 草稿纸模式：expanded 松手时把最终世界 X 交回父级（并做释放惯性） */
+  onWorldXCommit?: (x: number) => void;
+  /** T4 expanded 被点击激活（置顶） */
+  onActivate?: () => void;
   /** 统一打开回调（Tile 抽象）：双击磁贴（非拖动）触发；agent/browser 传入，widget 不传 */
   onOpenTile?: () => void;
   /** 第一显示态内容（未展开的小卡片正面） */
@@ -179,6 +183,8 @@ export default function TileShell({
   dockRightEdgeX,
   onDropToDock,
   onOpenTile,
+  onWorldXCommit,
+  onActivate,
   children,
   back,
   flipped = false,
@@ -197,6 +203,18 @@ export default function TileShell({
   const originGridRef = useRef<TileGrid | null>(null);
   const ghostRef = useRef<TileGrid | null>(null);
   const shiftRef = useRef(false);
+  // T3 草稿纸模式（onWorldXCommit 存在时启用）：释放瞬间速度 → 惯性滑动
+  const paperLastMoveRef = useRef<{ time: number; clientX: number } | null>(null);
+  const paperVelRef = useRef(0); // px/ms
+  const paperInertiaRef = useRef<{ raf: number; offsetX: number; v: number; lastT: number; dragTotal: number } | null>(null);
+  const cancelPaperInertia = () => {
+    const cur = paperInertiaRef.current;
+    if (cur) {
+      window.cancelAnimationFrame(cur.raf);
+      paperInertiaRef.current = null;
+    }
+  };
+  const paperMode = mode === "expanded" && !!onWorldXCommit;
   // 拖动/点击抑制：真实拖动（位移超阈值）后短暂抑制 click/双击，
   // 避免“拖一下没到位→松手”被浏览器合成 click/双击而意外打开磁贴
   const suppressClock = useRef<{ active: boolean; timer: number | null }>({ active: false, timer: null });
@@ -363,6 +381,32 @@ export default function TileShell({
     }
   };
 
+  // T3：草稿纸模式释放后的减速惯性动画（世界 X 平移，rAF 指数衰减）
+  const startPaperInertia = (dragTotal: number, v0: number) => {
+    cancelPaperInertia();
+    const state = { raf: 0, offsetX: dragTotal, v: v0, lastT: performance.now(), dragTotal };
+    paperInertiaRef.current = state;
+    const step = () => {
+      const cur = paperInertiaRef.current;
+      if (!cur) return;
+      const now = performance.now();
+      const dtMs = Math.min(32, now - cur.lastT);
+      cur.lastT = now;
+      cur.v *= Math.pow(0.9, dtMs / 16.7);
+      cur.offsetX += cur.v * dtMs;
+      if (Math.abs(cur.v) < 0.06 || Math.abs(cur.offsetX - cur.dragTotal) > 2200) {
+        paperInertiaRef.current = null;
+        const base = originRef.current?.x ?? geometry.x;
+        onWorldXCommit?.(base + cur.offsetX);
+        setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+        return;
+      }
+      setDragOffset((prev) => ({ x: cur.offsetX, y: prev.y, w: 0, h: 0 }));
+      cur.raf = requestAnimationFrame(step);
+    };
+    state.raf = requestAnimationFrame(step);
+  };
+
   const { onMouseDown, isDragging, mode: dragMode } = useDrag({
     onMove: (dx, dy, dragMode, event) => {
       if (mode === "free") {
@@ -373,6 +417,18 @@ export default function TileShell({
       // expanded：沿用旧像素 snap + 左坞检测
       if (!originRef.current) return;
       const next = applyDelta(originRef.current, dx, dy, dragMode);
+      if (paperMode) {
+        // T3 草稿纸：像素跟手（不吸附、不 clamp），并记录释放瞬时速度（px/ms）
+        setDragOffset({ x: next.x - geometry.x, y: next.y - geometry.y, w: 0, h: 0 });
+        const now = performance.now();
+        const prev = paperLastMoveRef.current;
+        if (prev) {
+          const dtMs = Math.max(1, now - prev.time);
+          paperVelRef.current = (event.clientX - prev.clientX) / dtMs;
+        }
+        paperLastMoveRef.current = { time: now, clientX: event.clientX };
+        return;
+      }
       const { snapped, guides } = computeSnap(next, shiftRef.current);
       setSnapGuides(guides);
       setDragOffset({
@@ -407,13 +463,23 @@ export default function TileShell({
         }
       } else if (didMove && originRef.current) {
         const next = applyDelta(originRef.current, dx, dy, dragMode);
-        const { snapped } = computeSnap(next, shiftRef.current);
-        const finalGeom = clamp(snapped, bounds);
-        if (mode === "expanded") {
-          // 拖入左坞 → 收起；否则视觉回弹（不落盘、不污染 idle tiles）
-          const centerX = finalGeom.x + finalGeom.w / 2;
-          if (dockRightEdgeX !== undefined && centerX < dockRightEdgeX) {
-            onDropToDock?.(id);
+        if (paperMode) {
+          // T3：松手 → 速度足够时执行减速惯性；否则直接落位提交世界 X
+          const vx = paperVelRef.current || 0;
+          if (Math.abs(vx) > 0.5) {
+            startPaperInertia(dx, vx);
+          } else {
+            onWorldXCommit?.(originRef.current.x + dx);
+          }
+        } else {
+          const { snapped } = computeSnap(next, shiftRef.current);
+          const finalGeom = clamp(snapped, bounds);
+          if (mode === "expanded") {
+            // 拖入左坞 → 收起；否则视觉回弹（不落盘、不污染 idle tiles）
+            const centerX = finalGeom.x + finalGeom.w / 2;
+            if (dockRightEdgeX !== undefined && centerX < dockRightEdgeX) {
+              onDropToDock?.(id);
+            }
           }
         }
       }
@@ -517,6 +583,7 @@ export default function TileShell({
 
   const startMove = (event: React.MouseEvent) => {
     if (mode === "dock") return; // 坞磁贴位置由布局计算，不响应拖拽
+    cancelPaperInertia();
     if (mode === "expanded") {
       // 展开窗口只有拖拽把手（header）可以拖动；其余区域（输入框/按钮）不触发
       if (
@@ -527,6 +594,11 @@ export default function TileShell({
       }
     }
     originRef.current = { ...geometry };
+    paperVelRef.current = 0;
+    paperLastMoveRef.current = null;
+    if (paperMode) {
+      setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+    }
     if (mode === "free") {
       originGridRef.current = grid ? { ...grid } : null;
     }
@@ -588,9 +660,10 @@ export default function TileShell({
         }
       }}
       onClick={() => {
-        // Tile 抽象统一的“单击 = 展示（打开）”
+        // Tile 抽象统一的“单击 = 展示（打开）”；T4：打开态点击先把卡片提到最顶
         // 拖动（位移超阈值）松手后的 click 为误触，500ms 内忽略
         if (suppressClock.current.active) return;
+        onActivate?.();
         onOpenTile?.();
       }}
       onContextMenu={onTileContextMenu}

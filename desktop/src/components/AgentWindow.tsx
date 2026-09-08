@@ -8,6 +8,7 @@ import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
 interface StoredMessage {
+  id?: string;
   role: string;
   content: string;
   timestamp: string;
@@ -41,6 +42,10 @@ interface DisplayMessage {
   role: "user" | "agent" | "tool";
   content: string;
   status?: string;
+  /** 落盘消息 id（用户消息可编辑/截断分叉） */
+  messageId?: string;
+  /** 仅从磁盘恢复的历史用户消息可编辑 */
+  userEditable?: boolean;
   /** 推理/思考内容（流式累积，独立于 content） */
   reasoning?: string;
   toolCard?: {
@@ -61,9 +66,22 @@ interface DisplayMessage {
 const MessageItem = memo(function MessageItem({
   message,
   onToggleTool,
+  onStartEdit,
+  isEditing,
+  editDraft,
+  onEditDraftChange,
+  onEditSave,
+  onEditCancel,
 }: {
   message: DisplayMessage;
   onToggleTool: (key: string) => void;
+  /** hover 用户消息 → 编辑/从此截断重发 */
+  onStartEdit: (message: DisplayMessage) => void;
+  isEditing: boolean;
+  editDraft: string;
+  onEditDraftChange: (value: string) => void;
+  onEditSave: () => void;
+  onEditCancel: () => void;
 }) {
   // agent 消息才走 markdown；content 不变时复用上一次的解析结果
   const html = useMemo(
@@ -104,8 +122,51 @@ const MessageItem = memo(function MessageItem({
   // 用户消息 = 纯文本（保留换行，由 .msg__bubble 的 white-space: pre-wrap 呈现），
   // 不走 markdown：避免纯文本被 marked 包成 <p> 段落 + 尾随换行造成前后空行。
   if (message.role === "user") {
+    if (isEditing) {
+      const rowCount = Math.max(2, Math.min(10, editDraft.split("\n").length + 1));
+      return (
+        <div className={`msg msg--${message.role}`}>
+          <div className="msg__edit">
+            <textarea
+              className="msg__edit-input"
+              value={editDraft}
+              rows={rowCount}
+              autoFocus
+              onChange={(event) => onEditDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  onEditSave();
+                }
+              }}
+            />
+            <div className="msg__edit-actions">
+              <button type="button" className="btn btn--ghost btn--sm" onClick={onEditCancel}>
+                取消
+              </button>
+              <button type="button" className="btn btn--primary btn--sm" onClick={onEditSave} disabled={!editDraft.trim()}>
+                保存并从此重发
+              </button>
+            </div>
+            <span className="msg__edit-hint">保存后将截断此条及之后的所有内容，以新内容重新发送（分叉）</span>
+          </div>
+        </div>
+      );
+    }
     return (
-      <div className={`msg msg--${message.role}`}>
+      <div className={`msg msg--${message.role}${message.userEditable ? " msg--editable" : ""}`}>
+        <div className="msg__hover-actions">
+          {message.userEditable ? (
+            <button
+              type="button"
+              className="msg__edit-btn"
+              onClick={() => onStartEdit(message)}
+              aria-label="编辑此消息并从此截断重发"
+            >
+              ✎ 编辑/从此重发
+            </button>
+          ) : null}
+        </div>
         <div className="msg__bubble">{message.content}</div>
       </div>
     );
@@ -188,6 +249,45 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     }
   };
 
+  /** 用户消息原地编辑（截断分叉重发）状态 */
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+
+  const startEdit = (message: DisplayMessage): void => {
+    if (!message.messageId || streaming) return;
+    setEditingMessageId(message.messageId);
+    setEditDraft(message.content);
+  };
+
+  const cancelEdit = (): void => {
+    setEditingMessageId(null);
+    setEditDraft("");
+  };
+
+  /** 保存编辑：截断到该用户消息（含删除该条）→ 重载历史 → 以新内容重发（分叉） */
+  const saveEdit = async (): Promise<void> => {
+    const messageId = editingMessageId;
+    const content = editDraft.trim();
+    cancelEdit();
+    if (!messageId || !content) return;
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/messages/truncate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId }),
+      });
+      if (!res.ok) {
+        throw new Error(`截断失败（HTTP ${res.status}）`);
+      }
+      await reloadMessages();
+    } catch (error) {
+      setStreamError(error instanceof Error ? error.message : "截断失败");
+      return;
+    }
+    await sendText(content);
+  };
+
   const reloadMessages = async (): Promise<StoredMessage[]> => {
     try {
       const base = await awaitApiBase();
@@ -201,11 +301,13 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
       const restored: DisplayMessage[] = [];
       data.messages.forEach((message, index) => {
         if (message.role !== "agent") {
+          const isUser = message.role === "user";
           restored.push({
             key: `${message.timestamp}-${message.role}-${index}`,
-            role: message.role === "user" ? "user" : "agent",
+            role: isUser ? "user" : "agent",
             content: message.content,
             status: message.status,
+            ...(isUser && message.id ? { messageId: message.id, userEditable: true } : {}),
           });
           return;
         }
@@ -716,7 +818,19 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
                   </div>
                 );
               }
-              rendered.push(<MessageItem key={message.key} message={message} onToggleTool={toggleToolCollapsed} />);
+              rendered.push(
+                <MessageItem
+                  key={message.key}
+                  message={message}
+                  onToggleTool={toggleToolCollapsed}
+                  onStartEdit={startEdit}
+                  isEditing={!!message.messageId && message.messageId === editingMessageId}
+                  editDraft={editDraft}
+                  onEditDraftChange={setEditDraft}
+                  onEditSave={() => void saveEdit()}
+                  onEditCancel={cancelEdit}
+                />,
+              );
             });
             return rendered;
           })()

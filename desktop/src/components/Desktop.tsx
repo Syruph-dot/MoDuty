@@ -413,6 +413,21 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     });
   }, [openAgentIds]);
 
+  // 关闭卡片后清理其世界 X：重开时重新回退到磁贴当前自由网格 X
+  useEffect(() => {
+    setOpenWorldX((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const id of openAgentIds) {
+        if (Number.isFinite(prev[id])) next[id] = prev[id];
+      }
+      for (const key of Object.keys(prev)) {
+        if (!openAgentIds.includes(key)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [openAgentIds]);
+
   // T1：打开卡片首次落位 → 世界 X 取该磁贴自由网格 X（gridToPixels）；此后由拖拽/打开列表驱动，不做田字格重排
   useEffect(() => {
     if (!openMode || openAgentIds.length === 0) return;
@@ -1347,6 +1362,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
             onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
             onActivate={isOpen ? () => raiseAgent(agent.id) : undefined}
+            edgeViewportWidth={openMode ? bounds.width : 0}
+            edgeScrollX={openMode ? wallScrollX : 0}
             contextMenuItems={!openMode ? buildAgentMenu(agent) : undefined}
             onOpenTile={tileMode === "expanded" ? undefined : () => onOpen(agent)}
           >

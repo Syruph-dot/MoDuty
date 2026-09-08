@@ -213,6 +213,13 @@
   padding: 8px 10px;
 }
 
+/* T5：边缘丢弃意图（拖到屏幕左/右极端时） */
+.tile-shell--edge-left .agent-window,
+.tile-shell--edge-right .agent-window {
+  border-color: rgba(232, 90, 90, 0.9) !important;
+  box-shadow: 0 0 0 2px rgba(232, 90, 90, 0.4), 0 0 26px rgba(232, 90, 90, 0.35);
+}
+
 /* 坞磁贴只保留名字 + footer 时间（隐藏翻页主体 / scan / utility） */
 .tile-shell--dock .agent-tile__pages,
 .tile-shell--dock .agent-tile__scan,

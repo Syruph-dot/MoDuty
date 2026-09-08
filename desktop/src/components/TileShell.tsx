@@ -68,6 +68,9 @@ interface TileShellProps {
   onWorldXCommit?: (x: number) => void;
   /** T4 expanded 被点击激活（置顶） */
   onActivate?: () => void;
+  /** T5 边缘丢弃：传给壳的视口宽（px）与当前内容滚动量，用于左右极端判定 */
+  edgeViewportWidth?: number;
+  edgeScrollX?: number;
   /** 统一打开回调（Tile 抽象）：双击磁贴（非拖动）触发；agent/browser 传入，widget 不传 */
   onOpenTile?: () => void;
   /** 第一显示态内容（未展开的小卡片正面） */
@@ -185,6 +188,8 @@ export default function TileShell({
   onOpenTile,
   onWorldXCommit,
   onActivate,
+  edgeViewportWidth = 0,
+  edgeScrollX = 0,
   children,
   back,
   flipped = false,
@@ -215,6 +220,9 @@ export default function TileShell({
     }
   };
   const paperMode = mode === "expanded" && !!onWorldXCommit;
+  /** T5：拖拽进入屏幕左/右极端（中心越出视口）时置位，松手 → 复用现有关闭逻辑 */
+  const [edgeSide, setEdgeSide] = useState<0 | 1 | -1>(0);
+  const edgeSideRef = useRef<0 | 1 | -1>(0);
   // 拖动/点击抑制：真实拖动（位移超阈值）后短暂抑制 click/双击，
   // 避免“拖一下没到位→松手”被浏览器合成 click/双击而意外打开磁贴
   const suppressClock = useRef<{ active: boolean; timer: number | null }>({ active: false, timer: null });
@@ -420,6 +428,15 @@ export default function TileShell({
       if (paperMode) {
         // T3 草稿纸：像素跟手（不吸附、不 clamp），并记录释放瞬时速度（px/ms）
         setDragOffset({ x: next.x - geometry.x, y: next.y - geometry.y, w: 0, h: 0 });
+        // T5：屏幕中心 = 世界 X − 内容滚动量；越出左右视口 → 丢弃意图
+        let side: 0 | 1 | -1 = 0;
+        if (edgeViewportWidth > 0) {
+          const centerScreen = next.x + next.w / 2 - edgeScrollX;
+          if (centerScreen < 0) side = -1;
+          else if (centerScreen > edgeViewportWidth) side = 1;
+        }
+        edgeSideRef.current = side;
+        setEdgeSide(side);
         const now = performance.now();
         const prev = paperLastMoveRef.current;
         if (prev) {
@@ -464,12 +481,17 @@ export default function TileShell({
       } else if (didMove && originRef.current) {
         const next = applyDelta(originRef.current, dx, dy, dragMode);
         if (paperMode) {
-          // T3：松手 → 速度足够时执行减速惯性；否则直接落位提交世界 X
-          const vx = paperVelRef.current || 0;
-          if (Math.abs(vx) > 0.5) {
-            startPaperInertia(dx, vx);
+          // T5：拖到屏幕左/右极端 → 丢弃关闭（复用父级现有关闭，不重写）
+          if (edgeSideRef.current !== 0) {
+            onDropToDock?.(id);
           } else {
-            onWorldXCommit?.(originRef.current.x + dx);
+            // T3：松手 → 速度足够时执行减速惯性；否则直接落位提交世界 X
+            const vx = paperVelRef.current || 0;
+            if (Math.abs(vx) > 0.5) {
+              startPaperInertia(dx, vx);
+            } else {
+              onWorldXCommit?.(originRef.current.x + dx);
+            }
           }
         } else {
           const { snapped } = computeSnap(next, shiftRef.current);
@@ -489,6 +511,8 @@ export default function TileShell({
       scrollCompRef.current = 0;
       setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       setOverDock(false);
+      edgeSideRef.current = 0;
+      setEdgeSide(0);
       clearSnapGuides();
       clearGhost();
       clearDisplaced();
@@ -500,6 +524,8 @@ export default function TileShell({
     if (!isDragging) {
       setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       setOverDock(false);
+      edgeSideRef.current = 0;
+      setEdgeSide(0);
     }
   }, [geometry.x, geometry.y, geometry.w, geometry.h, isDragging]);
 
@@ -596,6 +622,8 @@ export default function TileShell({
     originRef.current = { ...geometry };
     paperVelRef.current = 0;
     paperLastMoveRef.current = null;
+    edgeSideRef.current = 0;
+    setEdgeSide(0);
     if (paperMode) {
       setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
     }
@@ -643,10 +671,11 @@ export default function TileShell({
 
   const shellModeClass =
     mode === "dock" ? " tile-shell--dock" : mode === "expanded" ? " tile-shell--expanded" : "";
+  const edgeClass = edgeSide === -1 ? " tile-shell--edge-left" : edgeSide === 1 ? " tile-shell--edge-right" : "";
 
   return (
     <div
-      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}`}
+      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${edgeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}`}
       style={style}
       data-tile-id={id}
       data-drag-mode={dragMode ?? ""}

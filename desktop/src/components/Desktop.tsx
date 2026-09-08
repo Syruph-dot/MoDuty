@@ -313,16 +313,19 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 分组视图（方案 B）：仅空闲墙且 viewMode=grouped 时启用
   const groupedMode = viewMode === "grouped" && !openMode;
 
-  // ---- 打开态关联会话（&ses_ 图）：右半屏打开的 session 的出/入边邻居（最多 12，时间倒序）----
+  // ---- 打开态关联会话（&ses_ 图）：T7 改为「当前实例快照」----
+  // 旧逻辑：收集全部已打开绘画取并集批量查询（代码保留于下方注释，便于恢复多绘画聚合）。
+  // 本次：只在 openMode 由关→开的瞬间，以当时「最新打开的绘画」为当前实例单独查询一次；
+  // 左右联动断开：右侧再打开/关闭/拖拽/置顶不再触发左侧面板重算（断/重联方案待后续设计）。
   useEffect(() => {
     if (!openMode) {
       setRelatedAgentIds([]);
       return;
     }
-    const sessionIds = openAgentIds
-      .map((id) => agents.find((a) => a.id === id)?.session_id)
-      .filter((sid): sid is string => !!sid);
-    if (sessionIds.length === 0) {
+    // [旧实现——多绘画并集查询，保留不删] const sessionIds = openAgentIds.map(...)...ids=sessionIds.join(",")
+    const currentId = openAgentIds[openAgentIds.length - 1];
+    const sessionId = currentId ? agents.find((candidate) => candidate.id === currentId)?.session_id : undefined;
+    if (!sessionId) {
       setRelatedAgentIds([]);
       return;
     }
@@ -330,7 +333,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     void (async () => {
       try {
         const base = await awaitApiBase();
-        const res = await fetch(`${base}/api/sessions/related?ids=${sessionIds.join(",")}`);
+        const res = await fetch(`${base}/api/sessions/related?ids=${sessionId}`);
         const data = (await res.json()) as { sessions?: Array<{ agentId: string }> };
         if (!cancelled) setRelatedAgentIds((data.sessions ?? []).map((s) => s.agentId));
       } catch {
@@ -340,7 +343,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return () => {
       cancelled = true;
     };
-  }, [openMode, openAgentIds, agents]);
+    // 故意仅依赖 openMode：进入 open 时取一次快照，右侧后续变化不驱动左侧（断联动）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openMode]);
   // 最后一个窗口收起后自动回到磁贴墙（模态保持 user 可手动切回 on）
   useEffect(() => {
     if (wmMode === "on" && openIds.length === 0) {

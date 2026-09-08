@@ -21,6 +21,12 @@ export interface BoundedHistoryResult {
   droppedCount: number;
   estimatedTokens: number;
   truncatedMessages: number;
+  /** 上下文分隔线位置：head 结束、folded 开始的字符索引（用于前端定位分隔线） */
+  dividerOffset?: number;
+  /** head 保留的消息数 */
+  headCount?: number;
+  /** tail 保留的消息数 */
+  tailCount?: number;
 }
 
 export function estimateTokens(text: string): number {
@@ -95,11 +101,16 @@ export function buildBoundedHistory(
     ? `\n\n[省略中间 ${droppedCount} 条历史消息，如需可让用户补充]\n\n`
     : "";
   const text = `${headText}${folded}${formatMessages(keptTail)}`;
+  const tailCount = keptTail.length;
+  const dividerOffset = headText.length;
   return {
     text,
-    keptCount: headCount + keptTail.length,
+    keptCount: headCount + tailCount,
     droppedCount,
     estimatedTokens: estimateTokens(text),
     truncatedMessages,
+    dividerOffset,
+    headCount,
+    tailCount,
   };
 }

@@ -580,6 +580,43 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     return `${Math.floor(s / 60)}m ${s % 60}s`;
   };
 
+  /** 计算上下文分隔线位置（基于 token 预算，与后端 buildBoundedHistory 逻辑一致） */
+  const calculateContextDivider = (msgs: DisplayMessage[]): { dividerIndex: number; headCount: number; tailCount: number; omittedCount: number } => {
+    const BUDGET_TOKENS = 4000;
+    const HEAD_MESSAGES = 2;
+    const MAX_MSG_CHARS = 4000;
+
+    const estimateTokens = (text: string): number => {
+      let cjk = 0, other = 0;
+      for (const ch of text) {
+        if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch)) cjk += 1;
+        else other += 1;
+      }
+      return Math.ceil(cjk * 1.2 + other / 3.5);
+    };
+
+    const formatMsgs = (msgs: Array<{ role: string; content: string }>) =>
+      msgs.map(m => `[${m.role}]\n${m.content}`).join("\n\n");
+
+    const headCount = Math.min(2, msgs.length);
+    const head = msgs.slice(0, headCount);
+    const headText = formatMsgs(head.map(m => ({ role: m.role, content: m.content })));
+    let remaining = 4000 - headText.split("").reduce((acc, ch) => acc + (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch) ? 1.2 : 1/3.5), 0);
+
+    let tailCount = 0;
+    let used = 0;
+    for (let i = msgs.length - 1; i >= headCount; i--) {
+      const content = msgs[i].content;
+      const tokens = content.split("").reduce((acc, ch) => acc + (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch) ? 1.2 : 1/3.5), 0);
+      if (used + tokens > remaining && tailCount > 0) break;
+      used += tokens;
+      tailCount++;
+    }
+    const omitted = Math.max(0, msgs.length - headCount - tailCount);
+    const dividerIndex = headCount + (msgs.length - headCount - tailCount);
+    return { dividerIndex, headCount, tailCount, omittedCount: omitted };
+  };
+
   return (
     <div className="agent-window" role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
       <header className="agent-window__header" title="拖动标题栏到左栏可收起">
@@ -603,9 +640,26 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (
-          messages.map((message) => (
-            <MessageItem key={message.key} message={message} onToggleTool={toggleToolCollapsed} />
-          ))
+          (() => {
+            const { dividerIndex, headCount, tailCount, omittedCount } = calculateContextDivider(messages);
+            const rendered: React.ReactNode[] = [];
+            messages.forEach((message, index) => {
+              // Insert divider before the omitted section
+              if (index === headCount && omittedCount > 0) {
+                rendered.push(
+                  <div key="context-divider" className="agent-window__context-divider" role="separator" aria-label="上下文分隔线">
+                    <span className="agent-window__divider-line" />
+                    <span className="agent-window__divider-label">
+                      📍 上下文边界：前 {headCount} 条 + 后 {messages.length - headCount - omittedCount} 条 · 省略 {omittedCount} 条
+                    </span>
+                    <span className="agent-window__divider-line" />
+                  </div>
+                );
+              }
+              rendered.push(<MessageItem key={message.key} message={message} onToggleTool={toggleToolCollapsed} />);
+            });
+            return rendered;
+          })()
         )}
 
         {streaming && messages.length > 0 && messages[messages.length - 1]?.content === "" ? (

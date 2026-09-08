@@ -139,6 +139,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   // ---- 打开态关联会话（&ses_ 图）：右半屏打开的 session 的出/入边邻居（最多 12，时间倒序）----
   const [relatedAgentIds, setRelatedAgentIds] = useState<string[]>([]);
+  /** T1：打开卡片的世界 X（右舞台自由草稿坐标；首次打开时回退到该磁贴自由网格 X 并在此记录） */
+  const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
@@ -375,6 +377,24 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     for (const b of bands) m[b.id] = b;
     return m;
   }, [bands]);
+
+  // T1：打开卡片首次落位 → 世界 X 取该磁贴自由网格 X（gridToPixels）；此后由拖拽/打开列表驱动，不做田字格重排
+  useEffect(() => {
+    if (!openMode || openAgentIds.length === 0) return;
+    const missing = openAgentIds.filter((id) => !Number.isFinite(openWorldX[id]));
+    if (missing.length === 0) return;
+    const next = { ...openWorldX };
+    for (const id of missing) {
+      const band = bandById[bandOf[id]] ?? null;
+      const sourceGrid = band?.gridMap[id] ?? null;
+      if (metrics && sourceGrid) {
+        next[id] = gridToPixels(sourceGrid, metrics, band?.x ?? 0).x;
+      } else {
+        next[id] = 0;
+      }
+    }
+    setOpenWorldX(next);
+  }, [openMode, openAgentIds, openWorldX, metrics, bandById, bandOf]);
 
   // ---- 拖拽成组：hover 计时状态机（ref 驱动）----
   //  仅当 hover 到另一个磁贴（非组名、非空网格）时启动计时：
@@ -1198,7 +1218,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         // 墙治理（A+D）：空闲态只渲染墙内可见；打开态的画布弱化层同样只显示墙内可见（归档/筛选外不显示）
         if (!openMode && !wallIds.has(agent.id)) return null;
         if (openMode && canvasGhost && !wallIds.has(agent.id)) return null;
-        // 双几何：打开态 → stage/dock（布局引擎）或画布弱化层（band 局部网格，透明可见初始画布）；
+        // 双几何：打开态 → 打开卡使用“世界 X + 右舞台尺寸”（T1，不再田字格强排）／dock 仍走布局引擎；
         //         空闲态 → band 局部网格派生像素（灰框让位时用 displaced 覆盖）
         const displacedGrid = displaced[agent.id];
         const band = bandById[bandOf[agent.id]] ?? null;
@@ -1206,7 +1226,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const bandX = band?.x ?? 0;
         const geometry =
           openMode && layout && (isOpen || inDock)
-            ? layout.geometryOf[agent.id] ?? EMPTY_TILE
+            ? isOpen
+              ? {
+                  x: Number.isFinite(openWorldX[agent.id]) ? openWorldX[agent.id] : 0,
+                  y: layout.stage.y,
+                  w: layout.stage.w,
+                  h: layout.stage.h,
+                }
+              : layout.geometryOf[agent.id] ?? EMPTY_TILE
             : metrics && sourceGrid
               ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX)
               : EMPTY_TILE;

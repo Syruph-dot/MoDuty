@@ -80,7 +80,8 @@
   position: relative;
 }
 
-.agent-window__export-btn {
+.agent-window__export-btn,
+.agent-window__tool-btn {
   width: 34px;
   height: 34px;
   border: none;
@@ -92,7 +93,8 @@
   cursor: pointer;
 }
 
-.agent-window__export-btn:hover {
+.agent-window__export-btn:hover,
+.agent-window__tool-btn:hover {
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -127,6 +129,128 @@
 
 .agent-window__export-menu button:hover {
   background: rgba(255, 255, 255, 0.1);
+}
+
+/* 会话内检索面板 */
+.agent-window__search {
+  flex: none;
+  position: relative;
+  z-index: 25;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agent-window__search-row {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-window__search-input {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: #e6ebf5;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.agent-window__search-input:focus {
+  outline: none;
+  border-color: rgba(120, 170, 255, 0.65);
+}
+
+.agent-window__search-msg {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.5);
+}
+
+.agent-window__search-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.agent-window__search-hit-main {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-window__search-hit-main:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-window__search-hit-main:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.agent-window__search-hit-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-window__search-hit-tag {
+  font-style: normal;
+  font-weight: 500;
+  font-size: 11px;
+  color: #ffd666;
+  border: 1px solid rgba(255, 214, 102, 0.45);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
+.agent-window__search-hit-meta {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+.agent-window__search-hit-snippet {
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.75);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 检索命中闪动高亮 */
+.msg--jump .msg__bubble,
+.tool-card--jump {
+  animation: agent-window-jump-flash 2.4s ease;
+}
+
+@keyframes agent-window-jump-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 214, 102, 0);
+  }
+  30% {
+    box-shadow: 0 0 0 4px rgba(255, 214, 102, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 214, 102, 0);
+  }
 }
 
 .agent-window__list {

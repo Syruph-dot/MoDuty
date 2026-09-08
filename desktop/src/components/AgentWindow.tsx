@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
+import { consumeJump, requestJump } from "../lib/sessionJump";
 import { buildMessageSequence } from "../lib/sessionMessages";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
@@ -25,6 +26,17 @@ interface SessionCandidate {
   name: string;
   goal: string;
   created_at: string;
+  message_count: number;
+  last_message_at: string;
+}
+
+/** GET /api/sessions/search 返回的命中项（matchedTurns 为 transcript turn 区间） */
+interface SessionSearchHit {
+  id: string;
+  name: string;
+  score: number;
+  matchedTurns: Array<[number, number]>;
+  snippet: string;
   message_count: number;
   last_message_at: string;
 }
@@ -72,6 +84,7 @@ const MessageItem = memo(function MessageItem({
   onEditDraftChange,
   onEditSave,
   onEditCancel,
+  jump = false,
 }: {
   message: DisplayMessage;
   onToggleTool: (key: string) => void;
@@ -82,6 +95,8 @@ const MessageItem = memo(function MessageItem({
   onEditDraftChange: (value: string) => void;
   onEditSave: () => void;
   onEditCancel: () => void;
+  /** 检索命中闪动高亮 */
+  jump?: boolean;
 }) {
   // agent 消息才走 markdown；content 不变时复用上一次的解析结果
   const html = useMemo(
@@ -98,7 +113,8 @@ const MessageItem = memo(function MessageItem({
     const tc = message.toolCard;
     return (
       <div
-        className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}`}
+        className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}${jump ? " tool-card--jump" : ""}`}
+        data-mk={message.key}
         onClick={() => onToggleTool(message.key)}
         role="button"
         tabIndex={0}
@@ -125,7 +141,7 @@ const MessageItem = memo(function MessageItem({
     if (isEditing) {
       const rowCount = Math.max(2, Math.min(10, editDraft.split("\n").length + 1));
       return (
-        <div className={`msg msg--${message.role}`}>
+        <div className={`msg msg--${message.role}`} data-mk={message.key}>
           <div className="msg__edit">
             <textarea
               className="msg__edit-input"
@@ -154,7 +170,10 @@ const MessageItem = memo(function MessageItem({
       );
     }
     return (
-      <div className={`msg msg--${message.role}${message.userEditable ? " msg--editable" : ""}`}>
+      <div
+        className={`msg msg--${message.role}${message.userEditable ? " msg--editable" : ""}${jump ? " msg--jump" : ""}`}
+        data-mk={message.key}
+      >
         <div className="msg__hover-actions">
           {message.userEditable ? (
             <button
@@ -173,7 +192,7 @@ const MessageItem = memo(function MessageItem({
   }
 
   return (
-    <div className={`msg msg--${message.role}`}>
+    <div className={`msg msg--${message.role}${jump ? " msg--jump" : ""}`} data-mk={message.key}>
       <div className="msg__bubble" dangerouslySetInnerHTML={{ __html: html }} />
       {message.reasoning ? (
         <details className="msg__reasoning" open>
@@ -216,6 +235,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   /** 已选中的会话引用 chips（用于可视化，底层 input 仍存 &ses_<id>） */
   const [mentionChips, setMentionChips] = useState<Array<{ sessionId: string; name: string }>>([]);
   const load = useAgentsStore((state) => state.load);
+  const openAgent = useAgentsStore((state) => state.openAgent);
+  const agents = useAgentsStore((state) => state.agents);
   /** 会话导出菜单开关（JSON/MD/TXT） */
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -252,6 +273,14 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   /** 用户消息原地编辑（截断分叉重发）状态 */
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  /** 会话内检索（命中 → 跳转定位高亮） */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchMsg, setSearchMsg] = useState("");
+  const [searchHits, setSearchHits] = useState<SessionSearchHit[]>([]);
+  /** 检索命中闪动高亮的消息 key 集合 */
+  const [jumpKeys, setJumpKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   const startEdit = (message: DisplayMessage): void => {
     if (!message.messageId || streaming) return;
@@ -287,6 +316,109 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     }
     await sendText(content);
   };
+
+  /** 滚动定位到第 turn 条用户消息并闪动高亮 */
+  const jumpToTurn = (turn: number): void => {
+    let count = 0;
+    let target: DisplayMessage | null = null;
+    for (const message of messages) {
+      if (message.role === "user") {
+        count += 1;
+        if (count === turn) {
+          target = message;
+          break;
+        }
+      }
+    }
+    if (!target) return;
+    const key = target.key;
+    setJumpKeys((prev) => new Set(prev).add(key));
+    window.setTimeout(() => {
+      setJumpKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }, 2600);
+    requestAnimationFrame(() => {
+      const listEl = listRef.current;
+      if (!listEl) return;
+      const itemEl = listEl.querySelector(`[data-mk="${CSS.escape(key)}"]`);
+      itemEl?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  };
+
+  const toggleSearch = (): void => {
+    setSearchOpen((open) => !open);
+    setSearchHits([]);
+    setSearchMsg("");
+  };
+
+  /** 检索全部会话 transcript（后端 /api/sessions/search 返回 matchedTurns） */
+  const runSearch = async (): Promise<void> => {
+    const query = searchQuery.trim();
+    if (!query) {
+      setSearchHits([]);
+      setSearchMsg("");
+      return;
+    }
+    setSearching(true);
+    setSearchMsg("");
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/sessions/search?q=${encodeURIComponent(query)}`);
+      if (!res.ok) {
+        throw new Error(`检索失败（HTTP ${res.status}）`);
+      }
+      const data = (await res.json()) as { hits: SessionSearchHit[] };
+      setSearchHits(data.hits);
+      if (data.hits.length === 0) {
+        setSearchMsg("无命中");
+      }
+    } catch (error) {
+      setSearchMsg(error instanceof Error ? error.message : "检索失败");
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  /** 命中跳转：当前会话 → 原地滚动高亮；其他会话 → 打开对应 Agent 窗口后跳转 */
+  const jumpFromHit = (hit: SessionSearchHit): void => {
+    const firstTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[0][0] : 0;
+    if (firstTurn <= 0) return;
+    if (hit.id === agent.session_id) {
+      setSearchOpen(false);
+      setSearchQuery("");
+      setSearchHits([]);
+      jumpToTurn(firstTurn);
+      return;
+    }
+    const targetAgent = agents.find((candidate) => candidate.session_id === hit.id);
+    if (!targetAgent) {
+      setSearchMsg("未找到对应 Agent，无法跳转");
+      return;
+    }
+    requestJump({ sessionId: hit.id, turn: firstTurn });
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchHits([]);
+    if (useAgentsStore.getState().openAgentIds.includes(targetAgent.id)) {
+      // 目标窗口已打开：强制重载历史触发 consume 效果
+      void reloadMessages();
+    } else {
+      openAgent(targetAgent.id);
+    }
+  };
+
+  // 打开/恢复目标会话后消费一次跳转（配合 sessionJump 总线）
+  useEffect(() => {
+    if (messages.length === 0) return;
+    const turn = consumeJump(agent.session_id);
+    if (turn !== null) {
+      jumpToTurn(turn);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, agent.session_id]);
 
   const reloadMessages = async (): Promise<StoredMessage[]> => {
     try {
@@ -760,6 +892,17 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           <span className="agent-window__state">{agent.state}{agent.phase ? ` · ${agent.phase}` : ""}</span>
         </div>
         <div className="agent-window__header-actions">
+          <button
+            type="button"
+            className="agent-window__tool-btn"
+            aria-label="会话内检索"
+            aria-expanded={searchOpen}
+            title="会话内检索（跨会话命中可跳转）"
+            onClick={toggleSearch}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            🔍
+          </button>
           <div className="agent-window__export">
             <button
               type="button"
@@ -798,6 +941,61 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         </div>
       </header>
 
+      {searchOpen ? (
+        <div className="agent-window__search" role="search">
+          <div className="agent-window__search-row">
+            <input
+              className="agent-window__search-input"
+              value={searchQuery}
+              placeholder="检索全部会话 transcript（Enter 搜索）"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void runSearch();
+                }
+                if (event.key === "Escape") {
+                  toggleSearch();
+                }
+              }}
+              autoFocus
+            />
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => void runSearch()} disabled={searching || !searchQuery.trim()}>
+              {searching ? "检索中…" : "搜索"}
+            </button>
+          </div>
+          {searchMsg ? <p className="agent-window__search-msg">{searchMsg}</p> : null}
+          {searchHits.length > 0 ? (
+            <ul className="agent-window__search-results">
+              {searchHits.map((hit) => {
+                const isCurrent = hit.id === agent.session_id;
+                const firstTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[0][0] : 0;
+                return (
+                  <li key={hit.id} className="agent-window__search-hit">
+                    <button
+                      type="button"
+                      className="agent-window__search-hit-main"
+                      disabled={firstTurn <= 0}
+                      onClick={() => jumpFromHit(hit)}
+                    >
+                      <span className="agent-window__search-hit-name">
+                        {hit.name}
+                        {isCurrent ? <em className="agent-window__search-hit-tag">当前会话</em> : null}
+                      </span>
+                      <span className="agent-window__search-hit-meta">
+                        {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息
+                        {firstTurn > 0 ? ` · 跳到 Turn ${firstTurn}` : ""}
+                      </span>
+                      {hit.snippet ? <span className="agent-window__search-hit-snippet">{hit.snippet}</span> : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="agent-window__list" ref={listRef} aria-live="polite">
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
@@ -829,6 +1027,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
                   onEditDraftChange={setEditDraft}
                   onEditSave={() => void saveEdit()}
                   onEditCancel={cancelEdit}
+                  jump={jumpKeys.has(message.key)}
                 />,
               );
             });

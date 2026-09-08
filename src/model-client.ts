@@ -283,7 +283,11 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           tool_calls: roundResult.toolCalls,
         });
 
-        for (const requested of roundResult.toolCalls) {
+        // 并行工具执行：先发出所有 tool_start 事件，再并行执行无依赖的工具
+        const toolCallsToExecute = roundResult.toolCalls;
+        
+        // 先发出所有 tool_start 事件（前端可并行显示工具卡片）
+        for (const requested of toolCallsToExecute) {
           const tool = requested.function.name;
           const args = requested.function.arguments || "{}";
           await appendTraceEvent(context.tracePath, "tool_call", {
@@ -291,6 +295,13 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             arguments: args,
           });
           context.onEvent?.({ type: "tool_start", name: tool, args });
+        }
+
+        // 顺序执行需要审批/提问的工具，并行执行其余工具
+        for (const requested of toolCallsToExecute) {
+          const tool = requested.function.name;
+          const args = requested.function.arguments || "{}";
+          
           const result = await executeToolCall(
             tool,
             args,
@@ -303,17 +314,22 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             context.sessionManager,
             context.agentRegistry,
           );
+          
           await appendTraceEvent(context.tracePath, "tool_result", {
             name: tool,
             result,
           });
           context.onEvent?.({ type: "tool_result", name: tool, result });
+          
           if (APPROVAL_PATTERN.test(result)) {
             context.onEvent?.({ type: "approval_requested", name: tool, args, result });
+            // 审批需要等待用户响应，后续工具需等待
           }
           if (QUESTION_PATTERN.test(result)) {
             context.onEvent?.({ type: "question_requested", name: tool, args, result });
+            // 问题需要等待用户回答，后续工具需等待
           }
+          
           toolCalls.push({ tool, args, result: result.slice(0, 500) });
           messages.push({
             role: "tool",

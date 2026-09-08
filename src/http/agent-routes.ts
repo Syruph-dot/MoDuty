@@ -293,6 +293,18 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // 获取指定 turn 或 turn 区间（用于会话内跳转定位）
+  const turnMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/turns\/(\d+)(?:\/(\d+))?$/);
+  if (turnMatch && request.method === "GET") {
+    const runtime = ensureAgents(ctx);
+    const sessionId = decodeURIComponent(turnMatch[1] ?? "");
+    const from = parseInt(turnMatch[2] ?? "1", 10);
+    const to = turnMatch[3] ? parseInt(turnMatch[3], 10) : from;
+    const content = await agent.sessionManager.readSessionTranscript(sessionId, from, to);
+    json(response, 200, { sessionId, from, to, content });
+    return true;
+  }
+
   // 列表包含归档项
   if (request.method === "GET" && url.pathname === "/api/agents" && url.searchParams.get("include_archived") === "true") {
     const runtime = ensureAgents(ctx);

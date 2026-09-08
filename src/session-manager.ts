@@ -28,6 +28,8 @@ export interface SessionRecord {
   /** 是否已归档（归档后不在主列表显示，但数据保留） */
   archived?: boolean;
   archivedAt?: string;
+  /** 是否为草稿态（首条消息前不入列表） */
+  draft?: boolean;
 }
 
 export interface SessionMessage {
@@ -60,10 +62,12 @@ export class SessionManager {
     this.sessionsFile = path.join(this.sessionsDir, "sessions.json");
   }
 
-  async listSessions(): Promise<SessionRecord[]> {
+  /** 列出会话（默认过滤草稿态，includeDraft=true 时包含草稿） */
+  async listSessions(includeDraft = false): Promise<SessionRecord[]> {
     try {
       const parsed = JSON.parse(await readFile(this.sessionsFile, "utf8")) as unknown;
-      return Array.isArray(parsed) ? parsed.map(sessionFromDisk) : [];
+      const sessions = Array.isArray(parsed) ? parsed.map(sessionFromDisk) : [];
+      return includeDraft ? sessions : sessions.filter((s) => !s.draft);
     } catch {
       return [];
     }
@@ -81,6 +85,7 @@ export class SessionManager {
       messageCount: 0,
       lastMessageAt: now,
       turnIndex: 1,
+      draft: true,
     };
     return await withFileLock(this.sessionsFile, async () => {
       const sessions = await this.listSessions();
@@ -155,9 +160,12 @@ export class SessionManager {
       const all = await this.getStoredMessages(sessionId);
       all.push(message);
       await this.writeMessagesUpsert(sessionId, all);
+      // 首条消息时取消草稿态
+      const isFirstMessage = all.length === 1;
       await this.updateSession(sessionId, {
         messageCount: all.length,
         lastMessageAt: message.timestamp,
+        ...(isFirstMessage ? { draft: false } : {}),
       });
       // 增量 transcript：仅当该消息使某个 turn 完成时追加
       await this.maybeAppendTurnTranscript(sessionId).catch(() => undefined);

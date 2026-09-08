@@ -357,6 +357,39 @@ export class AgentRegistry {
   private async writeAgents(agents: AgentRecord[]): Promise<void> {
     await atomicWriteJson(this.registryFile, agents.map(agentToDisk));
   }
+
+  /** 归档 Agent：标记为 archived，从主列表隐藏但保留数据 */
+  async archiveAgent(agentId: string): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((a) => a.id === agentId);
+      if (index === -1) return null;
+      const updated = { ...agents[index], archived: true, archivedAt: new Date().toISOString() };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
+  /** 取消归档 Agent：恢复到主列表显示 */
+  async unarchiveAgent(agentId: string): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((a) => a.id === agentId);
+      if (index === -1) return null;
+      const updated = { ...agents[index], archived: false, archivedAt: undefined };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
+  /** 列出所有 Agent（含归档），可选过滤 */
+  async listAllAgents(includeArchived = false): Promise<AgentRecord[]> {
+    const agents = await this.listAgents();
+    if (includeArchived) return agents;
+    return agents.filter((a) => !a.archived);
+  }
 }
 
 function agentToDisk(agent: AgentRecord): Record<string, unknown> {
@@ -374,6 +407,8 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
     ...(agent.contextStats ? { contextStats: agent.contextStats } : {}),
     createdAt: agent.createdAt,
     lastActiveAt: agent.lastActiveAt,
+    archived: agent.archived,
+    archivedAt: agent.archivedAt,
   };
 }
 
@@ -407,5 +442,7 @@ function agentFromDisk(value: unknown): AgentRecord {
       : {}),
     createdAt: String(raw.createdAt ?? ""),
     lastActiveAt: String(raw.lastActiveAt ?? ""),
+    archived: raw.archived === true,
+    archivedAt: raw.archived_at ? String(raw.archived_at) : raw.archivedAt ? String(raw.archivedAt) : undefined,
   };
 }

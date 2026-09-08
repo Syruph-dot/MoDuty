@@ -72,6 +72,9 @@ export interface AgentRecord {
   contextStats?: ContextStats; // 上下文占用指标（内存 + 落盘）
   createdAt: string;
   lastActiveAt: string;
+  /** 是否已归档（归档后不在主列表显示，但数据保留） */
+  archived?: boolean;
+  archivedAt?: string;
 }
 
 export interface ModelRunContext {

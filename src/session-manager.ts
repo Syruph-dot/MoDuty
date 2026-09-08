@@ -25,6 +25,9 @@ export interface SessionRecord {
   turnIndex?: number;
   /** 最后完成的 turn id */
   lastCompletedTurnId?: string;
+  /** 是否已归档（归档后不在主列表显示，但数据保留） */
+  archived?: boolean;
+  archivedAt?: string;
 }
 
 export interface SessionMessage {
@@ -504,6 +507,39 @@ export class SessionManager {
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {
     await atomicWriteJson(this.sessionsFile, sessions.map(sessionToDisk));
   }
+
+  /** 归档会话：标记为 archived，从主列表隐藏但保留数据 */
+  async archiveSession(sessionId: string): Promise<SessionRecord | null> {
+    return await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions();
+      const index = sessions.findIndex((s) => s.id === sessionId);
+      if (index === -1) return null;
+      const updated = { ...sessions[index], archived: true, archivedAt: new Date().toISOString() };
+      sessions[index] = updated;
+      await this.writeSessions(sessions);
+      return updated;
+    });
+  }
+
+  /** 取消归档会话：恢复到主列表显示 */
+  async unarchiveSession(sessionId: string): Promise<SessionRecord | null> {
+    return await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions();
+      const index = sessions.findIndex((s) => s.id === sessionId);
+      if (index === -1) return null;
+      const updated = { ...sessions[index], archived: false, archivedAt: undefined };
+      sessions[index] = updated;
+      await this.writeSessions(sessions);
+      return updated;
+    });
+  }
+
+  /** 列出所有会话（含归档），可选过滤 */
+  async listAllSessions(includeArchived = false): Promise<SessionRecord[]> {
+    const sessions = await this.listSessions();
+    if (includeArchived) return sessions;
+    return sessions.filter((s) => !s.archived);
+  }
 }
 
 function sessionFromDisk(raw: Record<string, unknown>): SessionRecord {
@@ -517,6 +553,8 @@ function sessionFromDisk(raw: Record<string, unknown>): SessionRecord {
     lastMessageAt: String(raw.last_message_at ?? raw.lastMessageAt ?? ""),
     turnIndex: typeof raw.turn_index === "number" ? raw.turn_index : typeof raw.turnIndex === "number" ? raw.turnIndex : undefined,
     lastCompletedTurnId: raw.last_completed_turn_id ? String(raw.last_completed_turn_id) : raw.lastCompletedTurnId ? String(raw.lastCompletedTurnId) : undefined,
+    archived: raw.archived === true,
+    archivedAt: raw.archived_at ? String(raw.archived_at) : raw.archivedAt ? String(raw.archivedAt) : undefined,
   };
 }
 
@@ -531,6 +569,8 @@ function sessionToDisk(session: SessionRecord): Record<string, unknown> {
     last_message_at: session.lastMessageAt,
     turn_index: session.turnIndex,
     last_completed_turn_id: session.lastCompletedTurnId,
+    archived: session.archived,
+    archived_at: session.archivedAt,
   };
 }
 

@@ -233,6 +233,62 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // Agent 归档/取消归档
+  const agentArchiveMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/archive$/);
+  if (agentArchiveMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentArchiveMatch[1] ?? ""));
+    const archived = await runtime.registry.archiveAgent(record.id);
+    if (!archived) throw new MomokaHttpError(404, "Agent not found");
+    json(response, 200, { success: true, agent: agentToSnake(archived, await agent.sessionManager.getSession(archived.sessionId)) });
+    return true;
+  }
+  const agentUnarchiveMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/unarchive$/);
+  if (agentUnarchiveMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(agentUnarchiveMatch[1] ?? ""));
+    const unarchived = await runtime.registry.unarchiveAgent(record.id);
+    if (!unarchived) throw new MomokaHttpError(404, "Agent not found");
+    json(response, 200, { success: true, agent: agentToSnake(unarchived, await agent.sessionManager.getSession(unarchived.sessionId)) });
+    return true;
+  }
+
+  // Session 归档/取消归档
+  const sessionArchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/);
+  if (sessionArchiveMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const archived = await agent.sessionManager.archiveSession(decodeURIComponent(sessionArchiveMatch[1] ?? ""));
+    if (!archived) throw new MomokaHttpError(404, "Session not found");
+    json(response, 200, { success: true, session: archived });
+    return true;
+  }
+  const sessionUnarchiveMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/unarchive$/);
+  if (sessionUnarchiveMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const unarchived = await agent.sessionManager.unarchiveSession(decodeURIComponent(sessionUnarchiveMatch[1] ?? ""));
+    if (!unarchived) throw new MomokaHttpError(404, "Session not found");
+    json(response, 200, { success: true, session: unarchived });
+    return true;
+  }
+
+  // 列表包含归档项
+  if (request.method === "GET" && url.pathname === "/api/agents" && url.searchParams.get("include_archived") === "true") {
+    const runtime = ensureAgents(ctx);
+    const records = await runtime.registry.listAllAgents(true);
+    const agents = [];
+    for (const record of records) {
+      agents.push(agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)));
+    }
+    json(response, 200, { agents });
+    return true;
+  }
+  if (request.method === "GET" && url.pathname === "/api/sessions" && url.searchParams.get("include_archived") === "true") {
+    const runtime = ensureAgents(ctx);
+    const sessions = await agent.sessionManager.listAllSessions(true);
+    json(response, 200, { sessions });
+    return true;
+  }
+
   return false;
 }
 

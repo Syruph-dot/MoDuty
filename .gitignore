@@ -30,6 +30,7 @@ memory/*.md
 memory/.agents/
 memory/.dispatches.json
 memory/.questions.json
+memory/.legacy
 
 
 # Runtime logs & build outputs (local only)
@@ -43,6 +44,7 @@ tsc-output.txt
 clock.html
 runs/
 snapshot/
+tsconfig.tsbuildinfo
 
 # Desktop smoke-test artifacts
 desktop/scripts/*.json

@@ -141,6 +141,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const [relatedAgentIds, setRelatedAgentIds] = useState<string[]>([]);
   /** T1：打开卡片的世界 X（右舞台自由草稿坐标；首次打开时回退到该磁贴自由网格 X 并在此记录） */
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
+  /** T2：内容层当前横向滚动量（open 模式 dock 视口补偿用） */
+  const [wallScrollX, setWallScrollX] = useState(0);
 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
@@ -694,10 +696,21 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   }, [reorderGroups]);
 
   const contentWidth = useMemo(() => {
-    if (openMode || groupedMode || !metrics) return "100%";
+    if (groupedMode || !metrics) return "100%";
+    if (openMode) {
+      // 草稿纸桌面：内容层至少铺满视口；若有卡片在视口外右方则右扩，供横向平移
+      const cardW = layout?.stage.w ?? bounds.width;
+      let maxX = 0;
+      for (const id of openAgentIds) {
+        const x = openWorldX[id];
+        if (Number.isFinite(x)) maxX = Math.max(maxX, x + cardW);
+      }
+      const need = Math.max(bounds.width, Math.ceil(maxX) + 80);
+      return `${need}px`;
+    }
     const w = bandLayout?.contentWidth ?? 0;
     return `${Math.max(w, 1)}px`;
-  }, [openMode, groupedMode, metrics, bandLayout]);
+  }, [openMode, groupedMode, metrics, bandLayout, layout, bounds.width, openAgentIds, openWorldX]);
 
   // 把 overscrollRef 的 raw/side 画到内容层与左右弧上
   const paintOverscroll = useCallback(() => {
@@ -810,7 +823,15 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         else if (event.deltaY > 0) zoomOut();
         return;
       }
-      if (openMode) return;
+      if (openMode) {
+        // T2：草稿纸桌面用容器 scrollLeft 直接平移，不做橡皮筋越界（free 模式的越界弹回逻辑保留在其后）
+        event.preventDefault();
+        const maxScroll = el.scrollWidth - el.clientWidth;
+        const cur = el.scrollLeft;
+        const delta = event.deltaY;
+        el.scrollLeft = Math.min(maxScroll, Math.max(0, cur + delta));
+        return;
+      }
       event.preventDefault();
       const delta = event.deltaY;
       const maxScroll = el.scrollWidth - el.clientWidth;
@@ -862,7 +883,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     const IGNORE_SELECTOR =
       ".tile-shell, .tile-group-name, .wm-side, .wm-left-hotzone, .wm-right-hotzone, .wm-charm-bar, .wm-charm__btn, .wall-footer-banner, button, input, textarea, [data-context-menu]";
     const onDown = (event: MouseEvent) => {
-      if (openMode) return;
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest(IGNORE_SELECTOR)) return;
       panning = true;
@@ -877,6 +897,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (!panning) return;
       const rawScroll = startScroll - (event.clientX - startX);
       const maxScroll = el.scrollWidth - el.clientWidth;
+      // T2：open 模式同样支持抓手平移（无橡皮筋）
+      if (openMode) {
+        el.scrollLeft = Math.min(maxScroll, Math.max(0, rawScroll));
+        return;
+      }
       // 越过停靠点：scrollLeft 已夹死，余量转成内容层橡皮筋位移
       if (rawScroll < 0) {
         el.scrollLeft = 0;
@@ -915,6 +940,16 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       clearOverscroll();
     };
   }, [openMode, wallRef, setOverscroll, clearOverscroll, releaseOverscroll]);
+
+  // T2：open 模式下跟踪容器 scrollLeft（dock 视口补偿）
+  useEffect(() => {
+    const el = wallRef.current;
+    if (!el || !openMode) return;
+    setWallScrollX(el.scrollLeft);
+    const onScroll = () => setWallScrollX(el.scrollLeft);
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [openMode]);
 
   // 桌面空白处右键 → 弹出菜单（New Agent / Add widget / Refresh / Change wallpaper / Zoom）
   const onContextMenu = useCallback(
@@ -1233,7 +1268,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                   w: layout.stage.w,
                   h: layout.stage.h,
                 }
-              : layout.geometryOf[agent.id] ?? EMPTY_TILE
+              : {
+                  // T2：dock 固定在视口（内容层随容器 scrollLeft 平移，这里反向补偿）
+                  ...(layout.geometryOf[agent.id] ?? EMPTY_TILE),
+                  x: (layout.geometryOf[agent.id]?.x ?? 0) + wallScrollX,
+                }
             : metrics && sourceGrid
               ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX)
               : EMPTY_TILE;
@@ -1300,7 +1339,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const browserGrid = systemBand?.gridMap[browser.id] ?? null;
         const geometry =
           openMode && layout
-            ? layout.geometryOf[browser.id] ?? EMPTY_TILE
+            ? (() => {
+                const bGeom = layout.geometryOf[browser.id] ?? EMPTY_TILE;
+                // T2：dock（非打开）固定在视口，反向补偿容器 scrollLeft
+                if (!isOpen) {
+                  return { ...bGeom, x: bGeom.x + wallScrollX };
+                }
+                return bGeom;
+              })()
             : metrics && browserGrid
               ? gridToPixels(displacedGrid ?? browserGrid, metrics, systemBandX)
               : EMPTY_TILE;

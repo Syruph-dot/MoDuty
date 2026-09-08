@@ -305,6 +305,20 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // Transcript 多格式导出（JSON/MD/TXT），内容体较大直接返回字符串，由前端下载为文件
+  const sessionExportMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/export$/);
+  if (sessionExportMatch && request.method === "GET") {
+    const runtime = ensureAgents(ctx);
+    const sessionId = decodeURIComponent(sessionExportMatch[1] ?? "");
+    const existing = await agent.sessionManager.getSession(sessionId);
+    if (!existing) throw new MomokaHttpError(404, "Session not found");
+    const formatParam = String(url.searchParams.get("format") ?? "md");
+    const format = formatParam === "json" || formatParam === "txt" ? formatParam : "md";
+    const exported = await agent.sessionManager.exportSession(sessionId, format);
+    json(response, 200, exported);
+    return true;
+  }
+
   // 列表包含归档项
   if (request.method === "GET" && url.pathname === "/api/agents" && url.searchParams.get("include_archived") === "true") {
     const runtime = ensureAgents(ctx);

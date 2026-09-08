@@ -155,6 +155,38 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   /** 已选中的会话引用 chips（用于可视化，底层 input 仍存 &ses_<id>） */
   const [mentionChips, setMentionChips] = useState<Array<{ sessionId: string; name: string }>>([]);
   const load = useAgentsStore((state) => state.load);
+  /** 会话导出菜单开关（JSON/MD/TXT） */
+  const [exportOpen, setExportOpen] = useState(false);
+
+  /** 下载会话记录：GET /api/sessions/:id/export?format=… → Blob → 浏览器下载 */
+  const exportSession = async (format: "json" | "md" | "txt"): Promise<void> => {
+    setExportOpen(false);
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/sessions/${encodeURIComponent(agent.session_id)}/export?format=${format}`);
+      if (!res.ok) {
+        throw new Error(`导出失败（HTTP ${res.status}）`);
+      }
+      const data = (await res.json()) as { filename: string; content: string };
+      const mime =
+        format === "json"
+          ? "application/json"
+          : format === "md"
+            ? "text/markdown;charset=utf-8"
+            : "text/plain;charset=utf-8";
+      const blob = new Blob([data.content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = data.filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setStreamError(error instanceof Error ? error.message : "导出失败");
+    }
+  };
 
   const reloadMessages = async (): Promise<StoredMessage[]> => {
     try {
@@ -625,15 +657,43 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           <h2 className="agent-window__title">{agent.name}</h2>
           <span className="agent-window__state">{agent.state}{agent.phase ? ` · ${agent.phase}` : ""}</span>
         </div>
-        <button
-          type="button"
-          className="agent-window__close"
-          aria-label="关闭对话窗口"
-          onClick={onClose}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          ×
-        </button>
+        <div className="agent-window__header-actions">
+          <div className="agent-window__export">
+            <button
+              type="button"
+              className="agent-window__export-btn"
+              aria-label="导出会话记录"
+              aria-expanded={exportOpen}
+              title="导出会话记录"
+              onClick={() => setExportOpen((open) => !open)}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              ⭳
+            </button>
+            {exportOpen ? (
+              <div className="agent-window__export-menu" role="menu" aria-label="导出格式">
+                <button type="button" role="menuitem" onClick={() => void exportSession("json")} onMouseDown={(event) => event.stopPropagation()}>
+                  JSON
+                </button>
+                <button type="button" role="menuitem" onClick={() => void exportSession("md")} onMouseDown={(event) => event.stopPropagation()}>
+                  Markdown
+                </button>
+                <button type="button" role="menuitem" onClick={() => void exportSession("txt")} onMouseDown={(event) => event.stopPropagation()}>
+                  TXT
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="agent-window__close"
+            aria-label="关闭对话窗口"
+            onClick={onClose}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            ×
+          </button>
+        </div>
       </header>
 
       <div className="agent-window__list" ref={listRef} aria-live="polite">

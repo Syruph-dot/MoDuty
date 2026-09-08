@@ -69,6 +69,66 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
+.agent-window__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+.agent-window__export {
+  position: relative;
+}
+
+.agent-window__export-btn {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #cdd6e6;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-window__export-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-window__export-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  background: #1d2129;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+
+.agent-window__export-menu button {
+  border: none;
+  background: transparent;
+  color: #e6ebf5;
+  font-size: 13px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-window__export-menu button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .agent-window__list {
   flex: 1;
   overflow-y: auto;

@@ -405,6 +405,109 @@ export class SessionManager {
     return lines.join("\n");
   }
 
+  /** 导出会话记录为指定格式（JSON/MD/TXT） */
+  async exportSession(sessionId: string, format: "json" | "md" | "txt" = "md"): Promise<{ format: string; content: string; filename: string }> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    const messages = await this.getStoredMessages(sessionId);
+    const turns = buildTurns(messages);
+    
+    let content: string;
+    let filename: string;
+    
+    switch (format) {
+      case "json": {
+        const exportData = {
+          session: {
+            id: session.id,
+            name: session.name,
+            goal: session.goal,
+            folderPath: session.folderPath,
+            createdAt: session.createdAt,
+            messageCount: session.messageCount,
+            lastMessageAt: session.lastMessageAt,
+          },
+          turns: turns.map((turn) => ({
+            index: turn.index,
+            userMessage: {
+              content: turn.userMessage.content,
+              timestamp: turn.userMessage.timestamp,
+            },
+            agentMessage: turn.agentMessage ? {
+              content: turn.agentMessage.content,
+              timestamp: turn.agentMessage.timestamp,
+              toolCalls: turn.agentMessage.toolCalls?.map((call) => ({
+                tool: call.tool,
+                args: call.args,
+                result: call.result,
+                status: call.status,
+              })),
+            } : null,
+            completed: turn.completed,
+            createdAt: turn.createdAt,
+          })),
+        };
+        content = JSON.stringify(exportData, null, 2);
+        filename = `session_${session.id}.json`;
+        break;
+      }
+      case "md": {
+        const lines: string[] = [];
+        lines.push(`# Session: ${session.name} (${session.id})`);
+        lines.push(`goal: ${session.goal}`);
+        lines.push(`created: ${session.createdAt}`);
+        lines.push(`turns: ${turns.length}`);
+        lines.push("");
+        for (const turn of turns) {
+          lines.push(`## Turn ${turn.index} · user · ${turn.userMessage.timestamp}`);
+          lines.push("");
+          lines.push(turn.userMessage.content || "");
+          if (turn.agentMessage) {
+            lines.push(`## Turn ${turn.index} · agent · ${turn.agentMessage.timestamp}`);
+            lines.push("");
+            lines.push(turn.agentMessage.content || "");
+            for (const call of turn.agentMessage.toolCalls ?? []) {
+              const result = call.result.length > 2000 ? `${call.result.slice(0, 2000)}…[截断]` : call.result;
+              lines.push(`🔧 ${call.tool}(${call.args}) -> ${result}`);
+            }
+          }
+          lines.push("");
+        }
+        content = lines.join("\n");
+        filename = `session_${session.id}.md`;
+        break;
+      }
+      case "txt":
+      default: {
+        const lines: string[] = [];
+        lines.push(`Session: ${session.name} (${session.id})`);
+        lines.push(`Goal: ${session.goal}`);
+        lines.push(`Created: ${session.createdAt}`);
+        lines.push(`Turns: ${turns.length}`);
+        lines.push("");
+        for (const turn of turns) {
+          lines.push(`Turn ${turn.index} · user · ${turn.userMessage.timestamp}`);
+          lines.push(turn.userMessage.content || "");
+          if (turn.agentMessage) {
+            lines.push(`Turn ${turn.index} · agent · ${turn.agentMessage.timestamp}`);
+            lines.push(turn.agentMessage.content || "");
+            for (const call of turn.agentMessage.toolCalls ?? []) {
+              lines.push(`Tool: ${call.tool}`);
+              lines.push(`Args: ${call.args}`);
+              lines.push(`Result: ${call.result}`);
+            }
+          }
+          lines.push("");
+        }
+        content = lines.join("\n");
+        filename = `session_${session.id}.txt`;
+        break;
+      }
+    }
+    
+    return { format, content, filename };
+  }
+
   /** 在 transcript.md 内做内容 grep（rg 侧）。id 省略则跨所有会话。 */
   async searchContentInSession(sessionId: string | undefined, query: string): Promise<Array<{ session: string; line: number; text: string }>> {
     const results: Array<{ session: string; line: number; text: string }> = [];

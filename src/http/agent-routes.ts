@@ -158,6 +158,35 @@ export async function handleAgentRoutes(
     return true;
   }
 
+  // 分发文件给 Agent（Shell verb 桥进程调用）：接收文件路径列表 + 指令，写入会话并触发 chat
+  const dispatchFilesMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/dispatch-files$/);
+  if (dispatchFilesMatch && request.method === "POST") {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(dispatchFilesMatch[1] ?? ""));
+    const body = await readJsonBody(request) as { files?: unknown[]; message?: unknown };
+    const files = Array.isArray(body.files) ? body.files.map(String) : [];
+    const message = typeof body.message === "string" ? body.message : "";
+    if (files.length === 0) {
+      throw new MomokaHttpError(400, "files array is required");
+    }
+    // 构造任务书：文件列表 + 用户指令
+    const taskMessage = [
+      message ? `指令: ${message}` : "",
+      files.length > 0 ? `文件列表 (${files.length} 项):` : "",
+      files.map((f, i) => `  ${i + 1}. ${f}`).join("\n"),
+      "",
+      "请处理上述文件。完成后在会话中给出结果摘要即可，无需回报给调度者。"
+    ].filter(Boolean).join("\n");
+    await agent.sessionManager.addMessage(record.sessionId, "user", taskMessage);
+    // 异步触发 chat（不阻塞响应），由 orchestration 驱动
+    const deps = orchestrationOf(ctx);
+    void driveQuestionAnswered(deps, record).catch((error: unknown) => {
+      console.error("[dispatch-files] 驱动失败:", error);
+    });
+    json(response, 200, { success: true, filesCount: files.length, message: "已分发给 Agent" });
+    return true;
+  }
+
   const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
   if (agentMatch && request.method === "GET") {
     const runtime = ensureAgents(ctx);

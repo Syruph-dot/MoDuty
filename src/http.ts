@@ -68,6 +68,13 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
       return;
     }
 
+    // 健康检查端点（供 daemon/负载均衡器探活）
+    if (url.pathname === "/health" && request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "ok", timestamp: new Date().toISOString() }));
+      return;
+    }
+
     if (await handleSettingsRoutes(ctx, request, response, url)) return;
     if (await handleRelationRoutes(ctx, request, response, url)) return;
     if (await handleSessionRoutes(ctx, request, response, url)) return;

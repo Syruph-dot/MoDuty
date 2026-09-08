@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAgentsStore } from "../../state/agentsStore";
+import AgentWindow from "../AgentWindow";
 
 /**
  * 值日生（Duty Girl）——调度者 Agent 的桌面形象（固定 2×3 磁贴）。
@@ -124,6 +125,8 @@ export default function DutyGirl() {
   const [error, setError] = useState<string | null>(null);
   const [mentionAt, setMentionAt] = useState<{ query: string; start: number; index: number; caret: number } | null>(null);
   const [dialogPos, setDialogPos] = useState<{ left: number; top: number; side: "left" | "right" } | null>(null);
+  /** DutyWindow：以完整 AgentWindow 打开值日生会话（portal 到 body，不占磁贴墙） */
+  const [showWindow, setShowWindow] = useState(false);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -135,6 +138,8 @@ export default function DutyGirl() {
   /* 打开 agent 磁贴窗口（chip 点击）：把 &ses_/&tile_ 目标解析成 agentId 后 openAgent */
   const agents = useAgentsStore((state) => state.agents);
   const openAgentById = useAgentsStore((state) => state.openAgent);
+  /** 值日生 agent 记录（DutyWindow 用） */
+  const dutyAgent = useMemo(() => agents.find((candidate) => candidate.id === agentId) ?? null, [agents, agentId]);
   const openRefTarget = useCallback(
     (raw: string, kind: "ses" | "tile") => {
       const id = raw.replace(/^(ses|tile)_/, "");
@@ -452,9 +457,24 @@ export default function DutyGirl() {
         >
           <div className="duty-dialog__header">
             <span className="duty-dialog__title">值日生</span>
-            <button type="button" className="duty-dialog__close" aria-label="关闭" onClick={toggle}>
-              ×
-            </button>
+            <div className="duty-dialog__actions">
+              <button
+                type="button"
+                className="duty-dialog__close"
+                aria-label="打开完整窗口"
+                title="打开完整窗口（DutyWindow）"
+                disabled={!dutyAgent}
+                onClick={() => {
+                  setOpen(false);
+                  setShowWindow(true);
+                }}
+              >
+                窗口 ↗
+              </button>
+              <button type="button" className="duty-dialog__close" aria-label="关闭" onClick={toggle}>
+                ×
+              </button>
+            </div>
           </div>
           <div className="duty-dialog__list" ref={listRef}>
             {messages.length === 0 && !streaming ? (
@@ -535,6 +555,19 @@ export default function DutyGirl() {
         <span className="duty-girl__badge">值日生</span>
       </button>
       {dialog}
+      {showWindow && dutyAgent
+        ? createPortal(
+            <div
+              className="duty-window-overlay"
+              onMouseDown={(event) => event.stopPropagation()}
+              onMouseUp={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <AgentWindow agent={dutyAgent} onClose={() => setShowWindow(false)} />
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

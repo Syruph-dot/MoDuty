@@ -61,6 +61,14 @@ export async function handleAgentRoutes(
       throw new MomokaHttpError(400, "name is required");
     }
     const kind = body.kind === "dispatcher" || body.kind === "worker" ? (body.kind as "dispatcher" | "worker") : undefined;
+    // 值日生唯一化：dispatcher（或重名"值日生"）已存在时复用现有记录，不创建第二个
+    if (kind === "dispatcher") {
+      const existing = await runtime.registry.findDispatcher();
+      if (existing) {
+        json(response, 200, { agent: agentToSnake(existing, await agent.sessionManager.getSession(existing.sessionId)), reused: true });
+        return true;
+      }
+    }
     // 值日生单源：kind=dispatcher 的 Agent 忽略前端传入的 system，一律使用后端 DISPATCHER 常量，避免双源漂移。
     const effectiveRole = kind === "dispatcher" ? DISPATCHER_SYSTEM_PROMPT : role;
     const record = await runtime.registry.createAgent({

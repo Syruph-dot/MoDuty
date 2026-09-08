@@ -218,6 +218,10 @@ export function deriveVisibleAgents(
   const baseWall: Agent[] = [];
   const baseArchived: Agent[] = [];
   for (const agent of agents) {
+    // 值日生（dispatcher）不作为 AgentTile 出现在磁贴墙/列表——它是 widget 层的专属实体
+    if (agent.kind === "dispatcher") {
+      continue;
+    }
     if (pinned.has(agent.id)) {
       baseWall.push(agent);
       continue;

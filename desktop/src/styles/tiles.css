@@ -1426,6 +1426,17 @@
   cursor: pointer;
 }
 
+.duty-dialog__close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.duty-dialog__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .duty-dialog__list {
   flex: 1 1 auto;
   min-height: 0;

@@ -333,6 +333,21 @@
   background: #3d7df0;
 }
 
+/* DutyWindow 覆盖层（值日生完整窗口，portal 到 body） */
+.duty-window-overlay {
+  position: fixed;
+  left: 12vw;
+  right: 12vw;
+  top: 9vh;
+  bottom: 9vh;
+  z-index: 420;
+}
+
+.duty-window-overlay .agent-window {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+}
+
 .agent-window__list {
   flex: 1;
   overflow-y: auto;

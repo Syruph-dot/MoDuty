@@ -108,7 +108,7 @@ const MAX_W = 1200;
 const MAX_H = 900;
 const SCREEN_EDGE = 0;
 /** Y 锁定阈值 px：拖拽垂直位移未超此值前 Y 保持不动；一旦超过即解锁，XY 都跟手（进入错位） */
-const Y_LOCK_PX = 10;
+const Y_LOCK_PX = 25;
 
 /**
  * 根据拖拽模式把 delta 应用到原始 geometry 上（像素跟手；free+resize 时仅用于视觉）：
@@ -217,12 +217,15 @@ export default function TileShell({
   const paperLastMoveRef = useRef<{ time: number; clientX: number } | null>(null);
   const paperVelRef = useRef(0); // px/ms
   const paperInertiaRef = useRef<{ raf: number; offsetX: number; v: number; lastT: number; dragTotal: number } | null>(null);
+  /** 惯性滑行中：关闭 CSS transition（避免松手后分段/滞后），由 rAF 接管位移 */
+  const [paperGlide, setPaperGlide] = useState(false);
   const cancelPaperInertia = () => {
     const cur = paperInertiaRef.current;
     if (cur) {
       window.cancelAnimationFrame(cur.raf);
       paperInertiaRef.current = null;
     }
+    setPaperGlide(false);
   };
   const paperMode = mode === "expanded" && !!onWorldXCommit;
   /** T5：拖拽进入屏幕左/右极端（中心越出视口）时置位，松手 → 复用现有关闭逻辑 */
@@ -396,11 +399,12 @@ export default function TileShell({
     }
   };
 
-  // T3：草稿纸模式释放后的减速惯性动画（世界 X 平移，rAF 指数衰减）；Y 在解锁时随起始错位值一次性落位
-  const startPaperInertia = (dragTotal: number, v0: number, commitY: number) => {
+  // T3：草稿纸模式释放后的减速惯性动画（仅 X 平移，rAF 指数衰减；Y 已在松手瞬间落位）
+  const startPaperInertia = (dragTotal: number, v0: number) => {
     cancelPaperInertia();
     const state = { raf: 0, offsetX: dragTotal, v: v0, lastT: performance.now(), dragTotal };
     paperInertiaRef.current = state;
+    setPaperGlide(true);
     const step = () => {
       const cur = paperInertiaRef.current;
       if (!cur) return;
@@ -411,13 +415,13 @@ export default function TileShell({
       cur.offsetX += cur.v * dtMs;
       if (Math.abs(cur.v) < 0.06 || Math.abs(cur.offsetX - cur.dragTotal) > 2200) {
         paperInertiaRef.current = null;
+        setPaperGlide(false);
         const base = originRef.current?.x ?? geometry.x;
         onWorldXCommit?.(base + cur.offsetX);
-        onWorldYCommit?.(commitY);
         setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
         return;
       }
-      setDragOffset((prev) => ({ x: cur.offsetX, y: commitY - geometry.y, w: 0, h: 0 }));
+      setDragOffset((prev) => ({ x: cur.offsetX, y: prev.y, w: 0, h: 0 }));
       cur.raf = requestAnimationFrame(step);
     };
     state.raf = requestAnimationFrame(step);
@@ -502,15 +506,18 @@ export default function TileShell({
           if (edgeSideRef.current !== 0) {
             onDropToDock?.(id);
           } else {
-            // Y 错位：仅解锁后提交（锁定态 Y 保持原 top，不写）
+            // Y 错位：仅解锁后提交（锁定态 Y 保持原 top，不写）——松手瞬间提交，避免 Y 再独立滑动
             const finalY = originRef.current.y + (paperYUnlockRef.current ? dy : 0);
-            // T3：松手 → 速度足够时执行减速惯性（X）；否则直接落位提交世界 X/Y
+            if (paperYUnlockRef.current) {
+              onWorldYCommit?.(finalY);
+              setDragOffset((prev) => ({ ...prev, y: 0 }));
+            }
+            // T3：松手 → 速度足够时执行减速惯性（仅 X）；否则直接落位提交世界 X
             const vx = paperVelRef.current || 0;
             if (Math.abs(vx) > 0.5) {
-              startPaperInertia(dx, vx, finalY);
+              startPaperInertia(dx, vx);
             } else {
               onWorldXCommit?.(originRef.current.x + dx);
-              onWorldYCommit?.(finalY);
             }
           }
         } else {
@@ -529,7 +536,10 @@ export default function TileShell({
       originGridRef.current = null;
       ghostRef.current = null;
       scrollCompRef.current = 0;
-      setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+      // 惯性进行中保留 dragOffset（rAF 接管）；否则清 0 回到 geometry
+      if (!paperMode || paperInertiaRef.current === null) {
+        setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+      }
       setOverDock(false);
       edgeSideRef.current = 0;
       setEdgeSide(0);
@@ -539,15 +549,17 @@ export default function TileShell({
     },
   });
 
-  // 外部 geometry 变化（如 store 还原）时，清掉本地 drag offset
+  // 外部 geometry 变化（如 store 还原）时，清掉本地 drag offset（惯性滑行中保留 X offset）
   useEffect(() => {
     if (!isDragging) {
-      setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+      if (!paperGlide) {
+        setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
+      }
       setOverDock(false);
       edgeSideRef.current = 0;
       setEdgeSide(0);
     }
-  }, [geometry.x, geometry.y, geometry.w, geometry.h, isDragging]);
+  }, [geometry.x, geometry.y, geometry.w, geometry.h, isDragging, paperGlide]);
 
   // 拖动中的指针坐标由 Desktop 全局 mousemove 转发（.tile-shell--dragging）驱动 hover 状态机，TileShell 不介入
 
@@ -674,7 +686,7 @@ export default function TileShell({
     width: visualW,
     height: visualH,
     zIndex: isDragging ? 1000 : zIndex ?? 1,
-    transition: isDragging ? "none" : ["left", "top", "width", "height"].map((prop) => `${prop} ${animMs}ms ${ANIM_EASE}`).join(", "),
+    transition: isDragging || paperGlide ? "none" : ["left", "top", "width", "height"].map((prop) => `${prop} ${animMs}ms ${ANIM_EASE}`).join(", "),
   };
 
   // 合并进入/退出动画样式

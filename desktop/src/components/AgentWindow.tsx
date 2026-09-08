@@ -281,6 +281,11 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const [searchHits, setSearchHits] = useState<SessionSearchHit[]>([]);
   /** 检索命中闪动高亮的消息 key 集合 */
   const [jumpKeys, setJumpKeys] = useState<ReadonlySet<string>>(() => new Set());
+  /** per-agent System Prompt（role）编辑器 */
+  const [roleOpen, setRoleOpen] = useState(false);
+  const [roleDraft, setRoleDraft] = useState("");
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [roleError, setRoleError] = useState("");
 
   const startEdit = (message: DisplayMessage): void => {
     if (!message.messageId || streaming) return;
@@ -352,6 +357,50 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     setSearchOpen((open) => !open);
     setSearchHits([]);
     setSearchMsg("");
+  };
+
+  /** 打开 System Prompt 编辑器：拉取当前 role 作为草稿 */
+  const openRoleEditor = async (): Promise<void> => {
+    setRoleError("");
+    if (!roleOpen) {
+      try {
+        const base = await awaitApiBase();
+        const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/role`);
+        if (!res.ok) {
+          throw new Error(`读取失败（HTTP ${res.status}）`);
+        }
+        const data = (await res.json()) as { role: string };
+        setRoleDraft(data.role ?? "");
+      } catch (error) {
+        setRoleError(error instanceof Error ? error.message : "读取 role 失败");
+      }
+    }
+    setRoleOpen((open) => !open);
+  };
+
+  /** 保存 role：PUT /api/agents/:id/role → 刷新 agent 列表 */
+  const saveRole = async (): Promise<void> => {
+    const role = roleDraft.trim();
+    if (!role || roleSaving) return;
+    setRoleSaving(true);
+    setRoleError("");
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/role`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        throw new Error(`保存失败（HTTP ${res.status}）`);
+      }
+      setRoleOpen(false);
+      await load();
+    } catch (error) {
+      setRoleError(error instanceof Error ? error.message : "保存 role 失败");
+    } finally {
+      setRoleSaving(false);
+    }
   };
 
   /** 检索全部会话 transcript（后端 /api/sessions/search 返回 matchedTurns） */
@@ -895,6 +944,17 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           <button
             type="button"
             className="agent-window__tool-btn"
+            aria-label="编辑 System Prompt（人格）"
+            aria-expanded={roleOpen}
+            title="编辑 System Prompt（人格 role）"
+            onClick={() => void openRoleEditor()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            ⚙
+          </button>
+          <button
+            type="button"
+            className="agent-window__tool-btn"
             aria-label="会话内检索"
             aria-expanded={searchOpen}
             title="会话内检索（跨会话命中可跳转）"
@@ -940,6 +1000,31 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           </button>
         </div>
       </header>
+
+      {roleOpen ? (
+        <div className="agent-window__role">
+          <div className="agent-window__role-head">
+            <span className="agent-window__role-title">System Prompt / 人格（role）</span>
+            <span className="agent-window__role-hint">{roleDraft.length} 字符</span>
+          </div>
+          <textarea
+            className="agent-window__role-input"
+            value={roleDraft}
+            onChange={(event) => setRoleDraft(event.target.value)}
+            placeholder="（空 role 无法保存；修改 dispatcher 后将成为该 Agent 的自定义 role）"
+            spellCheck={false}
+          />
+          {roleError ? <p className="agent-window__role-error">{roleError}</p> : null}
+          <div className="agent-window__role-actions">
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setRoleOpen(false)}>
+              取消
+            </button>
+            <button type="button" className="btn btn--primary btn--sm" onClick={() => void saveRole()} disabled={!roleDraft.trim() || roleSaving}>
+              {roleSaving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {searchOpen ? (
         <div className="agent-window__search" role="search">

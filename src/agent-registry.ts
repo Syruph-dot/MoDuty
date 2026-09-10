@@ -45,21 +45,31 @@ export const DISPATCHER_SYSTEM_PROMPT =
 - 复杂任务（需要执行代码、查资料、多步产出、使用文件/浏览器等）：进入调度模式。
 
 ### ② 检索择优（元数据层，禁止代读全文）
-- 用 search_sessions 检索相关会话，得到命中候选（含名称/分数/匹配区间/片段）。
-- 对 top 候选用 inspect_session 查看元数据：goal、messageCount、lastMessageAt、turnRange、topics。
-- 择优依据：主题相关性 > 时效性（lastMessageAt 是否太旧） > 会话长度（messageCount 是否冗长到难以续聊）。
-- 你的决策只基于元数据与片段，不要 read_session 拉取全文——被派发者需要内容时会自己按需读取。
+
+**首选用 search_sessions**（引擎已是 ripgrep，支持多关键词并集）：
+- 调用示例：search_sessions({"query":"<主关键词>","keywords":["<同义词>","<相关词>"],"limit":10})
+- 返回项里的 agent_id 就是可直接派发的执行者 id —— **不需要**再拉全量 agent 列表。
+- 对候选再用 inspect_session 看元数据（goal / messageCount / lastMessageAt / topics）。
+- 择优依据：主题相关性 > 时效性（lastMessageAt 是不是太旧） > 会话长度（太长难续聊）。
+- 决策只看元数据与片段；不要 read_session 拉全文（被派发者需要内容时会自己按需读）。
+
+**只有 search_sessions 没给出可用候选时才考虑 agent list，且必须带筛选**：
+- 用 run_momoka_cli agent list --query <主题> [--limit N]
+- **禁止**不带 --query 直接拉全量列表再取第一条（那样必然反复复用同一个执行者）。
 
 ### ③ 决定：复用 or 新建
-- 复用候选 = 找到现成的执行 Agent（agt_xxx，1:1 绑定会话），且其会话主题与你需要的任务匹配。
-  - 命中候选时：把单一最佳候选报给老师确认（名称、主题、消息数、最后活动时间），问“复用它吗？”。老师 yes → 继续；no → 转新建。
-- 新建执行者：
-  - 没有匹配候选，或候选太久远/太冗长、无法放心复用时，直接新建，不用问老师：
-    run_momoka_cli agent create --name <任务短主题>（从老师请求提炼 2-6 字主题）
-  - 创建后立刻进入 ④ 下发任务。
+- **复用必须来自检索**：目标 agent 必须出自 ② 的命中候选，且主题匹配。
+  - 复用前**必须**先向老师确认，并在派发时带上确认凭证：
+    用 ask_question 提问「复用 <agt_id>「<名字>」（主题…、N 条消息、最后活动…）吗？」选项 ["复用","新建"]；
+    拿到回答后：选“复用”就派发时带 --confirm <pending question 的 qst_ id>；选“新建”就转新建。
+  - **不带 --confirm 的复用派发会被后端直接拒绝**（这是硬约束，不是建议）。
+- **新建执行者（不用问）**：没有匹配候选，或候选太久远/太冗长、无法放心复用：
+  - run_momoka_cli agent create --name <任务短主题>（从老师请求提炼 2-6 字主题），创建后立刻进入 ④。
 
 ### ④ 下发任务书并回 idle
-- **必须真实调用工具**：run_momoka_cli agent dispatch <执行者AgentId> <任务书> 来派发（异步：发起后立即返回，不要用同步的 agent chat 苦等）。任务书文本是 dispatch 的**参数**，不是你的回复。
+- **必须真实调用工具**：run_momoka_cli agent dispatch <执行者AgentId> [--confirm <qst_id>] <任务书> 来派发（异步：发起后立即返回，不要用同步的 agent chat 苦等）。任务书文本是 dispatch 的**参数**，不是你的回复。
+  - 复用的执行者：必须带 --confirm <qst_id>（来自 ③ 的确认）。
+  - 新建的执行者：不带 --confirm。
 - 新建执行者也必须真实调用：run_momoka_cli agent create --name <任务短主题>（从老师请求提炼 2-6 字主题），创建后立刻进入派发。
 - 任务书要点：
   1. 明确任务目标与验收预期；
@@ -162,6 +172,16 @@ export class AgentRegistry {
     if (!sessionId) return null;
     const agents = await this.listAgents();
     return agents.find((agent) => agent.sessionId === sessionId) ?? null;
+  }
+
+  /**
+   * 会话已有的消息数。
+   * 用途：判定一次派发是「复用既有执行者」还是「刚新建的执行者」——
+   * 刚新建的执行者在派发前消息数为 0（任务书尚未写入）。
+   */
+  async sessionMessageCount(sessionId: string): Promise<number> {
+    const session = await this.sessions.getSession(sessionId).catch(() => null);
+    return session?.messageCount ?? 0;
   }
 
   /** 当前生效的值日生（dispatcher）：优先 kind 标记，兼容旧数据按名字兜底 */

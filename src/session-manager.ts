@@ -1,4 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 
 import { atomicWrite, atomicWriteJson, withFileLock } from "./write-queue.js";
@@ -12,6 +14,44 @@ import {
   turnsToTranscript,
   appendTurnToTranscript,
 } from "./serialization.js";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * 内容检索引擎：优先 rg（ripgrep）子进程。
+ * 用子进程的好处：不占 Node 主线程、多线程扫描、带命中计数；
+ * rg 不存在或执行失败时上层一律回落原先的 JS 全量扫描，保证功能不因此不可用。
+ */
+const RIPGREP_PATH = process.env.MODUTY_RG_PATH?.trim() || "rg";
+let ripgrepReady: boolean | null = null;
+
+async function ripgrepAvailable(): Promise<boolean> {
+  if (ripgrepReady !== null) return ripgrepReady;
+  try {
+    await execFileAsync(RIPGREP_PATH, ["--version"], { timeout: 5000, windowsHide: true });
+    ripgrepReady = true;
+  } catch {
+    ripgrepReady = false;
+  }
+  return ripgrepReady;
+}
+
+/** 跑一次 rg：正常返回 stdout（无命中时为空串）；rg 不可用/超时返回 null 由调用方回落 */
+async function runRipgrep(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(RIPGREP_PATH, args, {
+      cwd,
+      timeout: 15000,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return stdout;
+  } catch (error) {
+    // rg 无命中时退出码为 1，这不是错误
+    if ((error as { code?: number | string }).code === 1) return "";
+    return null;
+  }
+}
 
 export interface SessionRecord {
   id: string;
@@ -526,11 +566,37 @@ export class SessionManager {
     return null;
   }
 
-  /** 在 transcript.md 内做内容 grep（rg 侧）。id 省略则跨所有会话。 */
+  /**
+   * 在 transcript 内做内容 grep。
+   * 优先 rg（行号 + 命中行文本一次拿到），失败则回落 JS 全量扫描。
+   * query 按**字面量**处理（rg 用 --fixed-strings），避免模型给出的关键词里的正则元字符改变语义。
+   */
   async searchContentInSession(sessionId: string | undefined, query: string): Promise<Array<{ session: string; line: number; text: string }>> {
+    const needle = query.trim();
+    if (!needle) return [];
+    if (await ripgrepAvailable()) {
+      const args = [
+        "--line-number", "--ignore-case", "--fixed-strings", "--no-ignore", "--hidden",
+        "--glob", "transcript.md", "--max-count", "20",
+        "-e", needle, "--",
+      ];
+      args.push(sessionId ? `${sessionId}/transcript.md` : ".");
+      const stdout = await runRipgrep(args, this.sessionsDir);
+      if (stdout !== null) {
+        const results: Array<{ session: string; line: number; text: string }> = [];
+        for (const raw of stdout.split("\n")) {
+          if (!raw.trim()) continue;
+          const match = /^\.?[\\/]?([^\\/:]+)[\\/]transcript\.md:(\d+):(.*)$/.exec(raw);
+          if (!match) continue;
+          results.push({ session: match[1], line: Number(match[2]), text: match[3].slice(0, 300) });
+          if (results.length >= 100) break;
+        }
+        return results;
+      }
+    }
     const results: Array<{ session: string; line: number; text: string }> = [];
     const ids = sessionId ? [sessionId] : (await this.listSessions()).map((session) => session.id);
-    const needle = query.toLowerCase();
+    const lowered = needle.toLowerCase();
     for (const id of ids) {
       let content = await readFile(this.transcriptPath(id), "utf8").catch(() => null);
       if (!content) {
@@ -539,7 +605,7 @@ export class SessionManager {
       }
       if (!content) continue;
       content.split("\n").forEach((text, idx) => {
-        if (text.toLowerCase().includes(needle)) {
+        if (text.toLowerCase().includes(lowered)) {
           results.push({ session: id, line: idx + 1, text: text.slice(0, 300) });
         }
       });
@@ -547,66 +613,126 @@ export class SessionManager {
     return results.slice(0, 100);
   }
 
-  /** 跨会话检索，按相关度排序。数据源用 transcript.md（增量维护的纯文本缓存）。 */
-  async searchSessions(query: string, limit = 20): Promise<Array<Record<string, unknown>>> {
+  /**
+   * 跨会话检索，按相关度排序。数据源用 transcript.md（增量维护的纯文本缓存）。
+   *
+   * 多关键词之间取**并集**（任一命中即入候选，与 rg -e a -e b 语义一致）。
+   * 引擎：优先用 rg 做候选筛进与计数（不占 Node 主线程），只对候选会话做逐 turn 解析
+   * 以保持原有返回结构；rg 不可用时回落到全量 JS 扫描。
+   */
+  async searchSessions(query: string, limit = 20, extraKeywords: string[] = []): Promise<Array<Record<string, unknown>>> {
     const sessions = await this.listSessions();
-    if (!query.trim()) {
+    const keywords = [query, ...extraKeywords].map((item) => item.trim()).filter(Boolean);
+    if (keywords.length === 0) {
       return sessions.slice(0, limit).map((session) => this.toSearchHit(session, 0, [], ""));
     }
-    const needle = query.toLowerCase();
-    const hits: Array<Record<string, unknown>> = [];
+    const needles = keywords.map((item) => item.toLowerCase());
+
+    // 元数据层命中：名字 +5 / goal +3（对每个关键词分别累加）
+    const meta = new Map<string, number>();
     for (const session of sessions) {
       let score = 0;
-      if (session.name.toLowerCase().includes(needle)) score += 5;
-      if (session.goal.toLowerCase().includes(needle)) score += 3;
-      let content = await readFile(this.transcriptPath(session.id), "utf8").catch(() => null);
-      if (content === null) {
-        await this.regenerateTranscript(session.id).catch(() => undefined);
-        content = await readFile(this.transcriptPath(session.id), "utf8").catch(() => null);
+      for (const needle of needles) {
+        if (session.name.toLowerCase().includes(needle)) score += 5;
+        if (session.goal.toLowerCase().includes(needle)) score += 3;
       }
-      if (content === null) continue;
-      const turnRanges: Array<[number, number]> = [];
-      let snippet = "";
-      let rangeStart = -1;
-      const segmentTitleRe = /^## Turn (\d+)/;
-      const lines = content.split("\n");
-      let segment: string[] = [];
-      let segmentNo = 0;
-      const flushSegment = () => {
-        if (segment.length === 0 || segmentNo === 0) {
-          segment = [];
-          return;
-        }
-        const body = segment.join("\n").toLowerCase();
-        if (body.includes(needle)) {
-          score += 1;
-          if (!snippet) {
-            const firstText = segment.find((line) => !line.startsWith("## ") && !line.startsWith("🔧 ") && line.trim());
-            snippet = (firstText ?? segment[0] ?? "").slice(0, 160);
-          }
-          if (rangeStart === -1) rangeStart = segmentNo;
-        } else if (rangeStart !== -1) {
-          turnRanges.push([rangeStart, segmentNo - 1]);
-          rangeStart = -1;
-        }
-        segment = [];
-      };
-      for (const line of lines) {
-        const titleMatch = line.match(segmentTitleRe);
-        if (titleMatch) {
-          flushSegment();
-          segmentNo = Number(titleMatch[1]);
-          segment.push(line);
-        } else {
-          segment.push(line);
-        }
-      }
-      flushSegment();
-      if (rangeStart !== -1) turnRanges.push([rangeStart, segmentNo]);
-      if (score > 0) hits.push(this.toSearchHit(session, score, turnRanges, snippet));
+      if (score > 0) meta.set(session.id, score);
+    }
+
+    // 内容层候选：rg 命中文件（并集）∪ 元数据命中；rg 不可用时退化为全部会话
+    const counts = await this.countHitsWithRipgrep(keywords);
+    const candidateIds = counts
+      ? [...new Set([...counts.keys(), ...meta.keys()])]
+      : sessions.map((session) => session.id);
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+
+    const hits: Array<Record<string, unknown>> = [];
+    for (const id of candidateIds) {
+      const session = byId.get(id);
+      if (!session) continue;
+      const detail = await this.scoreTranscript(session.id, needles);
+      const score = (meta.get(session.id) ?? 0) + detail.score;
+      if (score > 0) hits.push(this.toSearchHit(session, score, detail.turnRanges, detail.snippet));
     }
     hits.sort((a, b) => Number(b.score) - Number(a.score));
     return hits.slice(0, limit);
+  }
+
+  /** 用 rg 统计每个会话的命中行数（多关键词并集）；rg 不可用返回 null */
+  private async countHitsWithRipgrep(keywords: string[]): Promise<Map<string, number> | null> {
+    if (keywords.length === 0) return null;
+    if (!(await ripgrepAvailable())) return null;
+    const args = [
+      "--count", "--ignore-case", "--fixed-strings", "--no-ignore", "--hidden",
+      "--glob", "transcript.md",
+    ];
+    for (const keyword of keywords) args.push("-e", keyword);
+    args.push("--", ".");
+    const stdout = await runRipgrep(args, this.sessionsDir);
+    if (stdout === null) return null;
+    const counts = new Map<string, number>();
+    for (const raw of stdout.split("\n")) {
+      const match = /([^\\/]+)[\\/]transcript\.md:(\d+)\s*$/.exec(raw.trim());
+      if (match) counts.set(match[1], Number(match[2]));
+    }
+    return counts;
+  }
+
+  /**
+   * 逐 turn 解析单个 transcript：统计命中段数、命中 turn 区间与首段摘要。
+   * 打分口径与原实现一致：**一个命中 twe 1 分**（不按关键词数重复计数）。
+   */
+  private async scoreTranscript(
+    sessionId: string,
+    needles: string[],
+  ): Promise<{ score: number; turnRanges: Array<[number, number]>; snippet: string }> {
+    let content = await readFile(this.transcriptPath(sessionId), "utf8").catch(() => null);
+    if (content === null) {
+      await this.regenerateTranscript(sessionId).catch(() => undefined);
+      content = await readFile(this.transcriptPath(sessionId), "utf8").catch(() => null);
+    }
+    if (content === null) return { score: 0, turnRanges: [], snippet: "" };
+
+    let score = 0;
+    const turnRanges: Array<[number, number]> = [];
+    let snippet = "";
+    let rangeStart = -1;
+    const segmentTitleRe = /^## Turn (\d+)/;
+    const lines = content.split("\n");
+    let segment: string[] = [];
+    let segmentNo = 0;
+    const flushSegment = () => {
+      if (segment.length === 0 || segmentNo === 0) {
+        segment = [];
+        return;
+      }
+      const body = segment.join("\n").toLowerCase();
+      if (needles.some((needle) => body.includes(needle))) {
+        score += 1;
+        if (!snippet) {
+          const firstText = segment.find((line) => !line.startsWith("## ") && !line.startsWith("🔧 ") && line.trim());
+          snippet = (firstText ?? segment[0] ?? "").slice(0, 160);
+        }
+        if (rangeStart === -1) rangeStart = segmentNo;
+      } else if (rangeStart !== -1) {
+        turnRanges.push([rangeStart, segmentNo - 1]);
+        rangeStart = -1;
+      }
+      segment = [];
+    };
+    for (const line of lines) {
+      const titleMatch = line.match(segmentTitleRe);
+      if (titleMatch) {
+        flushSegment();
+        segmentNo = Number(titleMatch[1]);
+        segment.push(line);
+      } else {
+        segment.push(line);
+      }
+    }
+    flushSegment();
+    if (rangeStart !== -1) turnRanges.push([rangeStart, segmentNo]);
+    return { score, turnRanges, snippet };
   }
 
   private toSearchHit(session: SessionRecord, score: number, matchedTurns: Array<[number, number]>, snippet: string): Record<string, unknown> {

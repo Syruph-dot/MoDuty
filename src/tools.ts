@@ -201,13 +201,51 @@ export function runCommandEchoOnlyTool(input: { command: string }): string {
   return `Command preview only (not executed): ${input.command}`;
 }
 
+/**
+ * 改造型 / 破坏型命令：即使处于完全自动模式（permissionMode=auto）也必须人工审批。
+ * 背景：执行者在无审批情况下跑过 conda install，直接改了用户的 anaconda base 环境。
+ * 这里只做「不自动放行」，不代替用户的判断。
+ */
+const DANGEROUS_COMMAND_PATTERNS: RegExp[] = [
+  // 包管理器安装/卸载/升级
+  /\b(?:pip|pip3|conda|mamba|npm|pnpm|yarn|poetry|uv)\b[^|]{0,120}\b(?:install|add|remove|uninstall|update|upgrade|create)\b/i,
+  /\b(?:winget|choco|scoop)\s+(?:install|uninstall|upgrade|update)\b/i,
+  // 版本控制改写历史 / 强推
+  /\bgit\s+(?:reset\s+--hard|clean\s+-[a-z]*f|push\b[^|]{0,60}--force|push\s+-f\b|checkout\s+--\s)/i,
+  // 递归删除
+  /\b(?:rm|rmdir|del|erase|Remove-Item)\b[^|]{0,40}(?:-r\b|-rf\b|\/s\b|\/q\b)/i,
+  // 系统级
+  /\b(?:format|diskpart|mkfs)\b/i,
+  /\b(?:reg\s+(?:add|delete)|sc\s+(?:config|delete)|net\s+(?:stop|start))\b/i,
+  /\b(?:shutdown|reboot)\b/i,
+  // 管道下载执行 / 放宽执行策略
+  /\b(?:curl|wget|Invoke-WebRequest|iwr)\b[^|]{0,200}\|\s*(?:sh|bash|zsh|powershell|pwsh|cmd)\b/i,
+  /\bSet-ExecutionPolicy\b/i,
+];
+
+/** 是否为改造型/破坏型命令（需永久人工审批） */
+function isDangerousCommand(command: string): boolean {
+  return DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
 export async function runShellTool(
   input: WorkspaceToolInput & { command: string; tracePath?: string; approvalOrigin?: ApprovalOrigin },
   approvals = createDefaultApprovalStore(requireWorkspace(input.workDir)),
 ): Promise<string> {
   const workspace = requireWorkspace(input.workDir);
   if (!parseWhitelistedCommand(input.command)) {
-    // 完全自动模式：非白名单命令直接放行执行（不再产生人工审批）
+    // 改造型/破坏型命令：不受完全自动模式放行，一律先拿人工审批（不再直接跑）
+    if (isDangerousCommand(input.command)) {
+      const approval = await approvals.request({
+        targetWorkspace: workspace,
+        toolName: "run_shell",
+        args: { command: input.command },
+        tracePath: input.tracePath,
+        ...input.approvalOrigin,
+      });
+      return `改造型命令已拦下，等待人工审批（id: ${approval.id}）：${input.command}\n批准后由审批面板执行；未批准前不会运行。`;
+    }
+    // 完全自动模式：其余非白名单命令直接放行执行（不再产生人工审批）
     if (isFullyAutomatic()) {
       try {
         const autoResult = await approvals.runApproved(input.command, workspace);
@@ -278,8 +316,17 @@ async function recordDispatchIfDispatcher(
   if (cliArgs[0] !== "agent" || (cliArgs[1] !== "chat" && cliArgs[1] !== "dispatch")) return;
   const targetId = cliArgs[2];
   if (!targetId || !targetId.startsWith("agt_")) return;
-  // 任务书 = 目标 id 之后的参数（去掉 --link 类开关与链接逗号串的边界由模型负责，这里尽力提取）
-  const taskWords = cliArgs.slice(3).filter((token) => !token.startsWith("--"));
+  // 任务书 = 目标 id 之后的参数；开关（--xxx）与其取值（如 --confirm <qst_id>）都要剔除
+  const taskWords: string[] = [];
+  for (let i = 3; i < cliArgs.length; i += 1) {
+    const token = cliArgs[i];
+    if (!token.startsWith("--")) {
+      taskWords.push(token);
+      continue;
+    }
+    // 带取值的开关：跳过它的值
+    if (token === "--confirm" || token === "--link") i += 1;
+  }
   const task = taskWords.join(" ").trim();
 
   // 调用者必须是被识别的值日生（当前会话反查）
@@ -304,6 +351,71 @@ async function recordDispatchIfDispatcher(
     task: task.slice(0, 500),
     linkedSessions,
   });
+}
+
+/**
+ * 值日生「复用既有执行者」的**硬约束**（返回非 null 则拒绝本次派发）。
+ *
+ * 为什么必须做成机制：提示词早已要求“复用前先问老师”，但实测被完全无视——
+ * 三次主题完全不同的任务都派给了同一个 agent（名字还叫「MoDuty README 摘要」）。
+ *
+ * 判定口径：
+ * - 只约束 dispatcher 发起的 agent dispatch/chat；
+ * - 目标会话已有消息（> 0）→ 视为「复用」；消息为 0 → 视为刚新建，放行；
+ * - 复用必须带 --confirm <qst_id>，且该提问属于本会话、已作答、
+ *   第一题选了第一项（choiceIndex === 0，即“复用”）、题干里含目标 agentId。
+ */
+async function validateDispatcherReuse(
+  cliArgs: string[],
+  approvalOrigin: { sessionId?: string } | undefined,
+  agentRegistry: AgentRegistry | undefined,
+): Promise<string | null> {
+  if (!agentRegistry || !approvalOrigin?.sessionId) return null;
+  if (cliArgs[0] !== "agent" || cliArgs[1] !== "dispatch") return null;
+  const targetId = cliArgs[2];
+  if (!targetId || !targetId.startsWith("agt_")) return null;
+
+  const caller = await agentRegistry.agentBySessionId(approvalOrigin.sessionId);
+  const isDispatcher =
+    caller?.kind === "dispatcher" || (caller?.name === "值日生" && caller.kind !== "worker");
+  if (!caller || !isDispatcher) return null;
+
+  const target = await agentRegistry.getAgent(targetId);
+  if (!target) return null;
+  const existingMessages = await agentRegistry.sessionMessageCount(target.sessionId);
+  if (existingMessages === 0) return null; // 刚新建的执行者，不需要确认
+
+  const confirmIndex = cliArgs.indexOf("--confirm");
+  const confirmId = confirmIndex >= 0 ? String(cliArgs[confirmIndex + 1] ?? "").trim() : "";
+  if (!confirmId) {
+    return [
+      "【已拦截】复用既有执行者必须先获得老师确认。",
+      `目标 ${target.id}「${target.name}」已有 ${existingMessages} 条历史消息，属于复用而不是新建。`,
+      "请先用 ask_question 提问（选项必须依次为 [\"复用\",\"新建\"]，题干里包含目标 id）：",
+      `  复用 ${target.id}「${target.name}」吗？`,
+      "拿到回答后：老师选“复用” → run_momoka_cli agent dispatch <target> --confirm <qst_id> <任务书>；",
+      "老师选“新建” → run_momoka_cli agent create --name <任务短主题> 另建一个执行者。",
+    ].join("\n");
+  }
+
+  const sets = await agentRegistry.questions.listAll().catch(() => []);
+  const set = sets.find((item) => item.id === confirmId);
+  const questionText = set?.questions?.[0]?.prompt ?? "";
+  const reuseAnswer = set?.answers?.find((item) => item.questionIndex === 0);
+  const valid =
+    Boolean(set) &&
+    set?.sessionId === caller.sessionId &&
+    set?.status === "answered" &&
+    reuseAnswer?.choiceIndex === 0 &&
+    questionText.includes(targetId);
+  if (!valid) {
+    return [
+      `【已拦截】确认凭证无效：${confirmId || "(缺失)"}。`,
+      `要求：该 qst_ 提问属于本会话、已作答、第一题选了第一项（“复用”）、且题干包含目标 id ${targetId}。`,
+      "请重新 ask_question 确认，或改用 agent create 新建执行者。",
+    ].join("\n");
+  }
+  return null;
 }
 
 export async function runMomokaCliTool(input: {
@@ -563,11 +675,19 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "search_sessions",
-      description: "跨会话检索，按相关度排序返回命中会话与匹配 turn 区间。用于在不读取全文的情况下定位相关历史。",
+      description:
+        "跨会话检索，按相关度排序返回命中会话与匹配 turn 区间。" +
+        "支持多个关键词（keywords 与 query 取并集，任一命中即返回），引擎为 ripgrep。" +
+        "返回项里的 agent_id 就是可直接用于 agent dispatch 的执行者 id（无需再拉全量 agent 列表）。",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", minLength: 1 },
+          query: { type: "string", minLength: 1, description: "主关键词" },
+          keywords: {
+            type: "array",
+            items: { type: "string" },
+            description: "额外关键词；与 query 取并集（任一命中即入候选）",
+          },
           limit: { type: "number", description: "返回上限，默认 5，最大 50" },
         },
         required: ["query"],
@@ -877,7 +997,9 @@ export async function executeToolCall(
     if (!sessionManager) return "错误：会话检索工具不可用（缺少 sessionManager）。";
     try {
       const sid = await resolveSessionId(String(args.id ?? ""), sessionManager, agentRegistry);
-      return JSON.stringify(await sessionManager.inspectSession(sid));
+      const info = await sessionManager.inspectSession(sid);
+      const [enriched] = await attachAgentRefs([info], agentRegistry);
+      return JSON.stringify(enriched);
     } catch (error) {
       return formatToolError(error, "检视会话失败");
     }
@@ -885,8 +1007,13 @@ export async function executeToolCall(
   if (name === "search_sessions") {
     if (!sessionManager) return "错误：会话检索工具不可用（缺少 sessionManager）。";
     const limit = typeof args.limit === "number" ? Math.min(args.limit, 50) : 5;
+    // 多关键词并集：query + 额外 keywords（任一命中即入候选）
+    const extraKeywords = Array.isArray(args.keywords)
+      ? (args.keywords as unknown[]).map((item) => String(item))
+      : [];
     try {
-      return JSON.stringify(await sessionManager.searchSessions(String(args.query ?? ""), limit));
+      const hits = await sessionManager.searchSessions(String(args.query ?? ""), limit, extraKeywords);
+      return JSON.stringify(await attachAgentRefs(hits, agentRegistry));
     } catch (error) {
       return formatToolError(error, "跨会话检索失败");
     }
@@ -945,6 +1072,9 @@ export async function executeToolCall(
   }
   if (name === "run_momoka_cli") {
     const cliArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+    // 硬约束：值日生复用既有执行者必须先拿到老师确认（提示词拦不住，只能靠机制）
+    const refusal = await validateDispatcherReuse(cliArgs, approvalOrigin, agentRegistry);
+    if (refusal) return refusal;
     // 值日生派发台账：dispatcher 调用 agent chat <target> 时记录派发关系，供完成后投递链接回调。
     // 记录不阻塞执行；仅在能识别 dispatcher 且解析出目标时发生。
     void recordDispatchIfDispatcher(cliArgs, approvalOrigin, agentRegistry).catch((error: unknown) => {
@@ -1067,6 +1197,34 @@ async function resolveSessionId(ref: string, sessionManager: SessionManager, age
     return agent.sessionId;
   }
   return id; // ses_<id> 或原始 session id
+}
+
+/**
+ * 给会话检索/检视结果补上绑定的执行者信息。
+ *
+ * 为什么必要：search_sessions / inspect_session 原先只返回 ses_xxx，
+ * 而 agent dispatch 需要 agt_xxx。两者之间没有映射工具，模型只能去 dump 全量 agent list
+ * 并取第一个，导致“永远复用同一个执行者”。补上 agent_id 后，检索结果可直接用于派发。
+ */
+async function attachAgentRefs(
+  hits: Array<Record<string, unknown>>,
+  agentRegistry?: AgentRegistry,
+): Promise<Array<Record<string, unknown>>> {
+  if (!agentRegistry) return hits;
+  let bySession = new Map<string, { id: string; name: string; state: string; kind?: string }>();
+  try {
+    const agents = await agentRegistry.listAgents();
+    bySession = new Map(
+      agents.map((agent) => [agent.sessionId, { id: agent.id, name: agent.name, state: agent.state, kind: agent.kind }]),
+    );
+  } catch {
+    return hits;
+  }
+  return hits.map((hit) => {
+    const agent = bySession.get(String(hit.id ?? ""));
+    if (!agent) return hit;
+    return { ...hit, agent_id: agent.id, agent_name: agent.name, agent_state: agent.state, agent_kind: agent.kind };
+  });
 }
 
 /** everything 侧：按文件名/路径在工作目录内检索文件。 */

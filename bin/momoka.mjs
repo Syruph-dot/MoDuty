@@ -155,13 +155,41 @@ async function main() {
     const { named, positional } = parseArgs(argv, sub);
     if (sub === "list") {
       const { data } = await api("GET", "/api/agents");
-      const agents = Array.isArray(data?.agents) ? data.agents : [];
+      let agents = Array.isArray(data?.agents) ? data.agents : [];
       if (agents.length === 0) {
         println("(无 Agent)");
         return;
       }
+      // 收口：未筛就用过滤 + 截断，避免把全量 Agent（数百个）灌进模型上下文，
+      // 也避免“列表顺序固定 → 永远取第一个”的退化行为。
+      const query = String(named.query ?? "").trim().toLowerCase();
+      const limitRaw = Number(named.limit ?? 0);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : query ? 0 : 30;
+      if (query) {
+        agents = agents.filter((agent) => {
+          const haystack = `${agent.id} ${agent.name} ${agent.session?.goal ?? ""}`.toLowerCase();
+          return haystack.includes(query);
+        });
+        if (agents.length === 0) {
+          println(`(无匹配 Agent：${named.query}) —— 考虑 agent create 新建执行者`);
+          return;
+        }
+      } else {
+        // 未给查询词：按最近活动排序（至少不再是固定的“注册顺序第一”）。
+        const lastOf = (agent) => String(agent.session?.last_message_at ?? agent.last_active_at ?? "");
+        agents = [...agents].sort((a, b) => lastOf(b).localeCompare(lastOf(a)));
+      }
+      const total = agents.length;
+      if (limit > 0) agents = agents.slice(0, limit);
       for (const agent of agents) {
-        println(`${agent.id}\t${agent.name}\t${agent.state}\t会话 ${agent.session_id}`);
+        const last = agent.session?.last_message_at ?? agent.last_active_at ?? "-";
+        println(`${agent.id}\t${agent.name}\t${agent.state}\t${agent.kind ?? "worker"}\t最后活动 ${last}\t会话 ${agent.session_id}`);
+      }
+      if (limit > 0 && total > limit) {
+        println(`（已截断：共 ${total} 个，列出前 ${limit} 个；请用 --query <主题> 精确筛选）`);
+      }
+      if (!query) {
+        println("（提示：未提供 --query，已按最近活动排序；建议先用 search_sessions 检索，或 agent list --query <主题>）");
       }
       return;
     }

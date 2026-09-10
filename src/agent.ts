@@ -33,6 +33,24 @@ const ROLEPLAY_SLOT_START = "<!-- roleplay:start -->";
 const ROLEPLAY_SLOT_END = "<!-- roleplay:end -->";
 
 /**
+ * 会话级串行队列：同一会话同一时刻只跑一轮 chat。
+ *
+ * 为什么需要：“终态全唤醒”定了之后，多个执行者同时完成会同时驱动同一个值日生会话，
+ * 并发写同一份 messages.json 会互相覆盖（流式消息 id、messageCount、transcript 都会脏）。
+ * 排到后来者等待即可，不丢请求。
+ */
+const sessionRunTails = new Map<string, Promise<void>>();
+
+async function withSessionLock<T>(sessionId: string | null | undefined, task: () => Promise<T>): Promise<T> {
+  if (!sessionId) return await task();
+  const previous = sessionRunTails.get(sessionId) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  // 队列尾只保留“已结束”信号：不传播失败（否则会变成 unhandled rejection）
+  sessionRunTails.set(sessionId, run.then(() => undefined, () => undefined));
+  return await run;
+}
+
+/**
  * 未自定义 role 时的默认人格（Settings.agentPersona 未设置时使用）。
  * 内容来自原 prompts/AGENTS.md 的人格段（# 文件助手 + 能力 + 行为规则），
  * 平台规则层已拆到 prompts/SYSTEM_RULES.md，此处只保留“我是谁/怎么干活”。
@@ -205,6 +223,12 @@ ${ref.message.content}`;
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const message = request.message.trim();
     if (!message) throw new MomokaHttpError(400, "Message cannot be empty");
+    // 同一会话串行化：并发 run 会互相踩会话（详见 withSessionLock 注释）
+    return await withSessionLock(request.sessionId ?? null, () => this.runChat(request));
+  }
+
+  private async runChat(request: ChatRequest): Promise<ChatResponse> {
+    const message = request.message.trim();
     const runId = makeId("run");
     const outputId = request.outputId?.trim() || makeId("out");
     const sessionId = request.sessionId ?? null;

@@ -157,3 +157,29 @@ export async function driveQuestionAnswered(deps: OrchestrationDeps, record: Age
     deps.machine.fail(record.id);
   }
 }
+
+/**
+ * 右键菜单“发送给调度者”带来的新一轮用户指令：
+ * 任务书（路径列表 + 用户指示）已由路由层以 user 消息写入会话，这里驱动模型按“全新任务”执行。
+ *
+ * 注意：【不要】复用 driveQuestionAnswered——它注入的是“用户已回答你刚才的提问，请继续之前的任务”，
+ * 会让调度者把新任务误判为对旧提问的回答，从而重复上一轮旧任务、忽略本次路径与指示。
+ */
+export async function driveUserInstruction(deps: OrchestrationDeps, record: AgentRecord): Promise<void> {
+  try {
+    await deps.agent.chat({
+      message:
+        "用户刚刚通过资源管理器右键菜单发来了一条新的任务，内容就是上一条消息（文件路径列表 + 用户指示）。" +
+        "请把它当作全新的用户指令：直接按这条消息里的路径和指示执行，" +
+        "不要沿用、重复或继续之前对话中的旧任务；也不要再向用户复述任务内容。",
+      sessionId: record.sessionId,
+      onEvent: (event) => {
+        deps.machine.consumeEvent(record.id, event);
+      },
+    });
+    deps.machine.complete(record.id);
+  } catch (error) {
+    console.error("[dispatch-files] 新任务续跑失败:", error);
+    deps.machine.fail(record.id);
+  }
+}

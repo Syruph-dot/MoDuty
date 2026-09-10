@@ -260,6 +260,86 @@ async function findDispatcherAgentId() {
   });
 }
 
+/* ============================================================
+ * 右键菜单信标聚合（single-instance accumulator）
+ *
+ * 背景：Explorer 对注册表静态动词默认按「每个选中项调一次命令」，选 N 个文件
+ * 会起 N 个桥进程。这里把 N 次调用聚成一批，只让第一个（leader）桥进程弹一次
+ * 输入框、发一条消息。
+ *
+ * 时序：bridge --POST /beacon--> 建批/追加；leader --GET /beacon-collect--> 长挂，
+ * 静默/到达上限/超时后返回全部路径并关闭批次；批次关闭后的信标开新批。
+ * ============================================================ */
+
+// 默认值针对「Explorer 逐个拉起桥进程」的冷启动错开：静默 600ms 才收批，
+// 避免把一次多选切成两批；可用环境变量调整。
+const BEACON_QUIET_MS = Number(process.env.MODUTY_BEACON_QUIET_MS ?? 600);
+const BEACON_MIN_MS = Number(process.env.MODUTY_BEACON_MIN_MS ?? 600);
+const BEACON_MAX_WAIT_MS = Number(process.env.MODUTY_BEACON_MAX_WAIT_MS ?? 5000);
+const BEACON_MAX_FILES = Number(process.env.MODUTY_BEACON_MAX_FILES ?? 200);
+
+/** @type {null | { id: string, paths: string[], createdAt: number, lastAt: number, closed: boolean, waiters: Set<(payload: {paths: string[], reason: string}) => void>, timer: NodeJS.Timeout | null }} */
+let beaconBatch = null;
+
+function writeJson(res, status, payload) {
+  if (res.writableEnded) return;
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
+}
+
+function createBeaconBatch() {
+  const batch = {
+    id: `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    paths: [],
+    createdAt: Date.now(),
+    lastAt: Date.now(),
+    closed: false,
+    waiters: new Set(),
+    timer: null,
+  };
+  batch.timer = setInterval(() => flushBeaconBatch(batch), 60);
+  if (typeof batch.timer.unref === "function") batch.timer.unref();
+  beaconBatch = batch;
+  console.log(`[daemon] beacon batch ${batch.id} 开启`);
+  return batch;
+}
+
+function closeBeaconBatch(batch, reason) {
+  if (batch.closed) return;
+  batch.closed = true;
+  if (batch.timer) {
+    clearInterval(batch.timer);
+    batch.timer = null;
+  }
+  if (beaconBatch === batch) beaconBatch = null;
+  const paths = batch.paths.slice();
+  const waiters = [...batch.waiters];
+  batch.waiters.clear();
+  for (const waiter of waiters) waiter({ paths, reason });
+  console.log(`[daemon] beacon batch ${batch.id} 关闭（${reason}）：${paths.length} 个路径`);
+}
+
+function flushBeaconBatch(batch) {
+  if (batch.closed) return;
+  const now = Date.now();
+  if (batch.paths.length >= BEACON_MAX_FILES) {
+    closeBeaconBatch(batch, "达到文件数上限");
+    return;
+  }
+  if (now - batch.createdAt >= BEACON_MAX_WAIT_MS) {
+    closeBeaconBatch(batch, "达到最长等待");
+    return;
+  }
+  // 只有 leader 已在等（waiters 非空）时才因静默提前收批，避免抢在 leader 连接之前关批
+  if (
+    batch.waiters.size > 0 &&
+    now - batch.createdAt >= BEACON_MIN_MS &&
+    now - batch.lastAt >= BEACON_QUIET_MS
+  ) {
+    closeBeaconBatch(batch, "静默");
+  }
+}
+
 /** 创建守护进程 HTTP 服务器（内部 API） */
 function createDaemonServer() {
   const server = createServer(async (req, res) => {
@@ -338,6 +418,52 @@ function createDaemonServer() {
           const agentId = await findDispatcherAgentId();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ agentId }));
+          break;
+        }
+        case "/beacon": {
+          if (req.method !== "POST") {
+            writeJson(res, 405, { error: "Method not allowed" });
+            break;
+          }
+          let payload = {};
+          try {
+            payload = JSON.parse(body || "{}");
+          } catch {
+            payload = {};
+          }
+          const filePath = typeof payload.path === "string" ? payload.path.trim() : "";
+          if (!filePath) {
+            writeJson(res, 400, { error: "path is required" });
+            break;
+          }
+          const batch = beaconBatch && !beaconBatch.closed ? beaconBatch : createBeaconBatch();
+          const leader = batch.paths.length === 0;
+          if (!batch.paths.includes(filePath)) batch.paths.push(filePath);
+          batch.lastAt = Date.now();
+          writeJson(res, 200, { batchId: batch.id, leader, count: batch.paths.length });
+          break;
+        }
+        case "/beacon-collect": {
+          const batchId = url.searchParams.get("batchId");
+          const batch = beaconBatch;
+          if (!batch || batch.closed || batch.id !== batchId) {
+            writeJson(res, 409, { error: "batch 已结束", paths: [] });
+            break;
+          }
+          let settled = false;
+          const waiter = (payload) => {
+            if (settled) return;
+            settled = true;
+            writeJson(res, 200, payload);
+          };
+          batch.waiters.add(waiter);
+          flushBeaconBatch(batch);
+          res.on("close", () => {
+            if (!batch.waiters.has(waiter)) return;
+            batch.waiters.delete(waiter);
+            // leader 提前断开（进程被杀等）：关批，让下一次选择开新批，避免死锁
+            if (batch.waiters.size === 0 && !batch.closed) closeBeaconBatch(batch, "leader 断开");
+          });
           break;
         }
         default: {

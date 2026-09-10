@@ -230,6 +230,48 @@ export async function updateSandbox(enabled: boolean): Promise<boolean> {
   return data.sandbox_enabled;
 }
 
+export interface ShellVerbKeyStatusView {
+  registered: boolean;
+  command: string | null;
+}
+
+export interface ShellVerbStatusView {
+  supported: boolean;
+  registered: boolean;
+  partial: boolean;
+  keys: {
+    file: ShellVerbKeyStatusView;
+    directory: ShellVerbKeyStatusView;
+    background: ShellVerbKeyStatusView;
+  };
+  script_exists: boolean;
+  launcher_exists: boolean;
+  bridge_exists: boolean;
+  detail?: string;
+}
+
+/** 读取资源管理器右键菜单（Shell Verb）注册状态 */
+export async function fetchShellVerbStatus(): Promise<ShellVerbStatusView> {
+  const base = await awaitApiBase();
+  return (await jsonOrThrow(
+    await fetch(`${base}/api/settings/shell-verb`),
+    "GET /api/settings/shell-verb",
+  )) as ShellVerbStatusView;
+}
+
+/** 注册 / 注销资源管理器右键菜单，返回操作后的最新状态 */
+export async function updateShellVerb(action: "register" | "unregister"): Promise<ShellVerbStatusView> {
+  const base = await awaitApiBase();
+  return (await jsonOrThrow(
+    await fetch(`${base}/api/settings/shell-verb`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action }),
+    }),
+    "POST /api/settings/shell-verb",
+  )) as ShellVerbStatusView;
+}
+
 /** 按当前 Base URL + Key 从官方拉取模型列表；overrides 用当前表单未保存的新值覆盖（走后端代理，避免 webview CORS） */
 export async function fetchModels(overrides?: { baseUrl?: string; apiKey?: string }): Promise<string[]> {
   const base = await awaitApiBase();

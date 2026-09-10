@@ -69,11 +69,19 @@ export function sanitizeDisplayText(value: string): { text: string; redacted: bo
 function normalizeTraceDetails(event: string, details: Record<string, unknown>): Record<string, unknown> {
   if (event === "model_input") {
     const input = stringValue(details.input);
+    const systemPrompt = stringValue(details.systemPrompt);
+    const historyPrefix = stringValue(details.historyPrefix);
     return {
       requestKind: details.requestKind,
       model: details.model,
       inputLength: input.length,
       inputSha256: sha256(input),
+      // 前缀缓存诊断：system 与 history 的哈希稳定则说明前缀未漂移；
+      // prefixSha256 是「system + history」合并后的可缓存前缀指纹。
+      systemPromptLength: systemPrompt.length,
+      systemPromptSha256: sha256(systemPrompt),
+      historyMessageCount: details.historyMessageCount,
+      prefixSha256: sha256(`${systemPrompt}\u0000${historyPrefix}`),
     };
   }
   if (event === "tool_result") {
@@ -90,6 +98,8 @@ function normalizeTraceDetails(event: string, details: Record<string, unknown>):
     return {
       responseLength: response.length,
       responseSha256: sha256(response),
+      usage: details.usage ?? null,
+      ...(details.emptyResponse ? { emptyResponse: true } : {}),
     };
   }
   return details;

@@ -11,7 +11,7 @@ import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT } from "./agent-registr
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall } from "./tools.js";
-import { buildBoundedHistory } from "./context.js";
+import { buildBoundedHistoryMessages } from "./context.js";
 import { buildContextStats } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
@@ -23,6 +23,14 @@ import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClien
 interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; workspaceManager?: WorkspaceManager; }
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+/**
+ * 角色扮演槽位标记。人格文本里包一段 `<!-- roleplay:start -->…<!-- roleplay:end -->`，
+ * 运行时用 prompts/ROLEPLAY.md 的内容替换槽位；无内容则连标记一起删掉。
+ * 位置固定在 system 最末，保证调整人格时前面已缓存的前缀不失效。
+ */
+const ROLEPLAY_SLOT_START = "<!-- roleplay:start -->";
+const ROLEPLAY_SLOT_END = "<!-- roleplay:end -->";
 
 /**
  * 未自定义 role 时的默认人格（Settings.agentPersona 未设置时使用）。
@@ -111,6 +119,42 @@ export class MomokaAgentCore implements MomokaAgent {
     try { rules = await readFile(path.join(this.projectRoot, "prompts", "SYSTEM_RULES.md"), "utf8"); } catch { /* fallback */ }
     let prompt = persona;
     if (rules.trim()) prompt += `\n\n${rules.trim()}`;
+    // 角色扮演槽位（前缀结构的最内层）：只影响称呼与语气，放 system 最末。
+    // 改人格只会让槽位之后的字节失效，前面的规则层仍可被上游前缀缓存命中。
+    return await this.fillRoleplaySlot(prompt);
+  }
+
+  /**
+   * 填充角色扮演槽位。
+   * - 槽位标记由人格文本自身提供（<!-- roleplay:start --> … <!-- roleplay:end -->）；
+   * - 内容取自 prompts/ROLEPLAY.md（可选）；
+   * - 内容为空时**整块删除**（含标题行），保证 system 前后字节稳定。
+   */
+  private async fillRoleplaySlot(prompt: string): Promise<string> {
+    const start = prompt.indexOf(ROLEPLAY_SLOT_START);
+    const end = prompt.indexOf(ROLEPLAY_SLOT_END);
+    if (start < 0 || end < 0 || end < start) return prompt;
+    let text = "";
+    try {
+      text = (await readFile(path.join(this.projectRoot, "prompts", "ROLEPLAY.md"), "utf8")).trim();
+    } catch {
+      // 未提供角色扮演内容：保持空槽位
+    }
+    const before = prompt.slice(0, start);
+    const after = prompt.slice(end + ROLEPLAY_SLOT_END.length);
+    if (!text) {
+      return `${before}${after}`.replace(/\n{3,}/gu, "\n\n").trimEnd();
+    }
+    return `${before}${ROLEPLAY_SLOT_START}\n${text}\n${ROLEPLAY_SLOT_END}${after}`;
+  }
+
+  /**
+   * 本轮动态上下文：工作目录 / 命中技能 / 长期记忆。
+   *
+   * 【重要】不要把这些放回 system：它们每轮都在变（技能按关键词、记忆按主题），
+   * 放进 system 会让上游前缀缓存**每一轮都失效**。它们只应出现在末尾的 user 消息里。
+   */
+  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string }): Promise<string> {
     const sections: string[] = [];
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
@@ -133,7 +177,7 @@ export class MomokaAgentCore implements MomokaAgent {
       }
     }
 
-    return sections.length > 0 ? `${prompt}\n\n${sections.join("\n\n")}` : prompt;
+    return sections.join("\n\n");
   }
 
   /** 展开消息引用句柄 &msg_<messageId>（去掉 msg_ 前缀的短 id）：替换为源消息全文，供模型精确回溯 */
@@ -165,7 +209,8 @@ ${ref.message.content}`;
     const outputId = request.outputId?.trim() || makeId("out");
     const sessionId = request.sessionId ?? null;
     let workDir = request.workDir;
-    let history = "";
+    // 会话历史：角色分离的消息数组（只追加，保证前缀稳定）；不再压平成一段文本
+    let historyMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
     if (sessionId) {
       const session = await this.sessionManager.getSession(sessionId);
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
@@ -177,7 +222,9 @@ ${ref.message.content}`;
         const title = await this.generateTitle(message);
         await this.sessionManager.updateSession(sessionId, { name: title });
       }
-      history = buildBoundedHistory((await this.sessionManager.getMessages(sessionId, null)).slice(0, -1)).text;
+      historyMessages = buildBoundedHistoryMessages(
+        (await this.sessionManager.getMessages(sessionId, null)).slice(0, -1),
+      ).messages as Array<{ role: "system" | "user" | "assistant"; content: string }>;
     }
     // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
     const expandedMessage = await this.expandMessageRefs(message);
@@ -246,24 +293,39 @@ ${ref.message.content}`;
     };
     let result: ModelRunResult;
     try {
-      result = await this.options.modelClient.run([history, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"), {
+      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage });
+      result = await this.options.modelClient.run(
+        [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"),
+        {
         systemPrompt: await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+        historyMessages,
         onEvent, signal: request.signal,
         sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
-      });
+        },
+      );
+      // 空响应判定：上游偶尔只回一个空流（http 200、无内容、无工具调用、无 usage）。
+      // 必须当失败：否则状态机会记 completed，调度者收到“已完成”，用户被告知成功，而实际上什么都没做。
+      if (!result.output.trim() && (result.toolCalls ?? []).length === 0) {
+        await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage, emptyResponse: true });
+        throw new MomokaHttpError(502, "模型返回空响应（上游只回了空流），本轮没有任何产出");
+      }
     } catch (error) {
       // 收尾标记：主动停止→stopped，其他异常→error（原异常继续抛给路由层）
       if (sessionId && streamingMessage) {
+        const isAbort = error instanceof Error && error.name === "AbortError";
+        // 空响应时补一句可读说明：否则会话里只留一条空消息，调度者/用户都看不出发生了什么
+        const isEmptyResponse = error instanceof MomokaHttpError && error.message.includes("空响应");
         await this.sessionManager
           .finishStreamingMessage(sessionId, streamingMessage.id, {
-            status: error instanceof Error && error.name === "AbortError" ? "stopped" : "error",
+            status: isAbort ? "stopped" : "error",
+            ...(isEmptyResponse ? { content: "（本轮无任何输出：上游模型返回空流，已按失败处理）" } : {}),
           })
           .catch(() => undefined);
       }
       throw error;
     }
     await this.recordRunUsage(result, sessionId);
-    await appendTraceEvent(tracePath, "final_answer", { response: result.output });
+    await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId && streamingMessage) {
       // 归档最后一段文本（若存在）
@@ -306,7 +368,7 @@ ${ref.message.content}`;
       sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
     await this.recordRunUsage(result, sessionId);
-    await appendTraceEvent(tracePath, "final_answer", { response: result.output });
+    await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage });
     await this.memoryStore.recordOutput({ outputId: continuationOutputId, prompt: output.prompt, response: result.output, topic: output.topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     if (sessionId) await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId: continuationOutputId, toolCalls: result.toolCalls ?? [] });
     await saveRunSnapshot({ runId: base.runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
@@ -346,10 +408,14 @@ ${ref.message.content}`;
   }
   /** 把本轮 run 的 usage 记入绑定该 session 的 Agent（供磁贴上下文指标展示） */
   private async recordRunUsage(result: ModelRunResult, sessionId: string | null | undefined): Promise<void> {
-    if (!this.options.agentRegistry || !sessionId || !result.usage?.promptTokens) return;
-    const agent = (await this.options.agentRegistry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
+    // 注意：这里必须用 this.agentRegistry，而不是 this.options.agentRegistry。
+    // server.ts 是在构造后通过 `agent.agentRegistry = registry` 注入注册表的，
+    // options 里从来没有这个字段 → 用 options 会永远早退，contextStats 一直是 0（历史遗留缺陷）。
+    const registry = this.agentRegistry;
+    if (!registry || !sessionId || !result.usage?.promptTokens) return;
+    const agent = (await registry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
     if (!agent) return;
-    await this.options.agentRegistry.updateContextStats(agent.id, buildContextStats(result.usage, agent.model));
+    await registry.updateContextStats(agent.id, buildContextStats(result.usage, agent.model));
   }
 
   /**

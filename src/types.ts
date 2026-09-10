@@ -94,6 +94,13 @@ export interface ModelRunContext {
   sessionManager?: SessionManager;
   /** tile→session 解析所需的 Agent 注册表（&tile_<agentId> 别名） */
   agentRegistry?: AgentRegistry;
+  /**
+   * 会话历史（角色分离的消息数组）。
+   *
+   * 为什么不是拼成一段文本：历史作为独立消息顺序追加，前缀才能逐字节稳定，
+   * 上游 provider 的前缀缓存才可以命中。拼成文本后每轮都会重算整块，前缀随时漂移。
+   */
+  historyMessages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
 }
 
 export type MomokaRequestKind = ModelRunContext["requestKind"];

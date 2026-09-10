@@ -1,13 +1,15 @@
 Windows Registry Editor Version 5.00
 
 ; MoDuty Shell Verb - File Context Menu
+; 注意：command 走 wscript + moduty-launch.vbs 隐藏启动，
+; 直接调用 node.exe 会先弹一个黑色控制台窗口。
 [HKEY_CURRENT_USER\Software\Classes\*\shell\MoDuty.SendToDispatcher]
 @="Send to MoDuty Dispatcher"
 "Icon"="C:\\Windows\\System32\\shell32.dll"
 "Position"="Top"
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\MoDuty.SendToDispatcher\command]
-@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+@="\"C:\\Windows\\System32\\wscript.exe\" //Nologo \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\moduty-launch.vbs\" \"%1\""
 
 ; MoDuty Shell Verb - Folder Context Menu
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoDuty.SendToDispatcher]
@@ -16,12 +18,13 @@ Windows Registry Editor Version 5.00
 "Position"="Top"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoDuty.SendToDispatcher\command]
-@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%1\""
+@="\"C:\\Windows\\System32\\wscript.exe\" //Nologo \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\moduty-launch.vbs\" \"%1\""
 
 ; MoDuty Shell Verb - Desktop Background Context Menu
 [HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\MoDuty.SendToDispatcher]
 @="Send to MoDuty Dispatcher"
 "Icon"="C:\\Windows\\System32\\shell32.dll"
+"Position"="Top"
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\MoDuty.SendToDispatcher\command]
-@="\"C:\\Program Files\\nodejs\\node.exe\" \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\shell-verb-bridge.mjs\" \"%V\""
+@="\"C:\\Windows\\System32\\wscript.exe\" //Nologo \"D:\\OBSIDIAN\\SyrVault1\\21_软件\\Project_KivoLAPIX\\MoDuty\\scripts\\moduty-launch.vbs\" \"%V\""

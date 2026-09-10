@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { loadSettings, saveSettings, type ModelPoolEntry, type TierDefaults } from "../settings-store.js";
 import { describeEnvProviderDiagnostics, fetchUpstreamModels, resolveModelConfig, UpstreamHttpError } from "../model-client.js";
+import { applyShellVerbAction, getShellVerbStatus } from "../shell-verb.js";
 import { json, readJsonBody, send } from "./http-utils.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -102,6 +103,23 @@ export async function handleSettingsRoutes(
     await ctx.agent.setSandboxEnabled(Boolean(body.enabled));
     json(response, 200, { sandbox_enabled: ctx.agent.getSandboxEnabled() });
     return true;
+  }
+  if (url.pathname === "/api/settings/shell-verb") {
+    // Windows 资源管理器右键菜单：状态查询 / 注册 / 注销（HKCU，无需管理员）
+    if (request.method === "GET") {
+      json(response, 200, await getShellVerbStatus(ctx.agent.projectRoot));
+      return true;
+    }
+    if (request.method === "POST") {
+      const body = await readJsonBody(request) as { action?: unknown };
+      const action = body.action === "register" || body.action === "unregister" ? body.action : null;
+      if (!action) {
+        json(response, 400, { error: 'action 必须是 "register" 或 "unregister"' });
+        return true;
+      }
+      json(response, 200, await applyShellVerbAction(ctx.agent.projectRoot, action));
+      return true;
+    }
   }
   if (request.method === "GET" && url.pathname === "/api/directories") {
     json(response, 200, await ctx.agent.listDirectories(url.searchParams.get("path") ?? ""));

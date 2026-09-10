@@ -2,10 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { MomokaHttpError } from "../http-error.js";
 import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
+import { buildDispatchTaskMessage } from "../dispatch-message.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
-import { checkHasPendingApproval, checkHasPendingQuestion, driveQuestionAnswered, orchestrationOf } from "./agent-orchestration.js";
+import { checkHasPendingApproval, checkHasPendingQuestion, driveQuestionAnswered, driveUserInstruction, orchestrationOf } from "./agent-orchestration.js";
 import { abortChatStreamByAgent, registerChatStream, unregisterChatStream } from "./chat-streams.js";
 import { agentToSnake, chatToSnake } from "./serialization.js";
 
@@ -177,18 +178,14 @@ export async function handleAgentRoutes(
     if (files.length === 0) {
       throw new MomokaHttpError(400, "files array is required");
     }
-    // 构造任务书：文件列表 + 用户指令
-    const taskMessage = [
-      message ? `指令: ${message}` : "",
-      files.length > 0 ? `文件列表 (${files.length} 项):` : "",
-      files.map((f, i) => `  ${i + 1}. ${f}`).join("\n"),
-      "",
-      "请处理上述文件。完成后在会话中给出结果摘要即可，无需回报给调度者。"
-    ].filter(Boolean).join("\n");
+    // 构造任务书：全部路径逐行加引号 + 用户指令（一次选择 = 一条消息）
+    const taskMessage = buildDispatchTaskMessage(files, message);
     await agent.sessionManager.addMessage(record.sessionId, "user", taskMessage);
-    // 异步触发 chat（不阻塞响应），由 orchestration 驱动
+    // 异步触发 chat（不阻塞响应），由 orchestration 驱动：
+    // 右键菜单进来的是“全新任务”，必须用 driveUserInstruction；
+    // 若用 driveQuestionAnswered，模型会以为在回答旧提问而重复上一轮旧任务。
     const deps = orchestrationOf(ctx);
-    void driveQuestionAnswered(deps, record).catch((error: unknown) => {
+    void driveUserInstruction(deps, record).catch((error: unknown) => {
       console.error("[dispatch-files] 驱动失败:", error);
     });
     json(response, 200, { success: true, filesCount: files.length, message: "已分发给 Agent" });

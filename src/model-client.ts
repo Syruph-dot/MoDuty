@@ -197,6 +197,17 @@ interface ChatMessage {
   tool_calls?: ToolCallRequest[];
 }
 
+/**
+ * 会话里的角色名是 MoDuty 自己的（user / agent / system），而 OpenAI 兼容接口只认
+ * system / user / assistant / tool。不转换会把 "agent" 直接发上去，上游一律 400 拒绝。
+ * 历史为空时不会暴露这个问题（第一轮没有历史），第二轮开始才炸。
+ */
+function toApiRole(role: string): "system" | "user" | "assistant" {
+  if (role === "system") return "system";
+  if (role === "agent" || role === "assistant") return "assistant";
+  return "user";
+}
+
 interface ToolCallRequest {
   id: string;
   type: "function";
@@ -235,8 +246,14 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
         throw new Error("API key 未配置：请设置 OPENAI_API_KEY 环境变量，或提供无需鉴权的 OPENAI_BASE_URL");
       }
 
+      // 消息数组：system（前缀不变）→ 历史（append-only）→ 本轮输入（唯一变动尾）。
+      // 顺序固定的目的是让上游前缀缓存尽量命中：任何每轮变化的内容都只能放在末尾。
       const messages: ChatMessage[] = [
         { role: "system", content: context.systemPrompt },
+        ...(context.historyMessages ?? []).map((message) => ({
+          role: toApiRole(message.role),
+          content: message.content,
+        })),
         { role: "user", content: input },
       ];
       const toolCalls: ToolCall[] = [];
@@ -252,6 +269,12 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           input,
           model,
           tier,
+          // 前缀缓存诊断用：system 与 history 分离上报，便于比对相邻轮次前缀是否漂移
+          systemPrompt: context.systemPrompt,
+          historyMessageCount: context.historyMessages?.length ?? 0,
+          historyPrefix: (context.historyMessages ?? [])
+            .map((message) => `${message.role}\u0000${message.content}`)
+            .join("\u0001"),
         });
         const roundResult = await callModelRound({
           fetchImpl,
@@ -362,7 +385,12 @@ async function callModelRound(options: {
     tools: TOOL_SPECS,
     tool_choice: "auto",
   };
-  if (stream) payload.stream = true;
+  if (stream) {
+    payload.stream = true;
+    // 必须显式要求 usage：OpenAI 兼容接口在流式模式下默认不返回 usage，
+    // 拿不到 usage 就无法统计 token 与缓存命中（MoDuty 历史数据因此一直是 0）。
+    payload.stream_options = { include_usage: true };
+  }
 
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (apiKey) {

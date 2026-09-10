@@ -4,9 +4,12 @@ import { useDialogStore } from "../state/dialogStore";
 import {
   fetchModels,
   fetchSettings,
+  fetchShellVerbStatus,
   updateSandbox,
   updateSettings,
+  updateShellVerb,
   type ModelPoolEntryView,
+  type ShellVerbStatusView,
   type TierDefaultsView,
 } from "../lib/api";
 
@@ -17,6 +20,17 @@ const NAV_ITEMS: Array<{ key: SettingsTab; label: string; icon?: string }> = [
   { key: "runtime", label: "运行时" },
   { key: "about", label: "关于" },
 ];
+
+function shellVerbStatusText(status: ShellVerbStatusView | null): string {
+  if (!status) return "无法读取注册状态（后端不可用）。";
+  if (!status.supported) return "当前平台不支持（仅 Windows）。";
+  if (!status.script_exists || !status.launcher_exists || !status.bridge_exists) {
+    return "注册文件缺失：请确认 scripts/ 下的 register-shell-verb.ps1、moduty-launch.vbs、shell-verb-bridge.mjs 均存在。";
+  }
+  if (status.registered) return "已注册（文件 / 文件夹 / 桌面背景）。新开资源管理器窗口后生效。";
+  if (status.partial) return "部分注册（三项未全部写入），建议重新注册。";
+  return "未注册。";
+}
 
 /**
  * SettingsScreen — Win8 组织风格全屏设置页。
@@ -37,6 +51,8 @@ export default function SettingsScreen() {
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [agentPersona, setAgentPersona] = useState("");
   const [personaDirty, setPersonaDirty] = useState(false);
+  const [shellVerb, setShellVerb] = useState<ShellVerbStatusView | null>(null);
+  const [shellVerbBusy, setShellVerbBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +81,14 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  const loadShellVerb = useCallback(async () => {
+    try {
+      setShellVerb(await fetchShellVerbStatus());
+    } catch {
+      setShellVerb(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     setClosing(false);
@@ -74,7 +98,8 @@ export default function SettingsScreen() {
     setDraft(null);
     setModels([]);
     void load();
-  }, [open, load]);
+    void loadShellVerb();
+  }, [open, load, loadShellVerb]);
 
   // 关闭动画：设置页向左浮出后再真正关闭（磁贴墙随即恢复）
   const requestClose = () => {
@@ -209,6 +234,21 @@ export default function SettingsScreen() {
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const applyShellVerb = async (action: "register" | "unregister") => {
+    setShellVerbBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const next = await updateShellVerb(action);
+      setShellVerb(next);
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShellVerbBusy(false);
     }
   };
 
@@ -452,6 +492,63 @@ export default function SettingsScreen() {
                     />
                     <span style={{ fontSize: 13 }}>{sandboxEnabled ? "已开启" : "已关闭"}</span>
                   </label>
+                </div>
+              </div>
+            </section>
+            <section className="settings-group">
+              <h3 className="settings-group__title">资源管理器右键菜单</h3>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row__grow">
+                    <div className="settings-row__label">Send to MoDuty Dispatcher</div>
+                    <div className="settings-row__desc">
+                      在资源管理器或桌面右键，把选中的文件/文件夹直接发给值日生处理。写入 HKCU，无需管理员权限。
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      className="settings-btn settings-btn--primary"
+                      disabled={shellVerbBusy || shellVerb?.supported === false}
+                      onClick={() => void applyShellVerb("register")}
+                    >
+                      {shellVerbBusy ? "处理中…" : "注册"}
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-btn"
+                      disabled={shellVerbBusy || shellVerb?.supported === false || !shellVerb?.registered}
+                      onClick={() => void applyShellVerb("unregister")}
+                    >
+                      注销
+                    </button>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row__grow">
+                    <div className="settings-row__label">当前状态</div>
+                    <div className="settings-row__desc">{shellVerbStatusText(shellVerb)}</div>
+                    {shellVerb?.detail ? (
+                      <pre
+                        style={{
+                          margin: "8px 0 0",
+                          padding: "8px 10px",
+                          maxHeight: 160,
+                          overflow: "auto",
+                          fontSize: 12,
+                          lineHeight: 1.5,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                          background: "rgba(255,255,255,0.06)",
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          borderRadius: 8,
+                          color: "rgba(232,237,247,0.75)",
+                        }}
+                      >
+                        {shellVerb.detail}
+                      </pre>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </section>

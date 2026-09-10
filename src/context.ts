@@ -43,6 +43,84 @@ export function formatMessages(messages: Array<{ role: string; content: string }
   return messages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n");
 }
 
+export interface BoundedHistoryMessagesResult {
+  messages: Array<{ role: string; content: string }>;
+  keptCount: number;
+  droppedCount: number;
+  estimatedTokens: number;
+  truncatedMessages: number;
+}
+
+/**
+ * 预算裁剪历史（角色分离版）。
+ *
+ * 与 buildBoundedHistory 的区别：不再把历史压成一段文本，而是返回**真正的消息数组**。
+ * 目的是让上游 provider 的**前缀缓存**尽可能命中：历史按「只追加」增长，
+ * 从第一条消息起的前缀就逐字节稳定；只有超出预算做折叠时才会在中段发生变化。
+ *
+ * 折叠时插入一条 system 角色的占位说明（而不是把说明混进某条消息正文）。
+ * 若将来遇到不接受消息数组中间出现 system 的 provider，把这里改成 user 角色即可。
+ */
+export function buildBoundedHistoryMessages(
+  messages: Array<{ role: string; content: string }>,
+  options: BoundedHistoryOptions = {},
+): BoundedHistoryMessagesResult {
+  const budgetTokens = options.budgetTokens ?? 4000;
+  const headCount = Math.min(options.headMessages ?? 2, messages.length);
+  const maxMessageChars = options.maxMessageChars ?? 4000;
+
+  if (messages.length === 0) {
+    return { messages: [], keptCount: 0, droppedCount: 0, estimatedTokens: 0, truncatedMessages: 0 };
+  }
+
+  let truncatedMessages = 0;
+  const head = messages.slice(0, headCount).map((message) => {
+    if (message.content.length > maxMessageChars) {
+      truncatedMessages += 1;
+      return { role: message.role, content: `${message.content.slice(0, maxMessageChars)}\n…[单条消息过长已截断]` };
+    }
+    return { role: message.role, content: message.content };
+  });
+  const tailCandidates = messages.slice(headCount);
+
+  let remainingTokens = budgetTokens - estimateTokens(formatMessages(head));
+  const keptTail: Array<{ role: string; content: string }> = [];
+  let usedTokens = 0;
+
+  for (let i = tailCandidates.length - 1; i >= 0; i -= 1) {
+    const original = tailCandidates[i];
+    let content = original.content;
+    if (content.length > maxMessageChars) {
+      content = `${content.slice(0, maxMessageChars)}\n…[单条消息过长已截断]`;
+      truncatedMessages += 1;
+    }
+    const tokens = estimateTokens(content);
+    if (usedTokens + tokens > remainingTokens && keptTail.length > 0) {
+      break;
+    }
+    keptTail.unshift({ role: original.role, content });
+    usedTokens += tokens;
+  }
+
+  const droppedCount = tailCandidates.length - keptTail.length;
+  const result: Array<{ role: string; content: string }> = [...head];
+  if (droppedCount > 0) {
+    result.push({
+      role: "system",
+      content: `[省略中间 ${droppedCount} 条历史消息，如需可让用户补充]`,
+    });
+  }
+  result.push(...keptTail);
+
+  return {
+    messages: result,
+    keptCount: headCount + keptTail.length,
+    droppedCount,
+    estimatedTokens: estimateTokens(formatMessages(result)),
+    truncatedMessages,
+  };
+}
+
 /**
  * 预算裁剪历史：
  * - 头部 headMessages 条固定保留；

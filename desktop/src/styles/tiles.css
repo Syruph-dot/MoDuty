@@ -1362,13 +1362,84 @@
   color: #e8edf7;
 }
 
+/* 立绘区：全息风格——蓝色描边 + 内发光 + 半透明蓝色底 */
 .duty-girl__portrait {
   position: relative;
   display: block;
   width: 100%;
   height: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(96, 200, 255, 0.55);
   border-radius: 10px;
   overflow: hidden;
+  background:
+    radial-gradient(120% 70% at 50% 12%, rgba(64, 156, 255, 0.16), rgba(10, 20, 40, 0) 70%),
+    linear-gradient(180deg, rgba(26, 54, 96, 0.34), rgba(8, 16, 32, 0.55));
+  box-shadow:
+    0 0 10px rgba(56, 168, 255, 0.35),
+    inset 0 0 22px rgba(48, 140, 240, 0.22);
+}
+
+/* 立绘舞台：绝对定位铺满，不依赖百分比高度链 */
+.duty-girl__portrait-stage {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.duty-girl__portrait-stage canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 全息扫描线（静态细纹，叠在立绘上） */
+.duty-girl__portrait::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(150, 220, 255, 0.07) 0,
+    rgba(150, 220, 255, 0.07) 1px,
+    rgba(150, 220, 255, 0) 1px,
+    rgba(150, 220, 255, 0) 3px
+  );
+}
+
+/* 全息扫描：半透明蓝色光带自上而下循环扫过 */
+.duty-girl__portrait::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -50%;
+  height: 50%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgba(120, 210, 255, 0) 0%,
+    rgba(120, 210, 255, 0.1) 35%,
+    rgba(180, 235, 255, 0.3) 50%,
+    rgba(120, 210, 255, 0.1) 65%,
+    rgba(120, 210, 255, 0) 100%
+  );
+  animation: duty-girl-scan 3.6s linear infinite;
+}
+
+/* 光带高度 = 容器 50%，上位移 300% 正好从“完全在上方”扫到“完全在下方” */
+@keyframes duty-girl-scan {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(300%);
+  }
 }
 
 .duty-girl__fallback {

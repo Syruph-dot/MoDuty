@@ -4,11 +4,12 @@ import { createPortal } from "react-dom";
 import { useAgentsStore } from "../../state/agentsStore";
 import { subscribeDutyEvents } from "../../lib/dutyEvents";
 import AgentWindow from "../AgentWindow";
+import DutyPortrait from "./DutyPortrait";
 
 /**
  * 值日生（Duty Girl）——调度者 Agent 的桌面形象（固定 2×3 磁贴）。
  *
- * - 外表：BA 风格学生立绘（开发期占位；用户放置 desktop/public/duty/<name>.png 后自动覆盖）。
+ * - 外表：Momoka（桃香）Spine 实时立绘（DutyPortrait；运行时/资源失败时回落占位）。
  * - 交互：点击立绘 → 在磁贴旁弹出对话框输入指令（非打开窗口）。
  * - 调用：对话框消息经 /api/agents/:id/chat 发给「值日生」调度者 Agent（角色扮演 + 调度专家，
  *   后端预置 DISPATCHER_SYSTEM_PROMPT；它会调查会话、输出 &ses_<id> 句柄、调 MOMOKA CLI 驱动其它 Agent）。
@@ -560,7 +561,7 @@ export default function DutyGirl() {
     <div className="duty-girl" ref={rootRef}>
       <button type="button" className="duty-girl__hit" onClick={toggle} aria-label="打开值日生对话框">
         <span className="duty-girl__portrait" aria-hidden="true">
-          <span className="duty-girl__fallback">立绘待提供</span>
+          <DutyPortrait />
         </span>
         <span className="duty-girl__badge">值日生</span>
       </button>

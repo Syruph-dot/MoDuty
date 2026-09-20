@@ -66,6 +66,8 @@ export interface AgentRecord {
   kind?: AgentKind; // 角色类别：dispatcher（值日生）| worker / 缺省
   /** 角色扮演人格 slug：对应 prompts/roleplay/<slug>.md；缺省或文件不存在时回落 prompts/ROLEPLAY.md */
   roleplay?: string | null;
+  /** 能力标签（P9）：DAG 编排按它做能力匹配选执行者 */
+  capabilities?: string[];
   model?: string; // 可选，缺省用全局 model client
   workspaceDir: string; // 工作目录
   sessionId: string; // 1:1 绑定的 session（上下文串）

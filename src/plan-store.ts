@@ -48,6 +48,8 @@ export interface PlanStepRecord {
   dependsOn: string[];
   /** 负责的执行者（P9 的能力匹配与预算都挂在这里） */
   ownerAgentId?: string;
+  /** 期望能力标签（P9）：与执行者 capabilities 匹配 */
+  capability?: string;
   /** 验收标准（P5 逐条检查） */
   acceptanceCriteria: string[];
   /** 期望产物路径（P5 的 fileExists 检查与 P9 的冲突串行化都用它） */
@@ -80,6 +82,7 @@ export interface NewPlanStepInput {
   detail?: string;
   dependsOn?: string[];
   ownerAgentId?: string;
+  capability?: string;
   acceptanceCriteria?: string[];
   artifacts?: string[];
   /** 允许显式指定 id，便于把外部已存在的步骤引用进来 */
@@ -99,6 +102,7 @@ export interface PlanStepPatch {
   artifacts?: string[];
   lastError?: string;
   ownerAgentId?: string;
+  capability?: string;
   /** 追加一条证据（不覆盖已有证据） */
   evidence?: Omit<PlanStepEvidence, "at"> & { at?: string };
 }
@@ -266,6 +270,7 @@ export class PlanStore {
       if (patch.acceptanceCriteria) step.acceptanceCriteria = patch.acceptanceCriteria.map(String);
       if (patch.artifacts) step.artifacts = patch.artifacts.map(String);
       if (patch.ownerAgentId !== undefined) step.ownerAgentId = patch.ownerAgentId || undefined;
+      if (patch.capability !== undefined) step.capability = patch.capability || undefined;
       if (patch.lastError !== undefined) step.lastError = patch.lastError || undefined;
       if (patch.evidence) {
         step.evidence.push({
@@ -377,6 +382,7 @@ export class PlanStore {
       status: "pending",
       dependsOn: normalizeDepends(input.dependsOn, id),
       ...(input.ownerAgentId?.trim() ? { ownerAgentId: input.ownerAgentId.trim() } : {}),
+      ...(input.capability?.trim() ? { capability: input.capability.trim() } : {}),
       acceptanceCriteria: (input.acceptanceCriteria ?? []).map(String),
       artifacts: (input.artifacts ?? []).map(String),
       attempts: 0,
@@ -504,6 +510,7 @@ function stepFromDisk(value: unknown): PlanStepRecord | null {
     status,
     dependsOn: Array.isArray(value.dependsOn) ? value.dependsOn.map(String) : [],
     ...(typeof value.ownerAgentId === "string" ? { ownerAgentId: value.ownerAgentId } : {}),
+    ...(typeof value.capability === "string" ? { capability: value.capability } : {}),
     acceptanceCriteria: Array.isArray(value.acceptanceCriteria) ? value.acceptanceCriteria.map(String) : [],
     artifacts: Array.isArray(value.artifacts) ? value.artifacts.map(String) : [],
     attempts: typeof value.attempts === "number" && Number.isFinite(value.attempts) ? value.attempts : 0,

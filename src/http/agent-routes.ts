@@ -337,8 +337,9 @@ export async function handleAgentRoutes(
     const body = await readJsonBody(request);
     // 本次是否携带 roleplay（人格 slug）字段：携带时允许只改人格，不带 name
     const hasRoleplay = Object.prototype.hasOwnProperty.call(body, "roleplay");
+    const hasCapabilities = Object.prototype.hasOwnProperty.call(body, "capabilities");
     const newName = String(body.name ?? "").trim();
-    if (!newName && !hasRoleplay) {
+    if (!newName && !hasRoleplay && !hasCapabilities) {
       throw new MomokaHttpError(400, "name is required");
     }
     if (newName) {
@@ -347,6 +348,13 @@ export async function handleAgentRoutes(
     if (hasRoleplay) {
       const slug = body.roleplay == null ? "" : String(body.roleplay).trim();
       const updated = await runtime.registry.updateAgentRoleplay(record.id, slug || null);
+      if (!updated) throw new MomokaHttpError(404, "Agent not found");
+      record = updated;
+    }
+    // 能力标签（P9）：允许单独更新，供 DAG 编排做能力匹配
+    if (Object.prototype.hasOwnProperty.call(body, "capabilities")) {
+      const list = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+      const updated = await runtime.registry.updateAgentCapabilities(record.id, list);
       if (!updated) throw new MomokaHttpError(404, "Agent not found");
       record = updated;
     }

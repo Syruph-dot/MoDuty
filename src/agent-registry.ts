@@ -20,6 +20,8 @@ export interface CreateAgentInput {
   kind?: AgentKind;
   /** 角色扮演人格 slug：对应 prompts/roleplay/<slug>.md；缺省时回落全局 prompts/ROLEPLAY.md */
   roleplay?: string;
+  /** 能力标签（P9）：如 ["写作","数据分析"]，供 DAG 编排做能力匹配 */
+  capabilities?: string[];
 }
 
 /** 创建 Agent 未填名字时的占位名；对应 autoName=true，首条对话后按标题回填 */
@@ -269,6 +271,7 @@ export class AgentRegistry {
       role,
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.roleplay?.trim() ? { roleplay: input.roleplay.trim() } : {}),
+      ...(input.capabilities?.length ? { capabilities: input.capabilities.map(String) } : {}),
       ...(input.model?.trim() ? { model: input.model.trim() } : {}),
       workspaceDir,
       sessionId: session.id,
@@ -429,6 +432,20 @@ export class AgentRegistry {
     });
   }
 
+  /** 更新 Agent 的能力标签（P9：DAG 编排做能力匹配用） */
+  async updateAgentCapabilities(id: string, capabilities: string[]): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((a) => a.id === id);
+      if (index === -1) return null;
+      const cleaned = [...new Set(capabilities.map((item) => String(item).trim()).filter(Boolean))];
+      const updated = { ...agents[index], capabilities: cleaned, lastActiveAt: new Date().toISOString() };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
   /** 更新 Agent 的 role（系统提示词） */
   async updateAgentRole(id: string, role: string): Promise<AgentRecord | null> {
     return await withFileLock(this.registryFile, async () => {
@@ -520,6 +537,7 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
     role: agent.role,
     ...(agent.kind ? { kind: agent.kind } : {}),
     ...(agent.roleplay ? { roleplay: agent.roleplay } : {}),
+    ...(agent.capabilities?.length ? { capabilities: agent.capabilities } : {}),
     ...(agent.model ? { model: agent.model } : {}),
     workspaceDir: agent.workspaceDir,
     sessionId: agent.sessionId,
@@ -544,6 +562,7 @@ function agentFromDisk(value: unknown): AgentRecord {
     role: String(raw.role ?? ""),
     ...(kind ? { kind } : {}),
     ...(raw.roleplay ? { roleplay: String(raw.roleplay) } : {}),
+    ...(Array.isArray(raw.capabilities) ? { capabilities: raw.capabilities.map(String) } : {}),
     ...(raw.model ? { model: String(raw.model) } : {}),
     workspaceDir: String(raw.workspaceDir ?? ""),
     sessionId: String(raw.sessionId ?? ""),

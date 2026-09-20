@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { NewPlanStepInput, PlanStatus, PlanStepStatus } from "../plan-store.js";
+import { schedulePlan } from "../dag-scheduler.js";
 import { MomokaHttpError } from "../agent.js";
 import { json, readJsonBody } from "./http-utils.js";
 import { planToSnake } from "./serialization.js";
@@ -29,6 +30,7 @@ function parseSteps(value: unknown): NewPlanStepInput[] {
       ...(Array.isArray(raw.dependsOn) ? { dependsOn: asStringArray(raw.dependsOn) } : {}),
       ...(raw.owner_agent_id ? { ownerAgentId: String(raw.owner_agent_id) } : {}),
       ...(raw.ownerAgentId ? { ownerAgentId: String(raw.ownerAgentId) } : {}),
+      ...(raw.capability ? { capability: String(raw.capability) } : {}),
       ...(Array.isArray(raw.acceptance_criteria) ? { acceptanceCriteria: asStringArray(raw.acceptance_criteria) } : {}),
       ...(Array.isArray(raw.acceptanceCriteria) ? { acceptanceCriteria: asStringArray(raw.acceptanceCriteria) } : {}),
       ...(Array.isArray(raw.artifacts) ? { artifacts: asStringArray(raw.artifacts) } : {}),
@@ -132,6 +134,7 @@ export async function handlePlanRoutes(
       ...(Array.isArray(body.artifacts) ? { artifacts: asStringArray(body.artifacts) } : {}),
       ...(body.last_error !== undefined ? { lastError: String(body.last_error) } : {}),
       ...(body.owner_agent_id !== undefined ? { ownerAgentId: String(body.owner_agent_id) } : {}),
+      ...(body.capability !== undefined ? { capability: String(body.capability) } : {}),
       ...(body.evidence && typeof body.evidence === "object"
         ? {
             evidence: {
@@ -146,6 +149,44 @@ export async function handlePlanRoutes(
     });
     if (!updated) throw new MomokaHttpError(404, "Unknown plan");
     json(response, 200, { plan: planToSnake(updated) });
+    return true;
+  }
+
+  // 调度提案（P9）：按依赖与产物冲突算出本轮可派发的步
+  const scheduleMatch = url.pathname.match(/^\/api\/plans\/([^/]+)\/schedule$/u);
+  if (scheduleMatch && request.method === "GET") {
+    const plan = await ctx.agent.plans.getPlan(decodeURIComponent(scheduleMatch[1] ?? ""));
+    if (!plan) throw new MomokaHttpError(404, "Unknown plan");
+    const agents = ctx.registry ? await ctx.registry.listAgents() : [];
+    const maxParallel = Number(url.searchParams.get("max_parallel") ?? "");
+    const schedule = schedulePlan(
+      {
+        id: plan.id,
+        steps: plan.steps.map((step) => ({
+          id: step.id,
+          title: step.title,
+          status: step.status,
+          dependsOn: step.dependsOn,
+          ...(step.ownerAgentId ? { ownerAgentId: step.ownerAgentId } : {}),
+          ...(step.capability ? { capability: step.capability } : {}),
+          artifacts: step.artifacts,
+          attempts: step.attempts,
+        })),
+      },
+      agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          ...(agent.capabilities?.length ? { capabilities: agent.capabilities } : {}),
+          busy: agent.state === "running",
+        })),
+      {
+        ...(Number.isFinite(maxParallel) && maxParallel > 0 ? { maxParallel } : {}),
+        maxAttempts: 3,
+      },
+    );
+    json(response, 200, { plan_id: plan.id, schedule });
     return true;
   }
 

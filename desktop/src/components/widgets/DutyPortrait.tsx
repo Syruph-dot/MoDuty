@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { approach, normalizedPointer } from "./dutyPortraitMotion";
+import { approach, normalizedPointer, worldDeltaToLocal } from "./dutyPortraitMotion";
 
 declare global {
   interface Window {
@@ -17,7 +17,12 @@ const OVERLAY_MIX = 0.18;
 const TRACK_ATTACH = 1;
 const TRACK_MOTION = 2;
 const TRACK_HAIR = 3;
-const PAT_RANGE_WORLD = 120;
+/**
+ * 摸头驱动骨的“世界水平”行程上限（骨架单位）。
+ * 幅度标定（实测，按修正后的换算）：驱动骨自身 ≈ 0.8×该值，头发/光环等约束目标 ≈ 0.24×；
+ * 120 会让 Head_back 横移 96（≈ 半个头宽），太大；24 时驱动骨 ≈ 19、头发 ≈ 5，接近之前手感的可见幅度。
+ */
+const PAT_RANGE_WORLD = 24;
 const PAT_DRIVER_SMOOTH = 14;
 const GAZE_MAX_X = 10;
 const GAZE_MAX_Y = 6;
@@ -102,16 +107,6 @@ function visibleBounds(skeleton: any, yMax?: number): { x: number; y: number; wi
   return Number.isFinite(minX) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
 }
 
-function worldDeltaToLocal(matrix: any, worldX: number, worldY: number): { x: number; y: number } {
-  if (!matrix) return { x: worldX, y: worldY };
-  const determinant = matrix.a * matrix.d - matrix.b * matrix.c;
-  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-6) return { x: 0, y: 0 };
-  return {
-    x: (matrix.d * worldX - matrix.c * worldY) / determinant,
-    y: (-matrix.b * worldX + matrix.a * worldY) / determinant,
-  };
-}
-
 export default function DutyPortrait() {
   const hostRef = useRef<HTMLSpanElement | null>(null);
   const [failed, setFailed] = useState(false);
@@ -192,9 +187,11 @@ export default function DutyPortrait() {
         const canvasX = Math.max(0, Math.min(app.screen.width, ((pointer.clientX - rect.left) / Math.max(1, rect.width)) * app.screen.width));
         const scale = Number(stage.scale?.x) || 1;
         const pointerWorldX = (canvasX - stage.x) / scale;
+        // 只驱动“世界水平”一维：竖向留在 authored 位置（worldOffset 的 y 恒为 0）。
+        // 注意：换算成局部后 x/y 两个分量都要写回 —— 父骨近乎旋转 90°，水平位移在局部里主要在 y 上，
+        // 把局部 y 归零会让实际运动变成竖直（即“左右移动却上下动”）。详见 dutyPortraitMotion.worldDeltaToLocal。
         const worldOffset = Math.max(-PAT_RANGE_WORLD, Math.min(PAT_RANGE_WORLD, pointerWorldX - patDriver.worldX));
         targetLocal = worldDeltaToLocal(patDriver.parent?.matrix, worldOffset, 0);
-        targetLocal.y = 0;
       }
       patOffsetCurrent.x = approach(patOffsetCurrent.x, targetLocal.x, PAT_DRIVER_SMOOTH, deltaSeconds);
       patOffsetCurrent.y = approach(patOffsetCurrent.y, targetLocal.y, PAT_DRIVER_SMOOTH, deltaSeconds);

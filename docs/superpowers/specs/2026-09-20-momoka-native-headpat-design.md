@@ -26,8 +26,10 @@ The transform constraints target `Touch_Point_Key`. `Idle_01` keys `Touch_Point_
 - A primary pointer-down in the portrait’s upper pat zone starts patting.
 - Pointer capture keeps the stroke active while the pointer moves across the portrait.
 - Pointer movement continuously updates the horizontal target of `Touch_Point_Key`.
-- The target’s vertical coordinate remains at its authored position, matching the community Blue Archive viewer pattern.
+- The target’s vertical coordinate remains at its authored position, matching the community Blue Archive viewer pattern. This is enforced on the **world/skeleton-space** delta (`worldOffset.y === 0`), **not** by discarding the converted local y.
 - Horizontal movement is clamped to a small skeleton-space range around the current authored target.
+- **Both local components of the converted delta must be written back.** `Touch_Point` / `Touch_Eye` are rotated ≈90° in this rig (`Touch_Point.matrix a=0.1095 b=-0.9185 c=-0.9185 d=-0.1095`), so a world-horizontal delta maps to a mostly-local-y delta: world (100, 0) → local (12.80, −107.35). Keeping only the local x collapses the stroke into a small *vertical* world motion (world (1.40, −11.76)) — the “move left/right, pat moves up/down” bug fixed 2026-09-20 in `DutyPortrait.applyOverrides`. `worldDeltaToLocal` lives in `dutyPortraitMotion.ts` with a regression test.
+- Amplitude calibration with the corrected axis (measured on `Momoka_weekdungeon`, `Idle_01`): the driver itself moves ≈0.8× `PAT_RANGE_WORLD`, constrained targets (hair / halo) ≈0.24×, `Head_back` ≈0.8×. `PAT_RANGE_WORLD = 24` was chosen so the stroke stays comparable to the previous (axis-buggy) visible amplitude; raising it to the old 120 would shift `Head_back` by ≈96 units (≈half a head width).
 - The driver moves toward the target with frame-independent exponential smoothing.
 - Pointer-up or pointer-cancel releases patting, plays the authored pat-end overlays, and smoothly returns the driver offset to zero.
 - No code writes `Head.rotation`, `Neck.rotation`, `R_Eye.x/y`, or `L_Eye.x/y` for this interaction.

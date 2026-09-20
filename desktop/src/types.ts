@@ -46,10 +46,8 @@ export interface TileGrid {
 /** 磁贴类型（统一 Tile 模型，v3） */
 export type TileKind = "agent" | "widget" | "browser";
 
-/** 未分组带 id（tile.groupId 取此值 = 未分组） */
+/** 未分组带 id（tile.groupId 取此值 = 未分组；browser/widget/agent 同权） */
 export const UNGROUPED_BAND_ID = "__ungrouped";
-/** 系统带 id（browser 磁贴；不参与成组） */
-export const SYSTEM_BAND_ID = "__system";
 
 /**
  * 统一磁贴（v3 单一事实源）：几何 + 组属 + 类型一体化。
@@ -58,7 +56,7 @@ export const SYSTEM_BAND_ID = "__system";
 export interface Tile {
   id: string;
   kind: TileKind;
-  /** 所属组：用户组 id / UNGROUPED_BAND_ID / SYSTEM_BAND_ID */
+  /** 所属组：用户组 id / UNGROUPED_BAND_ID */
   groupId: string;
   grid: TileGrid;
 }

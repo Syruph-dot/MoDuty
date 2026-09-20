@@ -11,9 +11,9 @@ import RightCharm from "./RightCharm";
 import TileShell from "./TileShell";
 import { AnimationProvider, useTileAnimation } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
-import { computeBands, UNGROUPED_BAND_ID, SYSTEM_BAND_ID, type Band } from "../lib/bandLayout";
+import { computeBands, resolveDropIntent, UNGROUPED_BAND_ID, type Band, type DropIntent } from "../lib/bandLayout";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
-import { computeMetrics, gridToPixels } from "../lib/gridLayout";
+import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { emitDutyEvent } from "../lib/dutyEvents";
 import VerdictToasts from "./VerdictToasts";
@@ -30,7 +30,6 @@ import { useWindowManagerStore } from "../state/windowManagerStore";
 import { useZoomStore } from "../state/zoomStore";
 import { getWidgetDef } from "../state/widgetRegistry";
 import type { Agent, TileGeometry, TileGrid } from "../types";
-import { GRID_ROWS, GRID_START_ROW } from "../types";
 
 const EMPTY_TILE: TileGeometry = { x: 0, y: 0, w: 0, h: 0 };
 
@@ -86,13 +85,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const groups = useTileStore((state) => state.groups);
   const hydrateTiles = useTileStore((state) => state.hydrate);
   const createGroup = useTileStore((state) => state.createGroup);
-  const joinGroup = useTileStore((state) => state.joinGroup);
   const leaveGroup = useTileStore((state) => state.leaveGroup);
-  const repelDropIntoGroup = useTileStore((state) => state.repelDropIntoGroup);
-  const repelDropToUngrouped = useTileStore((state) => state.repelDropToUngrouped);
   const renameGroup = useTileStore((state) => state.renameGroup);
   const reorderGroups = useTileStore((state) => state.reorderGroups);
-  const commitDisplacedV3 = useTileStore((state) => state.commitDisplaced);
 
   // widget 磁贴状态（仅实例列表；几何在 tileStore）
   const widgets = useWidgetStore((state) => state.widgets);
@@ -111,12 +106,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const applyBrowserEvent = useBrowserStore((state) => state.applyBrowserEvent);
 
   /** 把“被排斥（让位）磁贴”一键定格到预览位置（单一事实源，无类型路由） */
-  const commitDisplacedTiles = useCallback(
-    (map: Record<string, TileGrid>) => {
-      commitDisplacedV3(map);
-    },
-    [commitDisplacedV3],
-  );
 
   const renameTarget = useDialogStore((state) => state.renameTarget);
   const closeRename = useDialogStore((state) => state.closeRename);
@@ -192,7 +181,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       const pinned = pinnedIds.includes(agent.id);
       const manualArchived = useAgentsStore.getState().archivedIds.includes(agent.id);
       const tileOfAgent = useTileStore.getState().tiles[agent.id];
-      const inGroup = !!tileOfAgent && tileOfAgent.groupId !== UNGROUPED_BAND_ID && tileOfAgent.groupId !== SYSTEM_BAND_ID;
+      const inGroup = !!tileOfAgent && tileOfAgent.groupId !== UNGROUPED_BAND_ID;
       return [
         {
           id: pinned ? "unpin" : "pin",
@@ -215,7 +204,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                 onClick: () => leaveGroup(agent.id),
               },
             ]
-          : []),
+          : [
+              {
+                // 拖动不再承担“建组”（灰框落在哪条带就归哪条带）→ 建组显式给出入口
+                id: "new-group",
+                label: "移入新组",
+                onClick: () => createGroup([agent.id]),
+              },
+            ]),
         { id: "divider-mgmt", label: "", onClick: () => {}, divider: true },
         {
           id: "rename-agent",
@@ -238,7 +234,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         },
       ];
     },
-    [pinnedIds, togglePin, toggleArchive, setArchiveOpen, openRename, openConfirm, deleteAgent, leaveGroup],
+    [pinnedIds, togglePin, toggleArchive, setArchiveOpen, openRename, openConfirm, deleteAgent, leaveGroup, createGroup],
   );
 
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
@@ -477,184 +473,64 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     setOpenWorldX(next);
   }, [openMode, openAgentIds, openWorldX, metrics, bandById, bandOf]);
 
-  // ---- 拖拽成组：hover 计时状态机（ref 驱动）----
-  //  仅当 hover 到另一个磁贴（非组名、非空网格）时启动计时：
-  //  0～500ms  计时（目标磁贴亮起中）
-  //  500～1000ms  成组就绪（--drop 蓝亮，松手 = 建组/移组）
-  //  >1000ms      排斥就绪（--repel 橙亮，松手 = 排斥落位，目标带内让位 → 最终无重叠）
-  //  hover 到组名或空网格时：不启动计时，仅记录目标带（供跨组移动）
-  const dragHoverRef = useRef<{
-    sourceAgentId: string | null;
-    sourceGroupId: string | null;
-    targetGroupId: string | null;
-    targetAgentId: string | null;
-    activated: boolean;
-    mode: "group" | "repel";
-    timer: number | null;
-    guard: number;
-    /** 空网格跨组移动：指针所在目标带 + 带内局部网格（不激活 hover，仅供落位） */
-    targetGrid: TileGrid | null;
-  }>({ sourceAgentId: null, sourceGroupId: null, targetGroupId: null, targetAgentId: null, activated: false, mode: "group", timer: null, guard: 0, targetGrid: null });
+  // ---- 拖拽落点：指针 → 灰框位置 → 含义（Desktop 是唯一落点权威）----
+  //  鼠标指针 →（TileShell 像素跟手并上报磁贴中心）→ 灰框落在哪条带/哪个格 → 解译含义：
+  //  - 同带 → 移位（占用了别人的格时由让位预览把对方推开，落盘再规范化）
+  //  - 跨带进用户组 → 进组；跨带回未分组 → 退组
+  //  预览（灰框 / 让位 / 高亮）与落点同源，不会再出现“灰框在 A 带、落点在 B 带”。
+  const dropIntentRef = useRef<DropIntent | null>(null);
+  const [dropHint, setDropHint] = useState<{ bandId: string; tileId: string | null } | null>(null);
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [groupNameDraft, setGroupNameDraft] = useState("");
 
-  const clearDragHover = useCallback(() => {
-    const h = dragHoverRef.current;
-    if (h.timer !== null) window.clearTimeout(h.timer);
-    document.querySelectorAll(".tile-group-name--drop,.tile-group-name--repel,.tile-shell--drop,.tile-shell--repel").forEach((el) => {
-      el.className = el.className.replace(/ tile-group-name--(drop|repel)| tile-shell--(drop|repel)/g, "");
-    });
-    h.timer = null;
-    h.targetGroupId = null;
-    h.targetAgentId = null;
-    h.targetGrid = null;
-    h.activated = false;
-    h.mode = "group";
-    h.sourceAgentId = null;
-    h.sourceGroupId = null;
-  }, []);
+  const setGhost = useGhostStore((s) => s.setGhost);
+  const clearGhost = useGhostStore((s) => s.clearGhost);
+  const setDisplacedPreview = useGhostStore((s) => s.setDisplaced);
+  const clearDisplacedPreview = useGhostStore((s) => s.clearDisplaced);
 
-  const handleDragCursor = useCallback(
-    (clientX: number, clientY: number) => {
-      const h = dragHoverRef.current;
-      if (!h.sourceAgentId) return;
-      // 目标检测：磁贴优先（带内局部 id），组名/组带次之
-      let targetAgentId: string | null = null;
-      let targetGroupId: string | null = null;
-      const els = document.elementsFromPoint(clientX, clientY);
-      for (const el of els) {
-        const tile = el.closest?.("[data-tile-id]") as HTMLElement | null;
-        if (tile && tile.dataset.tileId && tile.dataset.tileId !== h.sourceAgentId) {
-          targetAgentId = tile.dataset.tileId;
-          targetGroupId = bandOf[targetAgentId] ?? null;
-          break;
-        }
-        const gname = el.closest?.("[data-group-name]") as HTMLElement | null;
-        if (gname && gname.dataset.groupName) {
-          targetGroupId = gname.dataset.groupName;
-          break;
-        }
-      }
-      // 无目标 / 系统带（browser/widget，不参与成组）→ 清除
-      // 同带磁贴也激活 hover：<1s 同组→落位（resolve）、未分组↔未分组→建组；≥1s→排斥落位
-      if (!targetAgentId && !targetGroupId) {
-        // 空网格：带区域命中 → 跨组移动到该带（记录目标带 + 带内局部网格，不激活 hover）
-        const el = wallRef.current;
-        const bandAt =
-          metrics && el
-            ? (() => {
-                const rect = el.getBoundingClientRect();
-                const x = clientX - rect.left - metrics.padding + el.scrollLeft;
-                let bestId: string | null = null;
-                let bestDist = Infinity;
-                for (const b of bands) {
-                  const dist = x < b.x ? b.x - x : x > b.x + b.width ? x - (b.x + b.width) : 0;
-                  if (dist < bestDist) {
-                    bestDist = dist;
-                    bestId = b.id;
-                  }
-                }
-                return bestId;
-              })()
-            : null;
-        if (bandAt && bandAt !== h.sourceGroupId && bandAt !== SYSTEM_BAND_ID) {
-          // 先清除占用计时（空网格不启动 hover 判定）
-          if (h.timer !== null) window.clearTimeout(h.timer);
-          h.timer = null;
-          h.activated = false;
-          document.querySelectorAll(".tile-group-name--drop,.tile-shell--drop,.tile-group-name--repel,.tile-shell--repel").forEach((el) => {
-            el.classList.remove("tile-group-name--drop", "tile-shell--drop", "tile-group-name--repel", "tile-shell--repel");
-          });
-          const band = bandById[bandAt] ?? null;
-          const step = metrics ? metrics.cellW + metrics.gap : 0;
-          const rect = el!.getBoundingClientRect();
-          const x = clientX - rect.left - metrics!.padding + el!.scrollLeft;
-          const y = clientY - rect.top - metrics!.padding;
-          h.targetGroupId = bandAt;
-          h.targetAgentId = null;
-          h.activated = false;
-          h.targetGrid =
-            band && metrics
-              ? {
-                  col: Math.max(0, Math.round((x - band.x - step / 2) / step)),
-                  row: Math.max(GRID_START_ROW, Math.min(Math.round((y - (metrics.cellH + metrics.gap) / 2) / (metrics.cellH + metrics.gap)), metrics.rows - 1)),
-                  w: 1,
-                  h: 1,
-                }
-              : null;
-          return;
-        }
-        clearDragHover();
-        return;
-      }
-      if (targetGroupId === SYSTEM_BAND_ID) {
-        clearDragHover();
-        return;
-      }
-      // 仅当 hover 到另一个磁贴时启动计时（hover 到组名不启动计时，仅记录目标组）
-      if (!targetAgentId) {
-        // hover 到组名：记录目标组但不启动计时
-        if (h.targetGroupId !== targetGroupId || h.targetAgentId !== targetAgentId) {
-          h.targetGroupId = targetGroupId;
-          h.targetAgentId = null;
-          h.activated = false;
-          h.mode = "group";
-        }
-        // 清除已有高亮
-        document.querySelectorAll(".tile-group-name--drop,.tile-group-name--repel,.tile-shell--drop,.tile-shell--repel").forEach((el) => {
-          el.classList.remove("tile-group-name--drop", "tile-shell--drop", "tile-group-name--repel", "tile-shell--repel");
-        });
-        // 组名高亮（轻微提示，不需要计时）
-        if (h.timer !== null) window.clearTimeout(h.timer);
-        h.timer = null;
-        if (targetGroupId) {
-          document.querySelector(`[data-group-name="${targetGroupId}"]`)?.classList.add("tile-group-name--drop");
-        }
-        return;
-      }
-      // 目标未变化且已就绪：保持
-      if (h.targetGroupId === targetGroupId && h.targetAgentId === targetAgentId && (h.activated || h.mode === "repel")) return;
-      // 重启单计时：0.5s 成组就绪 → 再过 0.5s 排斥就绪
-      if (h.timer !== null) window.clearTimeout(h.timer);
-      h.targetGroupId = targetGroupId;
-      h.targetAgentId = targetAgentId;
-      h.activated = false;
-      h.mode = "group";
-      const guard = ++h.guard;
-      const clearAllHighlights = () => {
-        document.querySelectorAll(".tile-group-name--drop,.tile-shell--drop,.tile-group-name--repel,.tile-shell--repel").forEach((el) => {
-          el.classList.remove("tile-group-name--drop", "tile-shell--drop", "tile-group-name--repel", "tile-shell--repel");
-        });
-      };
-      h.timer = window.setTimeout(() => {
-        if (h.guard !== guard) return;
-        h.activated = true;
-        h.mode = "group";
-        clearAllHighlights();
-        if (targetGroupId) {
-          document.querySelector(`[data-group-name="${targetGroupId}"]`)?.classList.add("tile-group-name--drop");
-        }
-        if (targetAgentId) {
-          document.querySelector(`[data-tile-id="${targetAgentId}"]`)?.closest(".tile-shell")?.classList.add("tile-shell--drop");
-        }
-        h.timer = window.setTimeout(() => {
-          if (h.guard !== guard) return;
-          h.mode = "repel";
-          clearAllHighlights();
-          if (targetGroupId) {
-            document.querySelector(`[data-group-name="${targetGroupId}"]`)?.classList.add("tile-group-name--repel");
-          }
-          if (targetAgentId) {
-            document.querySelector(`[data-tile-id="${targetAgentId}"]`)?.closest(".tile-shell")?.classList.add("tile-shell--repel");
-          }
-        }, 500);
-      }, 500);
+  /** 「磁贴中心（内容区坐标）」→ 落点：目标带 + 带内格 + 含义 */
+  const resolveIntent = useCallback(
+    (id: string, centerX: number, centerY: number): DropIntent | null => {
+      const tile = useTileStore.getState().tiles[id];
+      if (!metrics || !tile) return null;
+      return resolveDropIntent({
+        bands,
+        metrics,
+        sourceId: id,
+        sourceBandId: bandOf[id] ?? null,
+        centerX,
+        centerY,
+        w: tile.grid.w,
+        h: tile.grid.h,
+      });
     },
-    [clearDragHover, bandOf],
+    [bandOf, bands, metrics],
   );
 
-  // 全局拖拽光标转发：墙上有磁贴处于拖拽态（.tile-shell--dragging）时，把指针坐标喂给 hover 状态机；
-  // 指针在视口左右边缘时自动滚动画布（边缘 48px，越近越快）
+  /** 拖动中：解译落点 + 写预览（灰框像素 / 目标带让位 / 高亮） */
+  const handleDragMove = useCallback(
+    (id: string, centerX: number, centerY: number) => {
+      const intent = resolveIntent(id, centerX, centerY);
+      dropIntentRef.current = intent;
+      if (!intent) {
+        clearGhost();
+        clearDisplacedPreview();
+        setDropHint(null);
+        return;
+      }
+      setGhost(intent.pixels);
+      const band = bandById[intent.bandId] ?? null;
+      setDisplacedPreview(band ? displaceTiles(band.gridMap, intent.grid, id) : {});
+      setDropHint((prev) =>
+        prev && prev.bandId === intent.bandId && prev.tileId === intent.targetTileId
+          ? prev
+          : { bandId: intent.bandId, tileId: intent.targetTileId },
+      );
+    },
+    [bandById, clearDisplacedPreview, clearGhost, resolveIntent, setDisplacedPreview, setGhost],
+  );
+
+  // 指针在视口左右边缘时自动滚动画布（边缘 48px，越近越快）。拖拽落点不在这里判定。
   useEffect(() => {
     const el = wallRef.current;
     const EDGE = 48;
@@ -669,18 +545,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     const onMove = (event: MouseEvent) => {
       edgeScrollRef.lastX = event.clientX;
       edgeScrollRef.lastY = event.clientY;
-      const draggingShell = document.querySelector(".tile-shell--dragging");
-      if (!draggingShell) {
+      if (!document.querySelector(".tile-shell--dragging")) {
         stopEdgeScroll();
         return;
-      }
-      const src = draggingShell.closest("[data-tile-id]") as HTMLElement | null;
-      const sourceId = src?.dataset.tileId;
-      if (!sourceId) return;
-      const h = dragHoverRef.current;
-      if (h.sourceAgentId !== sourceId) {
-        h.sourceAgentId = sourceId;
-        h.sourceGroupId = bandOf[sourceId] ?? null;
       }
       // 边缘自动滚动：进入 48px 边缘区即持续滚动，越靠边越快（线性 8→22 px/帧）
       const edge = event.clientX < EDGE ? -1 : event.clientX > window.innerWidth - EDGE ? 1 : 0;
@@ -705,7 +572,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       } else {
         stopEdgeScroll();
       }
-      handleDragCursor(event.clientX, event.clientY);
     };
     const onUp = () => stopEdgeScroll();
     window.addEventListener("mousemove", onMove);
@@ -715,7 +581,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       window.removeEventListener("mouseup", onUp);
       stopEdgeScroll();
     };
-  }, [handleDragCursor, bandOf]);
+  }, []);
 
   // ---- 组标题拖拽排序：拖动组名 → 高亮目标组 → 松手调整组间顺序 ----
   const [reorderSource, setReorderSource] = useState<string | null>(null);
@@ -1141,61 +1007,39 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     [showContextMenu, openNewAgent, openWidgetPicker, openWallpaper, openSettings, load, zoom, zoomIn, zoomOut, openMode, openWorldY, resetOpenWorldY],
   );
 
-  // ---- 广义 Tile 统一拖放：所有类型（agent/widget/browser）唯一写路径 = tileStore ----
-  const handleTileMove = useCallback((id: string, next: TileGrid) => {
-    useTileStore.getState().moveTile(id, next);
-  }, []);
-  const handleTileDrop = useCallback(
-    (id: string, next: TileGrid) => {
-      const h = dragHoverRef.current;
-      // 预览即落盘：排斥/让位的 displaced 结果直接作为最终布局（与动中预览同一算法）
-      const previewDisplaced = useGhostStore.getState().displaced;
-      // hover 就绪（占用 Tile 判定）→ 成组/移组/排斥
-      if (h.activated && h.sourceAgentId === id) {
-        const target = h.targetAgentId;
-        if (target) {
-          const tBand = h.targetGroupId ? bandById[h.targetGroupId] : null;
-          const tGrid = tBand?.gridMap[target];
-          const col = tGrid?.col ?? 0;
-          const row = tGrid?.row ?? GRID_START_ROW;
-          const w = tGrid?.w ?? next.w;
-          const th = tGrid?.h ?? next.h;
-          const sameUserGroup = h.targetGroupId && h.targetGroupId === h.sourceGroupId && h.targetGroupId !== UNGROUPED_BAND_ID;
-          if (h.mode === "repel" || sameUserGroup) {
-            if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-              repelDropIntoGroup(id, h.targetGroupId, col, row, w, th, previewDisplaced);
-            } else {
-              repelDropToUngrouped(id, col, row, w, th, previewDisplaced);
-            }
-          } else if (h.targetGroupId === UNGROUPED_BAND_ID && h.sourceGroupId === UNGROUPED_BAND_ID) {
-            createGroup([id, target]);
-          } else if (h.targetGroupId === UNGROUPED_BAND_ID) {
-            repelDropToUngrouped(id, col, row, w, th, previewDisplaced);
-          } else if (h.targetGroupId) {
-            joinGroup(id, h.targetGroupId);
+  // ---- 广义 Tile 统一落盘：所有类型（agent/widget/browser）唯一写路径 = tileStore ----
+  //  落点完全来自 dropIntentRef（灰框解译结果），与拖动中的预览同源；
+  //  缩放仍在 TileShell 内量化，直接把网格回传（resizeGrid）。
+  const handleTileCommit = useCallback(
+    (id: string, resizeGrid?: TileGrid) => {
+      const store = useTileStore.getState();
+      const tile = store.tiles[id];
+      const displaced = useGhostStore.getState().displaced;
+      const hasDisplaced = Object.keys(displaced).length > 0;
+      if (resizeGrid) {
+        // 先定格让位者、再落自身：与拖动中预览的次序一致（避免规范化先推先占位）
+        if (hasDisplaced) store.commitDisplaced(displaced);
+        store.commitTile(id, resizeGrid);
+      } else {
+        const intent = dropIntentRef.current;
+        if (tile && intent && intent.sourceId === id) {
+          if (intent.kind === "move") {
+            if (hasDisplaced) store.commitDisplaced(displaced);
+            store.commitTile(id, intent.grid);
+          } else if (intent.kind === "ungroup") {
+            store.repelDropToUngrouped(id, intent.grid.col, intent.grid.row, tile.grid.w, tile.grid.h, displaced);
+          } else {
+            store.repelDropIntoGroup(id, intent.bandId, intent.grid.col, intent.grid.row, tile.grid.w, tile.grid.h, displaced);
           }
-        } else if (h.targetGroupId && h.targetGroupId !== UNGROUPED_BAND_ID) {
-          joinGroup(id, h.targetGroupId);
         }
-        clearDragHover();
-        return;
       }
-      // 空网格跨组移动：目标带 ≠ 源带 → 直接移入目标带（进入组/回未分组），不必拖到磁贴上
-      if (h.targetGroupId && h.targetGroupId !== bandOf[id]) {
-        const g = h.targetGrid ?? next;
-        if (h.targetGroupId !== UNGROUPED_BAND_ID) {
-          repelDropIntoGroup(id, h.targetGroupId, g.col, g.row, next.w, next.h, previewDisplaced);
-        } else {
-          repelDropToUngrouped(id, g.col, g.row, next.w, next.h, previewDisplaced);
-        }
-        clearDragHover();
-        return;
-      }
-      clearDragHover();
-      // 普通移动：统一落盘（类型无关）
-      useTileStore.getState().commitTile(id, next);
+      // 拖拽结束：清预览与高亮（灰框 / 让位 / 目标带）
+      dropIntentRef.current = null;
+      clearGhost();
+      clearDisplacedPreview();
+      setDropHint(null);
     },
-    [bandById, bandOf, clearDragHover, createGroup, joinGroup, repelDropIntoGroup, repelDropToUngrouped],
+    [clearDisplacedPreview, clearGhost],
   );
 
   return (
@@ -1257,7 +1101,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             <div
               key={band.id}
               data-group-name={band.id}
-              className={`tile-group-name${renamingGroupId === band.id ? " tile-group-name--editing" : ""}${reorderSource === band.id ? " tile-group-name--dragging" : ""}`}
+              className={`tile-group-name${renamingGroupId === band.id ? " tile-group-name--editing" : ""}${reorderSource === band.id ? " tile-group-name--dragging" : ""}${dropHint?.bandId === band.id ? " tile-group-name--drop" : ""}`}
               style={{ left: metrics.padding + band.x, top: metrics.padding + metrics.cellH - 30, width: band.width }}
               onMouseDown={onGroupNameMouseDown(band.id)}
             >
@@ -1346,17 +1190,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
               ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX)
               : EMPTY_TILE;
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : inDock ? "dock" : "free";
-        // 组带内拖动：clamp 在带内（允许向右扩展一列；行不出可放置区）
-        const gridClamp =
-          !openMode && band && !band.isSystem
-            ? {
-                minCol: 0,
-                maxCol: Math.max(0, band.maxCol),
-                minRow: GRID_START_ROW,
-                maxRow: GRID_ROWS - 1,
-              }
-            : undefined;
-        // 广义 Tile 统一拖放（agent 与 widget 同路径，见 handleTileMove / handleTileDrop）
+        // 广义 Tile 统一拖放（agent 与 widget 同路径，见 handleDragMove / handleTileCommit）
         return (
           <TileShell
             key={agent.id}
@@ -1372,14 +1206,13 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             dockRightEdgeX={layout?.dockRightEdgeX}
             zIndex={isOpen ? 20 + zRankOf(agent.id) : openMode ? (inDock ? 1 : 0) : 1}
             displacedPreview={!!displacedGrid && tileMode === "free"}
-            gridClamp={gridClamp}
             bandX={bandX}
             canvasGhost={canvasGhost}
             flipped={isOpen}
             back={isOpen ? <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} /> : undefined}
-            onMove={(next) => handleTileMove(agent.id, next)}
-            onCommit={(next) => handleTileDrop(agent.id, next)}
-            onCommitDisplaced={commitDisplacedTiles}
+            onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
+            onCommit={(next) => handleTileCommit(agent.id, next)}
+            dropTarget={dropHint?.tileId === agent.id}
             onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
             onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
             onWorldYCommit={isOpen ? (y) => commitOpenWorldY(agent.id, y) : undefined}
@@ -1407,10 +1240,10 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         if (groupedMode) return null; // 分组视图仅展示 Agent 分组
         const isOpen = openBrowserIds.includes(browser.id);
         const displacedGrid = displaced[browser.id];
-        const systemBand = bandById[SYSTEM_BAND_ID] ?? null;
-        const systemBandX = systemBand?.x ?? 0;
-        // 几何唯一事实源：tileStore → bandLayout 系统带 gridMap
-        const browserGrid = systemBand?.gridMap[browser.id] ?? null;
+        // 无系统带：browser 与 agent/widget 同权，几何来自所属带（默认未分组）
+        const band = bandById[bandOf[browser.id]] ?? null;
+        const bandX = band?.x ?? 0;
+        const browserGrid = band?.gridMap[browser.id] ?? null;
         const geometry =
           openMode && layout
             ? (() => {
@@ -1422,7 +1255,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
                 return bGeom;
               })()
             : metrics && browserGrid
-              ? gridToPixels(displacedGrid ?? browserGrid, metrics, systemBandX)
+              ? gridToPixels(displacedGrid ?? browserGrid, metrics, bandX)
               : EMPTY_TILE;
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : "dock";
         const browserMenuItems: ContextMenuItem[] = [
@@ -1444,7 +1277,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             agentName={browser.name}
             geometry={geometry}
             grid={!openMode ? browserGrid ?? undefined : undefined}
-            gridMap={!openMode ? systemBand?.gridMap : undefined}
+            gridMap={!openMode ? band?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
             bounds={bounds}
             mode={tileMode}
@@ -1452,12 +1285,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             dockRightEdgeX={layout?.dockRightEdgeX}
             zIndex={isOpen ? 21 : 1}
             displacedPreview={!!displacedGrid}
-            bandX={systemBandX}
+            bandX={bandX}
             flipped={isOpen}
             back={isOpen ? <BrowserWindow browser={browser} onClose={() => closeBrowser(browser.id)} /> : undefined}
-            onMove={(next) => handleTileMove(browser.id, next)}
-            onCommit={(next) => handleTileDrop(browser.id, next)}
-            onCommitDisplaced={commitDisplacedTiles}
+            onDragMove={(cx, cy) => handleDragMove(browser.id, cx, cy)}
+            onCommit={(next) => handleTileCommit(browser.id, next)}
+            dropTarget={dropHint?.tileId === browser.id}
             onDropToDock={isOpen ? () => closeBrowser(browser.id) : undefined}
             contextMenuItems={browserMenuItems}
             onOpenTile={tileMode === "expanded" ? undefined : () => openBrowser(browser.id)}
@@ -1507,20 +1340,10 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             disableResize={def.fixedSize}
             displacedPreview={!!displaced[widget.id]}
             bandX={bandX}
-            gridClamp={
-              band && !band.isSystem
-                ? {
-                    minCol: 0,
-                    maxCol: Math.max(0, band.maxCol),
-                    minRow: GRID_START_ROW,
-                    maxRow: GRID_ROWS - 1,
-                  }
-                : undefined
-            }
             contextMenuItems={widgetMenuItems}
-            onMove={(next) => handleTileMove(widget.id, next)}
-            onCommit={(next) => handleTileDrop(widget.id, next)}
-            onCommitDisplaced={commitDisplacedTiles}
+            onDragMove={(cx, cy) => handleDragMove(widget.id, cx, cy)}
+            onCommit={(next) => handleTileCommit(widget.id, next)}
+            dropTarget={dropHint?.tileId === widget.id}
           >
             <div className="widget-tile">
               <div className="widget-tile__title">{title}</div>

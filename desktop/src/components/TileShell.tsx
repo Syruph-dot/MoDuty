@@ -9,13 +9,11 @@ import {
 import { snapGeometry, type SnapGuide } from "../lib/snapController";
 import {
   gridToPixels,
-  displaceTiles,
   quantizeResize,
   type GridMetrics,
   type TileGridMap,
 } from "../lib/gridLayout";
 import type { TileGeometry, TileGrid } from "../types";
-import { GRID_ROWS, GRID_START_ROW } from "../types";
 import { useSnapGuideStore } from "../state/snapGuideStore";
 import { useGhostStore } from "../state/ghostStore";
 import { useContextMenuStore, type ContextMenuItem } from "../state/contextMenuStore";
@@ -44,10 +42,13 @@ interface TileShellProps {
   gridMap?: TileGridMap;
   /** 网格度量（free 模式像素↔网格换算用） */
   metrics?: GridMetrics;
-  /** 拖动结束 / 第一次落盘（写 localStorage）：free 模式提交网格几何 */
-  onMove: (next: TileGrid) => void;
-  /** 拖动结束 / 第一次落盘（写 localStorage）：free 模式提交网格几何 */
-  onCommit: (next: TileGrid) => void;
+  /**
+   * 拖动中上报「磁贴中心」（内容区坐标，已含滚动补偿）——
+   * TileShell 只管像素跟手与上报，落点含义由 Desktop 解译灰框位置得出。
+   */
+  onDragMove?: (centerX: number, centerY: number) => void;
+  /** 松手提交：移位由 Desktop 按灰框解译决定（次不回传）；缩放把壳内算好的量化网格回传 */
+  onCommit: (next?: TileGrid) => void;
   /** 父容器尺寸（用于 clamp，防止磁贴被拖出可见区；expanded 模式用） */
   bounds?: { width: number; height: number };
   /** z-index（用于选中置顶） */
@@ -85,11 +86,9 @@ interface TileShellProps {
   contextMenuItems?: ContextMenuItem[];
   /** 灰框让位预览中：让位/恢复过渡用 240ms 快速动画（2.25×） */
   displacedPreview?: boolean;
-  /** 松手时提交“被排斥（让位）磁贴”的最终网格（id → grid）；由父级落盘，使它们定格在临时位置 */
-  onCommitDisplaced?: (map: Record<string, TileGrid>) => void;
-  /** 网格坐标约束（拖拽成组：组带内的允许列/r行范围；free 拖动时 nextCol/nextRow 会被 clamp 到该矩形） */
-  gridClamp?: { minCol: number; maxCol: number; minRow: number; maxRow: number };
-  /** 组带起始 X（px，内容区相对坐标）：ghost/像素派生时叠加，让磁贴渲染在带内 */
+  /** 落点目标高亮：灰框当前落在该磁贴上（Desktop 解译结果） */
+  dropTarget?: boolean;
+  /** 组带起始 X（px，内容区相对坐标）：缩放灰框像素派生时叠加 */
   bandX?: number;
   /** 打开态画布弱化层：未打开且非 dock 的磁贴以画布位置弱化显示（透明可见初始画布） */
   canvasGhost?: boolean;
@@ -179,7 +178,7 @@ export default function TileShell({
   grid,
   gridMap,
   metrics,
-  onMove,
+  onDragMove,
   onCommit,
   bounds,
   zIndex,
@@ -200,8 +199,7 @@ export default function TileShell({
   flipped = false,
   contextMenuItems,
   displacedPreview = false,
-  onCommitDisplaced,
-  gridClamp,
+  dropTarget = false,
   bandX = 0,
   canvasGhost = false,
 }: TileShellProps) {
@@ -272,8 +270,6 @@ export default function TileShell({
   const clearSnapGuides = useSnapGuideStore((s) => s.clear);
   const setGhost = useGhostStore((s) => s.setGhost);
   const clearGhost = useGhostStore((s) => s.clearGhost);
-  const setDisplaced = useGhostStore((s) => s.setDisplaced);
-  const clearDisplaced = useGhostStore((s) => s.clearDisplaced);
 
   // 全局 shift 状态：expanded 拖动期间按 Shift = 强制网格吸附（不吸边）
   useEffect(() => {
@@ -308,43 +304,14 @@ export default function TileShell({
     return { snapped: result.geometry, guides: result.guides };
   };
 
-  /** free 模式：由鼠标 delta 计算量化 ghost 落点（网格）。移动采用“灰框滞回”：
-   *  磁贴中心越过当前灰框（吸附矩形）边缘才更新到相邻格，避免过线即跳（round/floor 感）。 */
-  const computeGhost = (dx: number, dy: number, dragMode: DragMode): TileGrid | null => {
+  /**
+   * free 模式缩放：由鼠标 delta 算出量化尺寸/位置。
+   * 移动不再在这里判定——鼠标位置只用于“像素跟手”，灰框落点由 Desktop 解译。
+   */
+  const computeResizeGhost = (dx: number, dy: number, dragMode: DragMode): TileGrid | null => {
     if (!originGridRef.current || !metrics || !gridMap) return null;
-    const originGrid = originGridRef.current;
-    if (dragMode === "move") {
-      const originPx = gridToPixels(originGrid, metrics);
-      const centerX = originPx.x + originPx.w / 2 + dx;
-      const centerY = originPx.y + originPx.h / 2 + dy;
-      // 当前吸附目标（拖动初始 = 磁贴原位置）
-      const current = ghostRef.current ?? originGrid;
-      const ghostPx = gridToPixels(current, metrics);
-      const inside =
-        centerX >= ghostPx.x && centerX <= ghostPx.x + ghostPx.w &&
-        centerY >= ghostPx.y && centerY <= ghostPx.y + ghostPx.h;
-      if (inside) {
-        return current;
-      }
-      // 越过边缘 → 相邻格推进（x/y 独立判定）：ghost 允许与其它磁贴重叠，
-      // 重叠磁贴由 displaceTiles 临时让位（拖动中预览），松手时再合法化落点
-      let nextCol = current.col;
-      let nextRow = current.row;
-      if (centerX < ghostPx.x) nextCol -= 1;
-      else if (centerX > ghostPx.x + ghostPx.w) nextCol += 1;
-      if (centerY < ghostPx.y) nextRow -= 1;
-      else if (centerY > ghostPx.y + ghostPx.h) nextRow += 1;
-      nextCol = Math.max(0, nextCol);
-      nextRow = Math.max(GRID_START_ROW, Math.min(nextRow, GRID_ROWS - originGrid.h));
-      // 拖拽成组：限制在组带内部（不越带拖出）
-      if (gridClamp) {
-        nextCol = Math.max(gridClamp.minCol, Math.min(nextCol, gridClamp.maxCol));
-        nextRow = Math.max(gridClamp.minRow, Math.min(nextRow, gridClamp.maxRow));
-      }
-      return { ...originGrid, col: nextCol, row: nextRow };
-    }
     const dir = dragMode.slice("resize-".length) as ResizeDirection;
-    return quantizeResize(gridMap, id, dir, originGrid, dx, dy, metrics);
+    return quantizeResize(gridMap, id, dir, originGridRef.current, dx, dy, metrics);
   };
 
   // 拖动中最后一次 delta（供画布边缘自动滚动时同步重算 ghost）
@@ -353,7 +320,7 @@ export default function TileShell({
   const scrollCompRef = useRef(0);
   // free 拖动主体：由 useDrag.onMove 与画布滚动补偿共用（滚动时叠加 scrollComp → ghost 跟手）
   const applyFreeMoveRef = useRef<(dx: number, dy: number, dragMode: DragMode, event: { clientX: number; clientY: number }) => void>(() => {});
-  applyFreeMoveRef.current = (dx, dy, dragMode, event) => {
+  applyFreeMoveRef.current = (dx, dy, dragMode, _event) => {
     if (!originRef.current || !metrics) return;
     const originPx = originRef.current;
     const effDx = dx + scrollCompRef.current;
@@ -365,37 +332,16 @@ export default function TileShell({
       w: nextPx.w - originPx.w,
       h: nextPx.h - originPx.h,
     });
-    // 量化落点 → 灰色提示框
-    const ghost = computeGhost(effDx, dy, dragMode);
+    if (dragMode === "move") {
+      // 落点判定全部交给 Desktop：上报磁贴中心（内容区坐标），由它解译灰框位置与含义
+      onDragMove?.(nextPx.x + nextPx.w / 2, nextPx.y + nextPx.h / 2);
+      return;
+    }
+    // 缩放：灰框仍在壳内算（尺寸量化不跨带）
+    const ghost = computeResizeGhost(effDx, dy, dragMode);
     ghostRef.current = ghost;
-    if (ghost && metrics) {
+    if (ghost) {
       setGhost(gridToPixels(ghost, metrics, bandX));
-      // 灰框临时让位：被波及磁贴预览布局（离开后自动恢复）
-      // 指针正悬停在其它磁贴/组名上 → 抑制让位（目标稳在原位，供 Desktop hover 成组/排斥检测）；
-      // 指针在空白 → 照旧让位（带内自由排布 / 组内自由布局）
-      if (gridMap) {
-        let hoverTarget = false;
-        try {
-          for (const el of document.elementsFromPoint(event.clientX, event.clientY)) {
-            const tileEl = el.closest?.("[data-tile-id]") as HTMLElement | null;
-            if (tileEl && tileEl.dataset.tileId && tileEl.dataset.tileId !== id) {
-              hoverTarget = true;
-              break;
-            }
-            if (el.closest?.("[data-group-name]")) {
-              hoverTarget = true;
-              break;
-            }
-          }
-        } catch {
-          /* elementsFromPoint 偶发不可用：回退到让位照旧 */
-        }
-        if (hoverTarget) {
-          clearDisplaced();
-        } else {
-          setDisplaced(displaceTiles(gridMap, ghost, id));
-        }
-      }
     }
   };
 
@@ -486,18 +432,9 @@ export default function TileShell({
         armSuppressClick();
       }
       if (mode === "free") {
-        if (didMove && ghostRef.current) {
-          // 松手先把“被排斥磁贴”定格在临时让位位置（若存在），再清空预览 → 由父级落盘
-          if (onCommitDisplaced) {
-            const displacedNow = useGhostStore.getState().displaced;
-            if (displacedNow && Object.keys(displacedNow).length > 0) {
-              onCommitDisplaced(displacedNow);
-            }
-          }
-          // 按用户要求：松手直接落到灰框位置（不做冲突合法化回跳）
-          const final = ghostRef.current;
-          onMove(final);
-          onCommit(final);
+        if (didMove) {
+          // 移位：落点由 Desktop 按灰框解译决定（不回传网格）；缩放：回传壳内算好的量化网格
+          onCommit(ghostRef.current ?? undefined);
         }
       } else if (didMove && originRef.current) {
         const next = applyDelta(originRef.current, dx, dy, dragMode);
@@ -545,7 +482,6 @@ export default function TileShell({
       setEdgeSide(0);
       clearSnapGuides();
       clearGhost();
-      clearDisplaced();
     },
   });
 
@@ -708,7 +644,7 @@ export default function TileShell({
 
   return (
     <div
-      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${edgeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}`}
+      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${edgeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}${dropTarget ? " tile-shell--drop" : ""}`}
       style={style}
       data-tile-id={id}
       data-drag-mode={dragMode ?? ""}

@@ -13,7 +13,6 @@ import {
 import { loadAllTiles } from "../lib/persistTiles";
 import {
   GRID_ROWS,
-  SYSTEM_BAND_ID,
   UNGROUPED_BAND_ID,
   isTileGrid,
   type Tile,
@@ -25,10 +24,11 @@ import {
 /**
  * 磁贴统一事实源（v3）：
  * - 每个磁贴一份记录 { id, kind, groupId, grid }：几何 + 组属 + 类型一体化
- * - 组带语义：groupId = 用户组 id / UNGROUPED_BAND_ID / SYSTEM_BAND_ID（browser）
+ * - 组带语义：groupId = 用户组 id / UNGROUPED_BAND_ID（agent/widget/browser 同权，无特殊带）
  * - grid 一律是「带内局部坐标」（col/row 相对所属组带；带起始 X 由 bandLayout 派生）
  * - 单 key 持久化 localStorage；从 v2（geometry）+ groups-v1（组属）一次性迁移
- * - 不变量（每次 commit 后维护）：带内互不重叠；row ∈ [GRID_START_ROW, GRID_ROWS-h]；w,h ∈ TILE_SIZES
+ * - 不变量（每次落盘写后由 normalizeBand 统一维护）：带内互不重叠；首列不留空；
+ *   row ∈ [GRID_START_ROW, GRID_ROWS-h]；w,h ∈ TILE_SIZES
  */
 
 const STORAGE_KEY_V3 = "momoka:tiles:v3";
@@ -55,9 +55,8 @@ function inferKind(id: string): TileKind | null {
   return "agent";
 }
 
-/** 规范化 groupId：非法引用收编回未分组 */
-function normalizeGroupId(g: string | undefined, groups: TileGroup[], kind: TileKind): string {
-  if (kind === "browser") return SYSTEM_BAND_ID;
+/** 规范化 groupId：非法引用收编回未分组（browser 与 widget/agent 同权，不再强推系统带） */
+function normalizeGroupId(g: string | undefined, groups: TileGroup[], _kind: TileKind): string {
   if (g === UNGROUPED_BAND_ID || !g) return UNGROUPED_BAND_ID;
   if (groups.some((grp) => grp.id === g)) return g;
   return UNGROUPED_BAND_ID;
@@ -195,7 +194,10 @@ function bandGridMap(tiles: Record<string, Tile>, groupId: string): TileGridMap 
   return map;
 }
 
-/** 组内首列左平移：第一列没有磁贴时整体左移直到第一列有磁贴（组内容紧凑） */
+/**
+ * 组内首列左并：第一列没有磁贴时整体左移直到第一列有磁贴。
+ * 未分组带与用户组一视同仁（唯一的带布局不变量，由 normalizeBand 统一调用）。
+ */
 function compactGroup(tiles: Record<string, Tile>, groupId: string): void {
   const ids = Object.keys(tiles).filter((k) => tiles[k].groupId === groupId);
   if (ids.length === 0) return;
@@ -209,7 +211,7 @@ function compactGroup(tiles: Record<string, Tile>, groupId: string): void {
 
 /** 组空自动解散并回收 order */
 function dissolveEmptyGroup(state: { groups: TileGroup[]; tiles: Record<string, Tile> }, groupId: string): TileGroup[] {
-  if (groupId === UNGROUPED_BAND_ID || groupId === SYSTEM_BAND_ID) return state.groups;
+  if (groupId === UNGROUPED_BAND_ID) return state.groups;
   const hasMember = Object.values(state.tiles).some((t) => t.groupId === groupId);
   if (hasMember) return state.groups;
   return state.groups.filter((g) => g.id !== groupId).map((g, i) => ({ ...g, order: i }));
@@ -235,6 +237,41 @@ function enforceInvariant(tiles: Record<string, Tile>, groupId: string): Record<
     next[id] = { ...next[id], grid };
   }
   return next;
+}
+
+/**
+ * 带布局规范化（唯一入口）：clamp 到合法网格 → 解重叠 → 首列左并。
+ * 所有会落盘的写操作都必须过这里；`moveTile` 这种每帧的瞬态写例外。
+ */
+function normalizeBand(tiles: Record<string, Tile>, bandId: string): Record<string, Tile> {
+  let next: Record<string, Tile> = { ...tiles };
+  for (const tile of Object.values(next)) {
+    if (tile.groupId !== bandId) continue;
+    const clamped = clampGrid(tile.grid, GRID_ROWS);
+    if (clamped.col !== tile.grid.col || clamped.row !== tile.grid.row) {
+      next = { ...next, [tile.id]: { ...tile, grid: clamped } };
+    }
+  }
+  next = enforceInvariant(next, bandId);
+  compactGroup(next, bandId);
+  return next;
+}
+
+/** 批量规范化若干条带（去重，忽略空 id） */
+function normalizeBands(tiles: Record<string, Tile>, bandIds: Array<string | null | undefined>): Record<string, Tile> {
+  let next = tiles;
+  const done = new Set<string>();
+  for (const bandId of bandIds) {
+    if (!bandId || done.has(bandId)) continue;
+    done.add(bandId);
+    next = normalizeBand(next, bandId);
+  }
+  return next;
+}
+
+/** 当前数据里出现过的所有带 id（恢复时全量规范化用） */
+function allBandIds(tiles: Record<string, Tile>): string[] {
+  return [...new Set(Object.values(tiles).map((t) => t.groupId))];
 }
 
 /* ────────────────────────── Store ────────────────────────── */
@@ -285,7 +322,12 @@ interface TileStore {
   repelDropToUngrouped: (id: string, col: number, row: number, w: number, h: number, displaced?: TileGridMap) => void;
 }
 
-const INITIAL = typeof localStorage !== "undefined" ? (loadV3() ?? migrateToV3()) : { groups: [], tiles: {} };
+const INITIAL_RAW = typeof localStorage !== "undefined" ? (loadV3() ?? migrateToV3()) : { groups: [], tiles: {} };
+// 首次渲染就用规范化后的布局（旧数据可能残留重叠 / 首列空洞）
+const INITIAL = {
+  groups: INITIAL_RAW.groups,
+  tiles: normalizeBands(INITIAL_RAW.tiles, allBandIds(INITIAL_RAW.tiles)),
+};
 
 export const useTileStore = create<TileStore>()((set, get) => ({
   tiles: INITIAL.tiles,
@@ -295,13 +337,16 @@ export const useTileStore = create<TileStore>()((set, get) => ({
   hydrate() {
     // 模块加载时已同步迁移/读取；这里再读一次防御外部（多窗口）写入
     const fresh = loadV3() ?? migrateToV3();
-    set({ tiles: fresh.tiles, groups: fresh.groups, hydrated: true });
+    // 旧数据可能残留重叠/首列空洞（历史上只在部分路径压缩，且未分组带被排除）→ 恢复时统一规范化一次
+    const tiles = normalizeBands(fresh.tiles, allBandIds(fresh.tiles));
+    persist({ groups: fresh.groups, tiles });
+    set({ tiles, groups: fresh.groups, hydrated: true });
   },
 
   ensureTile(id, kind, opts) {
     set((state) => {
       if (state.tiles[id]) return {};
-      const groupId = opts?.groupId ?? (kind === "browser" ? SYSTEM_BAND_ID : UNGROUPED_BAND_ID);
+      const groupId = opts?.groupId ?? UNGROUPED_BAND_ID;
       const w = opts?.grid?.w ?? 1;
       const h = opts?.grid?.h ?? 1;
       const map = bandGridMap(state.tiles, groupId);
@@ -312,7 +357,7 @@ export const useTileStore = create<TileStore>()((set, get) => ({
           ? { col: preferred.col, row: preferred.row }
           : firstFree(map, opts?.colHint ?? 0, w, h);
       const grid = clampGrid({ col: slot.col, row: slot.row, w, h }, GRID_ROWS);
-      const tiles = { ...state.tiles, [id]: { id, kind, groupId, grid } };
+      const tiles = normalizeBands({ ...state.tiles, [id]: { id, kind, groupId, grid } }, [groupId]);
       persist({ groups: state.groups, tiles });
       return { tiles };
     });
@@ -324,10 +369,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
       if (!tile) return {};
       const tiles = { ...state.tiles };
       delete tiles[id];
-      const groups = dissolveEmptyGroup({ groups: state.groups, tiles }, tile.groupId);
-      if (tile.groupId !== UNGROUPED_BAND_ID && tile.groupId !== SYSTEM_BAND_ID) compactGroup(tiles, tile.groupId);
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [tile.groupId]);
+      const groups = dissolveEmptyGroup({ groups: state.groups, tiles: normalized }, tile.groupId);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -335,20 +380,23 @@ export const useTileStore = create<TileStore>()((set, get) => ({
     set((state) => {
       let changed = false;
       const tiles = { ...state.tiles };
+      const touched: string[] = [];
       for (const id of Object.keys(tiles)) {
         if (!aliveIds.has(id)) {
+          touched.push(tiles[id].groupId);
           delete tiles[id];
           changed = true;
         }
       }
       if (!changed) return {};
+      const normalized = normalizeBands(tiles, touched);
       let groups = state.groups;
       // 空组解散
       for (const g of state.groups) {
-        groups = dissolveEmptyGroup({ groups, tiles }, g.id);
+        groups = dissolveEmptyGroup({ groups, tiles: normalized }, g.id);
       }
-      persist({ groups, tiles });
-      return { tiles, groups };
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -370,7 +418,8 @@ export const useTileStore = create<TileStore>()((set, get) => ({
       const tile = state.tiles[id];
       if (!tile) return {};
       const clamped = clampGrid(grid, GRID_ROWS);
-      const tiles = { ...state.tiles, [id]: { ...tile, grid: clamped } };
+      // 规范化：解重叠 + 首列左并（以前这里什么都没做 → 带内首列空洞与重叠都留了下来）
+      const tiles = normalizeBands({ ...state.tiles, [id]: { ...tile, grid: clamped } }, [tile.groupId]);
       persist({ groups: state.groups, tiles });
       return { tiles };
     });
@@ -380,15 +429,18 @@ export const useTileStore = create<TileStore>()((set, get) => ({
     set((state) => {
       let changed = false;
       const tiles = { ...state.tiles };
+      const touched: Array<string | undefined> = [];
       for (const [id, grid] of Object.entries(map)) {
         const tile = tiles[id];
         if (!tile) continue;
         tiles[id] = { ...tile, grid: clampGrid(grid, GRID_ROWS) };
+        touched.push(tile.groupId);
         changed = true;
       }
       if (!changed) return {};
-      persist({ groups: state.groups, tiles });
-      return { tiles };
+      const normalized = normalizeBands(tiles, touched);
+      persist({ groups: state.groups, tiles: normalized });
+      return { tiles: normalized };
     });
   },
 
@@ -412,8 +464,9 @@ export const useTileStore = create<TileStore>()((set, get) => ({
         tiles[tileId] = { ...tile, groupId: id, grid };
       }
       const groups = [...state.groups, group];
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [id]);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
     return id;
   },
@@ -433,12 +486,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
         grid: { col: slot.col, row: slot.row, w: tile.grid.w, h: tile.grid.h },
       };
       let groups = state.groups;
-      if (tile.groupId !== UNGROUPED_BAND_ID && tile.groupId !== SYSTEM_BAND_ID) {
-        compactGroup(tiles, tile.groupId);
-        groups = dissolveEmptyGroup({ groups, tiles }, tile.groupId);
-      }
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [groupId, tile.groupId]);
+      groups = dissolveEmptyGroup({ groups, tiles: normalized }, tile.groupId);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -457,10 +508,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
         groupId: UNGROUPED_BAND_ID,
         grid: { col: slot.col, row: slot.row, w: tile.grid.w, h: tile.grid.h },
       };
-      compactGroup(tiles, oldGroup);
-      const groups = dissolveEmptyGroup({ groups: state.groups, tiles }, oldGroup);
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [UNGROUPED_BAND_ID, oldGroup]);
+      const groups = dissolveEmptyGroup({ groups: state.groups, tiles: normalized }, oldGroup);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -500,8 +551,9 @@ export const useTileStore = create<TileStore>()((set, get) => ({
         tiles[member.id] = { ...member, groupId: UNGROUPED_BAND_ID, grid };
       }
       const groups = state.groups.filter((g) => g.id !== groupId).map((g, i) => ({ ...g, order: i }));
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [UNGROUPED_BAND_ID]);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -524,14 +576,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
           tiles[did] = { ...target, grid: clampGrid(grid, GRID_ROWS) };
         }
       }
-      tiles = enforceInvariant(tiles, groupId);
-      let groups = state.groups;
-      if (oldGroup !== UNGROUPED_BAND_ID && oldGroup !== SYSTEM_BAND_ID && oldGroup !== groupId) {
-        compactGroup(tiles, oldGroup);
-        groups = dissolveEmptyGroup({ groups, tiles }, oldGroup);
-      }
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [groupId, oldGroup]);
+      const groups = dissolveEmptyGroup({ groups: state.groups, tiles: normalized }, oldGroup);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 
@@ -555,14 +603,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
           tiles[did] = { ...target, grid: clampGrid(grid, GRID_ROWS) };
         }
       }
-      tiles = enforceInvariant(tiles, UNGROUPED_BAND_ID);
-      let groups = s.groups;
-      if (oldGroup !== UNGROUPED_BAND_ID && oldGroup !== SYSTEM_BAND_ID) {
-        compactGroup(tiles, oldGroup);
-        groups = dissolveEmptyGroup({ groups, tiles }, oldGroup);
-      }
-      persist({ groups, tiles });
-      return { tiles, groups };
+      const normalized = normalizeBands(tiles, [UNGROUPED_BAND_ID, oldGroup]);
+      const groups = dissolveEmptyGroup({ groups: s.groups, tiles: normalized }, oldGroup);
+      persist({ groups, tiles: normalized });
+      return { tiles: normalized, groups };
     });
   },
 }));

@@ -13,6 +13,8 @@ import type { RouteContext } from "./route-context.js";
 import { ensureAgents } from "./route-context.js";
 import { isFullyAutomatic } from "../permission-mode.js";
 import { contextStatsToSnake } from "./serialization.js";
+import { PROJECT_SCOPE } from "../memory.js";
+import { extractFromVerdict } from "../memory-extract.js";
 import type { AgentEventBroadcaster } from "./sse.js";
 
 /**
@@ -295,6 +297,58 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
 }
 
 /**
+ * 判定的下游回写（P1/P3 接线）：把结论写回计划步与项目级记忆。
+ * 任何失败都不影响判定本身——判定已经生效，回写只是让计划与记忆跟上事实。
+ */
+async function reflectVerdict(
+  deps: OrchestrationDeps,
+  entry: DispatchRecord,
+  verdict: "deliver" | "continue",
+  note?: string,
+): Promise<void> {
+  // 计划回写：交付 → 该步 done；返工 → 追加一条证据
+  try {
+    const bound = await deps.agent.plans.findByDispatch(entry.id);
+    if (bound) {
+      if (verdict === "deliver") {
+        await deps.agent.plans.recordAttempt(bound.plan.id, bound.step.id, {
+          status: "done",
+          summary: `值日生判定交付${note ? `：${note.slice(0, 80)}` : ""}`,
+          sourceRefs: [`dispatch:${entry.id}`],
+        });
+      } else {
+        await deps.agent.plans.updateStep(bound.plan.id, bound.step.id, {
+          evidence: {
+            kind: "note",
+            summary: `值日生判定返工（第 ${entry.continueCount ?? 0} 次）${note ? `：${note.slice(0, 80)}` : ""}`,
+            sourceRefs: [`dispatch:${entry.id}`],
+          },
+        });
+      }
+    }
+  } catch (error) {
+    console.error("[plan] 判定回写计划失败（不影响判定）:", error);
+  }
+
+  // 记忆回写：派发结局沉淀为项目级 episode（P3）
+  try {
+    const target = await deps.registry.getAgent(entry.targetAgentId);
+    const draft = extractFromVerdict({
+      verdict,
+      task: entry.task,
+      targetLabel: target ? `${target.name}(${target.id})` : entry.targetAgentId,
+      dispatchId: entry.id,
+      continueCount: entry.continueCount ?? 0,
+    });
+    if (draft) {
+      await deps.agent.memoryStore.rememberTyped(draft, PROJECT_SCOPE, { topic: target?.name, source: "dispatch" });
+    }
+  } catch (error) {
+    console.error("[memory] 派发结局落记忆失败（不影响判定）:", error);
+  }
+}
+
+/**
  * 复用确认硬约束（自 tools.ts 迁入并结构化，不再解析 CLI 字符串）。
  * 口径与旧实现一致：目标会话已有消息 → 视为复用，必须携带合法确认凭证
  * （提问属于派发者会话、已作答、第一题选「复用」、题干含目标 agentId）。
@@ -374,6 +428,7 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
       `【判读留痕】${entry.id}：判定可交付，已上报老师。${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
     );
     broadcastDispatchVerdict(deps, { entry, verdict: "deliver", note: input.note });
+    await reflectVerdict(deps, entry, "deliver", input.note);
     return "判定已提交：交付。系统已上报老师（桌面通知）。";
   }
 
@@ -386,6 +441,7 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
   const updated = await deps.registry.dispatches.continueTracking(entry.id);
   const target = await deps.registry.getAgent(entry.targetAgentId);
   if (!target) return "错误：执行者已不存在，无法返工。请改判 deliver。";
+  await reflectVerdict(deps, { ...entry, continueCount: updated?.continueCount ?? (entry.continueCount ?? 0) + 1 }, "continue", input.note);
   const note = input.note?.trim();
   const message = note
     ? `值日生判读：上一轮产出未通过（${note.slice(0, 150)}）。请继续完成任务。`

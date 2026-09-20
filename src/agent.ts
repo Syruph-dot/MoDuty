@@ -3,7 +3,8 @@ import path from "node:path";
 
 import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
-import { MemoryStore, USER_SCOPE, type MemoryScopeRef } from "./memory.js";
+import { MemoryStore, USER_SCOPE, PROJECT_SCOPE, type MemoryScopeRef } from "./memory.js";
+import { extractFromJudgment } from "./memory-extract.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -245,14 +246,14 @@ export class MomokaAgentCore implements MomokaAgent {
     return sections.join("\n\n");
   }
 
-  /** 本轮记忆检索的作用域链：本 Agent 自己的分区优先，再回落 user 全局 */
+  /** 本轮记忆检索的作用域链：本 Agent 分区 → 项目级 → user 全局 */
   private async memoryRefsForSession(sessionId?: string | null): Promise<MemoryScopeRef[]> {
-    const refs: MemoryScopeRef[] = [USER_SCOPE];
+    const refs: MemoryScopeRef[] = [PROJECT_SCOPE, USER_SCOPE];
     if (!sessionId || !this.agentRegistry) return refs;
     try {
       const record = await this.agentRegistry.agentBySessionId(sessionId);
       if (record) refs.unshift({ scope: "agent", scopeId: record.id });
-    } catch { /* 反查不到就只用 user 作用域 */ }
+    } catch { /* 反查不到就只用项目级与 user 作用域 */ }
     return refs;
   }
 
@@ -447,7 +448,20 @@ ${ref.message.content}`;
     const judgment = await this.memoryStore.recordJudgment(request);
     // 落进产生这条输出的 Agent 自己的作用域（反查不到就进 user 全局）
     const promoteScope = (await this.memoryRefsForSession(output.sessionId ?? null))[0] ?? USER_SCOPE;
-    await this.memoryStore.promoteToLongTerm(judgment, promoteScope);
+    // P3：抽取为**类型化**记忆（type/status/confidence/sourceRefs），而不是整段文本直接晋升
+    const draft = extractFromJudgment({
+      comment: judgment.comment,
+      quote: judgment.quote,
+      score: judgment.score,
+      topic: judgment.topic,
+      outputId: judgment.outputId,
+      commentSource: judgment.commentSource,
+    });
+    if (draft) {
+      await this.memoryStore.rememberTyped(draft, promoteScope, { topic: judgment.topic, outputId: judgment.outputId, source: "judgment" });
+    } else {
+      await this.memoryStore.promoteToLongTerm(judgment, promoteScope);
+    }
     const label = LIKERT_LABELS[request.score] ?? "";
     const reflection = analyzeJudgment({ score: request.score, label, annotatedText: judgment.context, topic: judgment.topic, userComment: judgment.comment });
     const base: JudgeResponse = { runId: makeId("run"), outputId: request.outputId, score: request.score, label, analysis: reflection.summary, reflection, annotatedText: judgment.context, comment: judgment.comment, preferenceUpdate: { updated: false, promoted: [] }, evolutionProposals: [] };

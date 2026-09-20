@@ -5,11 +5,12 @@ import path from "node:path";
 import { judgmentFromDisk, judgmentToDisk, outputFromDisk, outputToDisk } from "./casing.js";
 import { readJsonList, writeJsonList } from "./json-file.js";
 import { atomicWriteJson } from "./write-queue.js";
+import { ACTIVE_CONFIDENCE, consolidateEntry, newMemoryId, type MemoryEntryLike, type MemoryStatus, type MemoryType, type TypedMemoryInput } from "./memory-extract.js";
 import type { JudgmentRecord, OutputRecord } from "./types.js";
 
 const CONTEXT_WINDOW_CHARS = 20;
 
-export interface LongTermMemoryEntry {
+export interface LongTermMemoryEntry extends MemoryEntryLike {
   id: string;
   content: string;
   topic: string;
@@ -17,12 +18,19 @@ export interface LongTermMemoryEntry {
   ownerScope: MemoryScope;
   /** 该层内的具体 id（user 与 project 用固定值） */
   scopeId: string;
-  source: "judgment" | "explicit" | "legacy";
+  source: "judgment" | "explicit" | "legacy" | "dispatch";
   outputId?: string;
   createdAt: string;
   lastAccessedAt?: string;
   accessCount: number;
-  [key: string]: unknown;
+  /** 记忆类型（P3）：episode / fact / preference / procedure / decision */
+  type?: MemoryType;
+  /** 生命周期状态（P3）：candidate / active / superseded / rejected */
+  status?: MemoryStatus;
+  /** 0..1，合并时会取高并加增益 */
+  confidence?: number;
+  /** 溯源：out:<outputId> / dispatch:<id> / ses:<sessionId> */
+  sourceRefs?: string[];
 }
 
 /** 记忆作用域：P2 的分区维度 */
@@ -196,6 +204,44 @@ export class MemoryStore {
     return await this.readScope(ref);
   }
 
+  /**
+   * 写入一条**类型化**记忆（P3 主入口）：抽取 → 合并/取代/新增，一次搞定。
+   * 与 promoteToLongTerm 的区别：后者是旧的「整段晋升」，前者带 type/status/confidence/sourceRefs，
+   * 且会与同作用域内的同内容条目合并、与相反结论的条目做取代。
+   */
+  async rememberTyped(
+    input: TypedMemoryInput,
+    ref: MemoryScopeRef = USER_SCOPE,
+    meta: { topic?: string; outputId?: string; source?: LongTermMemoryEntry["source"] } = {},
+  ): Promise<{ action: "inserted" | "merged" | "superseded"; entry: LongTermMemoryEntry | null; targetId: string }> {
+    const records = await this.readScope(ref);
+    const result = consolidateEntry<LongTermMemoryEntry>(records, input, { idFactory: newMemoryId });
+    // 给新增的那条补上作用域与来源元信息（consolidateEntry 不认识这些字段）
+    const entries = result.entries.map((entry) => {
+      if (entry.id !== result.targetId) return entry;
+      return {
+        ...entry,
+        ownerScope: ref.scope,
+        scopeId: ref.scopeId,
+        topic: entry.topic ?? meta.topic ?? "",
+        source: entry.source ?? meta.source ?? "judgment",
+        ...(meta.outputId ? { outputId: meta.outputId } : {}),
+        accessCount: entry.accessCount ?? 0,
+      } as LongTermMemoryEntry;
+    });
+    await this.writeScope(ref, entries.slice(-LONG_TERM_MAX_ENTRIES_PER_SCOPE));
+    return {
+      action: result.action,
+      entry: entries.find((entry) => entry.id === result.targetId) ?? null,
+      targetId: result.targetId,
+    };
+  }
+
+  /** 直接替换某个作用域的全部条目（供记忆面板的编辑/删除使用） */
+  async replaceScope(ref: MemoryScopeRef, entries: LongTermMemoryEntry[]): Promise<void> {
+    await this.writeScope(ref, entries);
+  }
+
   /** 幂等迁移旧版全局长期记忆到 user 作用域；返回迁移条数 */
   async migrateLegacy(): Promise<number> {
     if (this.migrationChecked) return 0;
@@ -232,6 +278,12 @@ export class MemoryStore {
       ownerScope: ref.scope,
       scopeId: ref.scopeId,
       source: entry.source ?? "judgment",
+      // P3 之前的旧条目没有类型/状态：按「已生效的事件记忆」补默认值，避免检索时被当作无效条目
+      type: entry.type ?? "episode",
+      status: entry.status ?? "active",
+      confidence: typeof entry.confidence === "number" ? entry.confidence : ACTIVE_CONFIDENCE,
+      sourceRefs: Array.isArray(entry.sourceRefs) ? entry.sourceRefs : [],
+      accessCount: typeof entry.accessCount === "number" ? entry.accessCount : 0,
     }));
   }
 

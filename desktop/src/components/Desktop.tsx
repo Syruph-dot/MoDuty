@@ -889,7 +889,10 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     [paintOverscroll, releaseOverscroll],
   );
 
-  // 滚轮：上=左、下=右 水平滑动；Ctrl+滚轮 → 缩放（仅 free 模式；open 模式不拦截窗口滚动）
+  // 滚轮/触控板平移桌面（上下、左右皆可）；Ctrl+滚轮 → 缩放（仅 free 模式；open 模式不拦截窗口滚动）
+  // 方向约定：滚动方向与桌面移动方向相反——
+  //   下滚 / 向右滚 → scrollLeft 增大（桌面向左移）；上滚 / 向左滚 → scrollLeft 减小（桌面向右移）。
+  // 对角线手势取主导轴，避免两轴叠加导致速度翻倍。
   // 范围内自由滚动；贴住停靠点（scrollLeft=0 / maxScroll）后继续往外的量转为橡皮筋越界
   useEffect(() => {
     const el = wallRef.current;
@@ -901,17 +904,17 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         else if (event.deltaY > 0) zoomOut();
         return;
       }
+      // 横向滚动接入同一平移量：向右滚 = 桌面向左，向左滚 = 桌面向右（与纵向同号，取主导轴）
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
       if (openMode) {
         // T2：草稿纸桌面用容器 scrollLeft 直接平移，不做橡皮筋越界（free 模式的越界弹回逻辑保留在其后）
         event.preventDefault();
         const maxScroll = el.scrollWidth - el.clientWidth;
         const cur = el.scrollLeft;
-        const delta = event.deltaY;
         el.scrollLeft = Math.min(maxScroll, Math.max(0, cur + delta));
         return;
       }
       event.preventDefault();
-      const delta = event.deltaY;
       const maxScroll = el.scrollWidth - el.clientWidth;
       const cur = el.scrollLeft;
       if (delta < 0) {

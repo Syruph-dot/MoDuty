@@ -231,6 +231,96 @@ export class MemoryStore {
     return await this.readScope(ref);
   }
 
+  /** 枚举所有分区并汇总条目（记忆面板与索引重建共用） */
+  async listAllEntries(): Promise<LongTermMemoryEntry[]> {
+    const scopesDir = this.longTermRoot();
+    const seen = new Set<string>();
+    const all: LongTermMemoryEntry[] = [];
+    const scopeDirs = (await readdir(scopesDir, { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name as MemoryScope);
+    for (const scope of scopeDirs) {
+      const files = await readdir(path.join(scopesDir, scope), { withFileTypes: true }).catch(() => []);
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith(".json")) continue;
+        const ref: MemoryScopeRef = { scope, scopeId: file.name.replace(/\.json$/u, "") };
+        for (const entry of await this.readScope(ref)) {
+          if (seen.has(entry.id)) continue;
+          seen.add(entry.id);
+          all.push(entry);
+        }
+      }
+    }
+    return all;
+  }
+
+  /** 按条目 id 反查它所在的分区与内容（P10 编辑/删除用：调用方只需要 id） */
+  async findEntryById(id: string): Promise<{ ref: MemoryScopeRef; entry: LongTermMemoryEntry } | null> {
+    for (const entry of await this.listAllEntries()) {
+      if (entry.id === id) return { ref: { scope: entry.ownerScope, scopeId: entry.scopeId }, entry };
+    }
+    return null;
+  }
+
+  /** 修改条目字段（人工纠正记忆：内容/类型/状态/置信度） */
+  async updateEntry(
+    id: string,
+    patch: { content?: string; type?: MemoryType; status?: MemoryStatus; confidence?: number; validUntil?: string | null },
+  ): Promise<LongTermMemoryEntry | null> {
+    const found = await this.findEntryById(id);
+    if (!found) return null;
+    const entries = await this.readScope(found.ref);
+    const index = entries.findIndex((entry) => entry.id === id);
+    if (index === -1) return null;
+    const next: LongTermMemoryEntry = {
+      ...entries[index]!,
+      ...(patch.content !== undefined ? { content: patch.content } : {}),
+      ...(patch.type !== undefined ? { type: patch.type } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.confidence !== undefined ? { confidence: Math.max(0, Math.min(1, patch.confidence)) } : {}),
+      ...(patch.validUntil !== undefined ? (patch.validUntil ? { validUntil: patch.validUntil } : { validUntil: undefined }) : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    entries[index] = next;
+    await this.writeScope(found.ref, entries);
+    return next;
+  }
+
+  /** 删除条目（同时从索引移除） */
+  async deleteEntry(id: string): Promise<boolean> {
+    const found = await this.findEntryById(id);
+    if (!found) return false;
+    const entries = await this.readScope(found.ref);
+    const next = entries.filter((entry) => entry.id !== id);
+    if (next.length === entries.length) return false;
+    await this.writeScope(found.ref, next);
+    if (this.index) await this.index.deleteMemory(id).catch(() => false);
+    return true;
+  }
+
+  /**
+   * 人工标记取代：把 oldId 标为 superseded 并指向 newId（不传 newId 则只做退役）。
+   * 与自动取代的区别：这是用户显式拍板，不靠词面启发式。
+   */
+  async supersedeEntry(oldId: string, newId?: string): Promise<LongTermMemoryEntry | null> {
+    const found = await this.findEntryById(oldId);
+    if (!found) return null;
+    const entries = await this.readScope(found.ref);
+    const index = entries.findIndex((entry) => entry.id === oldId);
+    if (index === -1) return null;
+    const at = new Date().toISOString();
+    const next: LongTermMemoryEntry = {
+      ...entries[index]!,
+      status: "superseded",
+      ...(newId ? { supersededBy: newId } : {}),
+      validUntil: at,
+      updatedAt: at,
+    };
+    entries[index] = next;
+    await this.writeScope(found.ref, entries);
+    return next;
+  }
+
   /**
    * 写入一条**类型化**记忆（P3 主入口）：抽取 → 合并/取代/新增，一次搞定。
    * 与 promoteToLongTerm 的区别：后者是旧的「整段晋升」，前者带 type/status/confidence/sourceRefs，
@@ -295,35 +385,17 @@ export class MemoryStore {
   async rebuildIndex(): Promise<{ available: boolean; written: number }> {
     if (!this.index) return { available: false, written: 0 };
     if (!(await this.index.open())) return { available: false, written: 0 };
-    const refs: MemoryScopeRef[] = [USER_SCOPE, PROJECT_SCOPE];
-    const scopesDir = path.join(this.longTermRoot());
-    const scopeNames = await readdir(scopesDir, { withFileTypes: true }).catch(() => []);
-    for (const scopeDir of scopeNames.filter((entry) => entry.isDirectory())) {
-      const scope = scopeDir.name as MemoryScope;
-      const files = await readdir(path.join(scopesDir, scopeDir.name), { withFileTypes: true }).catch(() => []);
-      for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))) {
-        refs.push({ scope, scopeId: file.name.replace(/\.json$/u, "") });
-      }
-    }
-    const seen = new Set<string>();
-    const payload: Array<Parameters<IndexStore["upsertMemories"]>[0][number]> = [];
-    for (const ref of refs) {
-      for (const entry of await this.readScope(ref)) {
-        if (seen.has(entry.id)) continue;
-        seen.add(entry.id);
-        payload.push({
-          id: entry.id,
-          scope: entry.ownerScope,
-          scopeId: entry.scopeId,
-          type: entry.type,
-          status: entry.status,
-          confidence: entry.confidence,
-          content: entry.content,
-          sourceRefs: entry.sourceRefs,
-          createdAt: entry.createdAt,
-        });
-      }
-    }
+    const payload = (await this.listAllEntries()).map((entry) => ({
+      id: entry.id,
+      scope: entry.ownerScope,
+      scopeId: entry.scopeId,
+      type: entry.type,
+      status: entry.status,
+      confidence: entry.confidence,
+      content: entry.content,
+      sourceRefs: entry.sourceRefs,
+      createdAt: entry.createdAt,
+    }));
     return await this.index.rebuildMemories(payload);
   }
 

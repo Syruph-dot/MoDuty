@@ -37,6 +37,10 @@ interface DialogStore {
   dutyOpen: boolean;
   openDuty: () => void;
   closeDuty: () => void;
+  /** 记忆面板（整页检视/纠正视图）是否打开 */
+  memoryOpen: boolean;
+  openMemory: () => void;
+  closeMemory: () => void;
   /** 「Add widget」通用选择器卡片是否打开（非前景、非阻挡式） */
   widgetPickerOpen: boolean;
   /** 打开选择器时记录的光标相对磁贴墙坐标（选完落位用） */
@@ -71,6 +75,9 @@ export const useDialogStore = create<DialogStore>((set) => ({
   dutyOpen: false,
   openDuty: () => set({ dutyOpen: true }),
   closeDuty: () => set({ dutyOpen: false }),
+  memoryOpen: false,
+  openMemory: () => set({ memoryOpen: true }),
+  closeMemory: () => set({ memoryOpen: false }),
   widgetPickerOpen: false,
   widgetPickerSpawn: null,
   openWidgetPicker: (spawn) => set({ widgetPickerOpen: true, widgetPickerSpawn: spawn ?? null }),

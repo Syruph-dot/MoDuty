@@ -7,6 +7,7 @@ import "./styles/window.css";
 import "./styles/edge.css";
 import "./styles/governance.css";
 import "./styles/settings-screen.css";
+import "./styles/memory-screen.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");

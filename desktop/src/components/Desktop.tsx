@@ -1150,6 +1150,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           label: "Settings",
           onClick: () => openSettings(),
         },
+        {
+          id: "memory",
+          label: "记忆",
+          onClick: () => useDialogStore.getState().openMemory(),
+        },
       ];
       showContextMenu({ x: event.clientX, y: event.clientY }, items);
     },

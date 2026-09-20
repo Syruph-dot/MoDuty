@@ -10,6 +10,7 @@ import NewAgentDialog from "./components/NewAgentDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 import SettingsScreen from "./components/SettingsScreen";
 import DutyScreen from "./components/widgets/DutyScreen";
+import MemoryScreen from "./components/widgets/MemoryScreen";
 import WallpaperDialog from "./components/WallpaperDialog";
 import WidgetPickerCard from "./components/WidgetPickerCard";
 import RenameWidgetDialog from "./components/RenameWidgetDialog";
@@ -31,6 +32,8 @@ import { applyFontSourceLink } from "./state/tileThemeStore";
 export default function App() {
   const openAgent = useAgentsStore((state) => state.openAgent);
   const settingsOpen = useDialogStore((state) => state.settingsOpen);
+  const memoryOpen = useDialogStore((state) => state.memoryOpen);
+  const closeMemory = useDialogStore((state) => state.closeMemory);
   // 稳定回调：配合 Desktop/GroupedWall 内 AgentTile 的 memo，避免每次 App 渲染穿透更新全部磁贴
   const handleOpenAgent = useCallback(
     (candidate: { id: string }) => openAgent(candidate.id),
@@ -63,7 +66,8 @@ export default function App() {
       <ConfirmDialog />
       <SettingsScreen />
       <DutyScreen />
-      <WallpaperDialog />
+      {/* 记忆面板：整页检视/纠正视图；只在打开时挂载，避免未打开也拉取记忆 */}
+      {memoryOpen ? <MemoryScreen onClose={closeMemory} /> : null}      <WallpaperDialog />
     </div>
   );
 }

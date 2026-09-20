@@ -4,6 +4,7 @@ import AgentTile from "./AgentTile";
 import AgentWindow from "./AgentWindow";
 import BrowserTile from "./BrowserTile";
 import BrowserWindow from "./BrowserWindow";
+import DutyWindow from "./widgets/DutyWindow";
 import GhostPreview from "./GhostPreview";
 import GroupedWall from "./GroupedWall";
 import LeftSidePanel from "./LeftSidePanel";
@@ -12,6 +13,7 @@ import TileShell from "./TileShell";
 import { AnimationProvider, useTileAnimation } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
 import { computeBands, resolveDropIntent, UNGROUPED_BAND_ID, type Band, type DropIntent } from "../lib/bandLayout";
+import { resolveDutyAgentId } from "../lib/dutyAgent";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
@@ -161,6 +163,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
+
+  /** 值日生 agent id 与“窗口是否已打开”：值日生窗口不走 widget 自己的 id，
+   *  而是走它对应的 dispatcher Agent（openAgent → 舞台卡片 → back 面换 DutyWindow）。 */
+  const dutyAgentId = useMemo(() => resolveDutyAgentId(agents), [agents]);
+  const dutyOpen = !!dutyAgentId && openAgentIds.includes(dutyAgentId);
 
   /**
    * 最近访问时间（epoch ms）：agent 用后端 last_active_at，browser 用 lastActiveAt。
@@ -1346,7 +1353,13 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             bandX={bandX}
             canvasGhost={canvasGhost}
             flipped={isOpen}
-            back={isOpen ? <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} /> : undefined}
+            back={isOpen ? (
+              agent.kind === "dispatcher" ? (
+                <DutyWindow agent={agent} onClose={() => closeAgent(agent.id)} />
+              ) : (
+                <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} />
+              )
+            ) : undefined}
             onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
             onCommit={(next) => handleTileCommit(agent.id, next)}
             dropTarget={dropHint?.tileId === agent.id}
@@ -1440,6 +1453,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       {/* Widget 磁贴：并入未分组带（不再固定进系统组），可自由排布 */}
       {widgets.map((widget) => {
         if (groupedMode) return null; // 分组视图仅展示 Agent 分组
+        // 值日生窗口打开时，隐藏墙面上的值日生磁贴（同一角色的两种形态，不同时出现，也避免两份 Spine 渲染）
+        if (widget.kind === "duty" && dutyOpen) return null;
         const def = getWidgetDef(widget.kind);
         if (!def) return null;
         // 统一事实源：所属带（用户组/未分组带）的局部网格；widget 入 hydration 后必有 tile，无 1×1 fallback

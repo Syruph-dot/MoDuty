@@ -89,11 +89,36 @@ export interface ContextStats {
   updated_at: string;
 }
 
+/** 调度台账视图（后端 GET /api/dispatches 投影，snake_case 原样） */
+export interface DispatchView {
+  id: string;
+  state: "tracking" | "awaiting_verdict" | "done";
+  last_status: "completed" | "error" | "stalled" | null;
+  last_status_at: string | null;
+  continue_count: number;
+  last_verdict: "deliver" | "continue" | "deliver_forced" | null;
+  stalled_at: string | null;
+  dispatched_at: string;
+  /** 任务书预览（超长时截断，完整内容在会话里） */
+  task: string;
+  task_truncated: boolean;
+  linked_sessions: string[];
+  target: {
+    agent_id: string;
+    name: string | null;
+    session_id: string;
+    state: string | null;
+    phase: string | null;
+  };
+}
+
 export interface Agent {
   id: string;
   name: string;
   /** 后端占位标记：名字待首条对话自动生成（空名字创建） */
   auto_name?: boolean;
+  /** 角色类别（后端下发）：dispatcher=值日生（调度者）；缺省/worker=普通执行者 */
+  kind?: "dispatcher" | "worker";
   role: string;
   model?: string;
   workspace_dir: string;

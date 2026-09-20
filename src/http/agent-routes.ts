@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { MomokaHttpError } from "../http-error.js";
 import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
 import { buildDispatchTaskMessage } from "../dispatch-message.js";
+import { matchStateFilter, sortDispatchViews, toDispatchView } from "../dispatch-view.js";
+import type { DispatchEntryState } from "../dispatch-ledger.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
@@ -186,6 +188,47 @@ export async function handleAgentRoutes(
       console.error("[question] 答案后驱失败:", error);
     });
     json(response, 200, { success: true, question: set });
+    return true;
+  }
+
+  // 调度台账只读视图（值日生窗口的右栏数据源）：过滤 + 补执行者信息 + 截断 + 排序。
+  // 台账 DispatchRecord 是唯一事实源，这里不改任何状态。
+  if (request.method === "GET" && url.pathname === "/api/dispatches") {
+    const { registry } = ensureAgents(ctx);
+    const stateFilter = url.searchParams.get("state");
+    const dispatcherId = url.searchParams.get("dispatcherId");
+    const targetAgentId = url.searchParams.get("targetAgentId");
+    const records = await registry.dispatches.listAll();
+    const filtered = records.filter(
+      (record) =>
+        matchStateFilter(record.state as DispatchEntryState, stateFilter) &&
+        (!dispatcherId || record.dispatcherId === dispatcherId) &&
+        (!targetAgentId || record.targetAgentId === targetAgentId),
+    );
+    // 执行者信息按 id 去重查一次（同一执行者可能有多条历史派发）
+    const targets = new Map<string, Awaited<ReturnType<typeof registry.getAgent>>>();
+    for (const record of filtered) {
+      if (targets.has(record.targetAgentId)) continue;
+      targets.set(record.targetAgentId, await registry.getAgent(record.targetAgentId));
+    }
+    const views = sortDispatchViews(
+      filtered.map((record) => {
+        const target = targets.get(record.targetAgentId) ?? null;
+        return toDispatchView(
+          record,
+          target
+            ? {
+                id: target.id,
+                name: target.name,
+                sessionId: target.sessionId,
+                state: target.state,
+                phase: target.phase ?? null,
+              }
+            : null,
+        );
+      }),
+    );
+    json(response, 200, { dispatches: views, total: views.length });
     return true;
   }
 

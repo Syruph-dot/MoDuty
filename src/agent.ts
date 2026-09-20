@@ -35,12 +35,22 @@ const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
 /**
- * 角色扮演槽位标记。人格文本里包一段 `<!-- roleplay:start -->…<!-- roleplay:end -->`，
- * 运行时用 prompts/ROLEPLAY.md 的内容替换槽位；无内容则连标记一起删掉。
- * 位置固定在 system 最末，保证调整人格时前面已缓存的前缀不失效。
+ * 角色扮演槽位：说明段 + 标记，由 buildSystemPrompt 统一追加在 system **最末**。
+ *
+ * - 人格文本不再需要自带标记（旧写法若残留会被剥离），worker 与值日生一视同仁；
+ * - 内容来源按 Agent 分身的 prompts/roleplay/<slug>.md 优先，回落到全局 prompts/ROLEPLAY.md；
+ * - 两处都没有内容时，整块（含说明段与标记）不追加，system 逐字节回落到未接线行为；
+ * - 放在 system 最末，是为了让改人格只失效这一层，前面的职责层与平台规则层仍可命中前缀缓存。
  */
 const ROLEPLAY_SLOT_START = "<!-- roleplay:start -->";
 const ROLEPLAY_SLOT_END = "<!-- roleplay:end -->";
+const ROLEPLAY_SLOT_BLOCK = `## 角色扮演（可选，最后一个区块）
+
+下方槽位用于注入称呼与语气。
+- 槽位有内容时：按它调整你**怎么说话**（自称、称呼用户的方式、口吻）；
+- 槽位为空时：保持默认风格。
+- 无论槽位写什么，**都不得改变**上文的职责、规则、工具用法、边界与禁止事项。
+- 槽位只影响表达，不影响判定与动作。`;
 
 /**
  * 会话级串行队列：同一会话同一时刻只跑一轮 chat。
@@ -134,10 +144,12 @@ export class MomokaAgentCore implements MomokaAgent {
   } = {}): Promise<string> {
     let customRole = input.role?.trim() ?? "";
     let isDispatcher = false;
+    let roleplaySlug: string | null = null;
     if (input.sessionId && this.agentRegistry) {
       const record = await this.agentRegistry.agentBySessionId(input.sessionId);
       isDispatcher = isDispatcherAgent(record);
       customRole = input.role?.trim() ?? record?.role?.trim() ?? "";
+      roleplaySlug = record?.roleplay ?? null;
     }
     // 值日生（dispatcher）单源：无论 agents.json 里存的旧 role 如何，一律用后端 DISPATCHER 常量，
     // 避免“代码副本 vs 实例快照”双源漂移。兼容旧实例（无 kind 但名为值日生）。
@@ -152,38 +164,48 @@ export class MomokaAgentCore implements MomokaAgent {
     const persona = (customRole && customRole !== DEFAULT_SYSTEM_PROMPT)
       ? customRole
       : (personaText || DEFAULT_AGENT_PERSONA);
+    // 兼容旧写法：人格文本里残留的槽位标记一律剥离（槽位改由运行时统一追加在最末）
+    const personaClean = persona.replace(ROLEPLAY_SLOT_START, "").replace(ROLEPLAY_SLOT_END, "");
     // 平台规则层（恒定附加）
     let rules = "";
     try { rules = await readFile(path.join(this.projectRoot, "prompts", "SYSTEM_RULES.md"), "utf8"); } catch { /* fallback */ }
-    let prompt = persona;
+    let prompt = personaClean;
     if (rules.trim()) prompt += `\n\n${rules.trim()}`;
-    // 角色扮演槽位（前缀结构的最内层）：只影响称呼与语气，放 system 最末。
-    // 改人格只会让槽位之后的字节失效，前面的规则层仍可被上游前缀缓存命中。
-    return await this.fillRoleplaySlot(prompt);
+    // 角色扮演槽位（system 最末）：只影响称呼与语气。
+    // 改人格只会让槽位这一层变化，前面的职责层与平台规则层仍可被上游前缀缓存命中。
+    return await this.fillRoleplaySlot(prompt, roleplaySlug);
   }
 
   /**
-   * 填充角色扮演槽位。
-   * - 槽位标记由人格文本自身提供（<!-- roleplay:start --> … <!-- roleplay:end -->）；
-   * - 内容取自 prompts/ROLEPLAY.md（可选）；
-   * - 内容为空时**整块删除**（含标题行），保证 system 前后字节稳定。
+   * 追加角色扮演槽位（system 最末）。
+   * - 无内容：整块不追加，system 与未接线时逐字节一致；
+   * - 有内容：追加说明段 + 标记包裹的人格文本。
    */
-  private async fillRoleplaySlot(prompt: string): Promise<string> {
-    const start = prompt.indexOf(ROLEPLAY_SLOT_START);
-    const end = prompt.indexOf(ROLEPLAY_SLOT_END);
-    if (start < 0 || end < 0 || end < start) return prompt;
-    let text = "";
-    try {
-      text = (await readFile(path.join(this.projectRoot, "prompts", "ROLEPLAY.md"), "utf8")).trim();
-    } catch {
-      // 未提供角色扮演内容：保持空槽位
+  private async fillRoleplaySlot(prompt: string, roleplaySlug?: string | null): Promise<string> {
+    const text = await this.loadRoleplayText(roleplaySlug);
+    if (!text) return prompt;
+    return `${prompt}\n\n${ROLEPLAY_SLOT_BLOCK}\n\n${ROLEPLAY_SLOT_START}\n${text}\n${ROLEPLAY_SLOT_END}`;
+  }
+
+  /**
+   * 读取角色扮演文本：prompts/roleplay/<slug>.md（按 Agent 分身）优先，
+   * 回落到全局 prompts/ROLEPLAY.md；都没有则返回空串。
+   * slug 先归一化小写，再走白名单校验（小写字母/数字/连字符），顺带挡掉路径穿越。
+   */
+  private async loadRoleplayText(roleplaySlug?: string | null): Promise<string> {
+    const slug = (roleplaySlug ?? "").trim().toLowerCase();
+    const candidates: string[] = [];
+    if (/^[a-z0-9][a-z0-9-]*$/u.test(slug)) {
+      candidates.push(path.join(this.projectRoot, "prompts", "roleplay", `${slug}.md`));
     }
-    const before = prompt.slice(0, start);
-    const after = prompt.slice(end + ROLEPLAY_SLOT_END.length);
-    if (!text) {
-      return `${before}${after}`.replace(/\n{3,}/gu, "\n\n").trimEnd();
+    candidates.push(path.join(this.projectRoot, "prompts", "ROLEPLAY.md"));
+    for (const file of candidates) {
+      try {
+        const text = (await readFile(file, "utf8")).trim();
+        if (text) return text;
+      } catch { /* 该候选不存在或不可读：试下一个 */ }
     }
-    return `${before}${ROLEPLAY_SLOT_START}\n${text}\n${ROLEPLAY_SLOT_END}${after}`;
+    return "";
   }
 
   /**

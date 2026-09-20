@@ -18,6 +18,8 @@ export interface CreateAgentInput {
   model?: string;
   /** 角色类别：dispatcher=值日生（调度者）；缺省 worker */
   kind?: AgentKind;
+  /** 角色扮演人格 slug：对应 prompts/roleplay/<slug>.md；缺省时回落全局 prompts/ROLEPLAY.md */
+  roleplay?: string;
 }
 
 /** 创建 Agent 未填名字时的占位名；对应 autoName=true，首条对话后按标题回填 */
@@ -135,17 +137,10 @@ export const DISPATCHER_SYSTEM_PROMPT =
 - 不要在派发后同步等待、轮询执行者状态（系统会主动唤醒你判读）。
 - 返工只走收尾判读的 dispatch verdict 通道（由系统唤醒触发）；除此之外不要对 error 自动重试。
 - run_momoka_cli 只允许 MOMOKA 文档化的子命令；不要用它或其它工具触碰无关文件与服务端配置。
-
-## 角色扮演（可选，最后一个区块）
-
-下方槽位用于注入称呼与语气。
-- 槽位有内容时：按它调整你**怎么说话**（自称、称呼老师的方式、口吻）；
-- 槽位为空时：保持默认风格。
-- 无论槽位写什么，**都不得改变**本提示词上文的调度规则、工具用法、边界与禁止事项。
-- 槽位只影响表达，不影响判定与动作。
-
-<!-- roleplay:start -->
-<!-- roleplay:end -->`;
+`;
+// 注：角色扮演槽位（说明段 + 标记）已移出本人格常量，改由 agent.ts 的 buildSystemPrompt
+// 在 system 最末统一追加。这样槽位才真正位于 system 最后一段，且不必要求人格文本自带标记
+// （worker 走默认人格时同样能吃到人格文件）。
 
 /** dispatcher（值日生）判定单源：kind 明确为 dispatcher，或旧实例无 kind 但名为「值日生」（且未标为 worker）。
  *  提示词注入与工具表白名单（toolSpecsForKind）必须共用本判定，避免两处规则漂移。 */
@@ -273,6 +268,7 @@ export class AgentRegistry {
       ...(autoName ? { autoName: true } : {}),
       role,
       ...(input.kind ? { kind: input.kind } : {}),
+      ...(input.roleplay?.trim() ? { roleplay: input.roleplay.trim() } : {}),
       ...(input.model?.trim() ? { model: input.model.trim() } : {}),
       workspaceDir,
       sessionId: session.id,
@@ -415,6 +411,24 @@ export class AgentRegistry {
     });
   }
 
+  /**
+   * 更新 Agent 的角色扮演人格 slug。
+   * - 传非空字符串：绑定 prompts/roleplay/<slug>.md；
+   * - 传 null / 空串：清除绑定，回落全局 prompts/ROLEPLAY.md。
+   */
+  async updateAgentRoleplay(id: string, slug: string | null): Promise<AgentRecord | null> {
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((a) => a.id === id);
+      if (index === -1) return null;
+      const trimmed = slug?.trim() ?? "";
+      const updated = { ...agents[index], roleplay: trimmed || null, lastActiveAt: new Date().toISOString() };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
   /** 更新 Agent 的 role（系统提示词） */
   async updateAgentRole(id: string, role: string): Promise<AgentRecord | null> {
     return await withFileLock(this.registryFile, async () => {
@@ -505,6 +519,7 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
     ...(agent.autoName ? { autoName: true } : {}),
     role: agent.role,
     ...(agent.kind ? { kind: agent.kind } : {}),
+    ...(agent.roleplay ? { roleplay: agent.roleplay } : {}),
     ...(agent.model ? { model: agent.model } : {}),
     workspaceDir: agent.workspaceDir,
     sessionId: agent.sessionId,
@@ -528,6 +543,7 @@ function agentFromDisk(value: unknown): AgentRecord {
     ...(raw.autoName === true ? { autoName: true } : {}),
     role: String(raw.role ?? ""),
     ...(kind ? { kind } : {}),
+    ...(raw.roleplay ? { roleplay: String(raw.roleplay) } : {}),
     ...(raw.model ? { model: String(raw.model) } : {}),
     workspaceDir: String(raw.workspaceDir ?? ""),
     sessionId: String(raw.sessionId ?? ""),

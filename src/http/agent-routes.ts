@@ -61,6 +61,8 @@ export async function handleAgentRoutes(
     const name = String(body.name ?? "").trim();
     const role = String(body.system ?? body.role ?? "").trim();
     const workspaceDir = String(body.workspace_dir ?? "").trim();
+    // 角色扮演人格 slug（可选）：对应 prompts/roleplay/<slug>.md，缺省则回落全局 prompts/ROLEPLAY.md
+    const roleplay = String(body.roleplay ?? "").trim();
     const kind = body.kind === "dispatcher" || body.kind === "worker" ? (body.kind as "dispatcher" | "worker") : undefined;
     // 值日生唯一化：dispatcher（或重名"值日生"）已存在时复用现有记录，不创建第二个
     if (kind === "dispatcher") {
@@ -78,6 +80,7 @@ export async function handleAgentRoutes(
       workspaceDir,
       model: typeof body.model === "string" ? body.model : undefined,
       kind,
+      roleplay,
     });
     runtime.machine.seed(record.id, record.state, record.phase);
     json(response, 200, { agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)) });
@@ -330,14 +333,24 @@ export async function handleAgentRoutes(
   }
   if (agentMatch && request.method === "PUT") {
     const runtime = ensureAgents(ctx);
-    const record = await requireAgent(runtime.registry, decodeURIComponent(agentMatch[1] ?? ""));
+    let record = await requireAgent(runtime.registry, decodeURIComponent(agentMatch[1] ?? ""));
     const body = await readJsonBody(request);
+    // 本次是否携带 roleplay（人格 slug）字段：携带时允许只改人格，不带 name
+    const hasRoleplay = Object.prototype.hasOwnProperty.call(body, "roleplay");
     const newName = String(body.name ?? "").trim();
-    if (!newName) {
+    if (!newName && !hasRoleplay) {
       throw new MomokaHttpError(400, "name is required");
     }
-    const updated = await runtime.registry.renameAgent(record.id, newName);
-    json(response, 200, { agent: agentToSnake(updated, await agent.sessionManager.getSession(updated.sessionId)) });
+    if (newName) {
+      record = await runtime.registry.renameAgent(record.id, newName);
+    }
+    if (hasRoleplay) {
+      const slug = body.roleplay == null ? "" : String(body.roleplay).trim();
+      const updated = await runtime.registry.updateAgentRoleplay(record.id, slug || null);
+      if (!updated) throw new MomokaHttpError(404, "Agent not found");
+      record = updated;
+    }
+    json(response, 200, { agent: agentToSnake(record, await agent.sessionManager.getSession(record.sessionId)) });
     return true;
   }
   if (agentMatch && request.method === "DELETE") {

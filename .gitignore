@@ -57,3 +57,9 @@ pending_approvals.json
 # Bun --compile 临时构建残留
 .18d0c5b65dc27eee-00000000.bun-build
 *.bun-build
+
+# 独立仓库 / 第三方素材：不入 MoDuty 历史
+# rhinelab 自带 .git，是另一个项目的仓库
+rhinelab/
+# 值日生立绘素材来自蔚蓝档案（版权属于 Nexon/Yostar），不随仓库分发
+desktop/public/spines/

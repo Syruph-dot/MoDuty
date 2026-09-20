@@ -12,6 +12,11 @@ declare global {
  *
  * 这套骨架是「週間ダンジョン」整场景：左侧是角色，右侧挂了一整套 UI（按钮/能量条/背景线），
  * 所以渲染前要先把 UI 分支隐藏，再按角色包围盒取景；磁贴只要上半身，故再截角色高度的上一半。
+ *
+ * 动画分层（关键）：该资源的 react 动画是按 A / M 两层设计的——
+ *   `X_01_A` 只键少量附件（表情/眼睛贴图），`X_01_M` 只键骨骼位移，两者都是 0 时长单帧姿势，
+ *   必须叠在常驻的 Idle 之上同时播放。若像早先那样用 clearTracks 把它们放到 0 轨，Idle 会被停掉，
+ *   表现为整只人冻住（只剩眼睛换图）。
  */
 const SPINE_URL = "/spines/momoka_weekdungeon/Momoka_weekdungeon.skel";
 const PIXI_URL = "/lib/pixi.js";
@@ -25,18 +30,29 @@ const UPPER_BODY_RATIO = 0.5;
  * 该区域只做摸头，不参与磁贴壳的「按住拖动」与「点击打开」；下半 3/5 反之。
  */
 const PAT_ZONE_RATIO = 0.4;
-/** 摸头入场动作播完后的保持时长（ms），之后收尾回站姿 */
-const PAT_HOLD_MS = 1600;
+/** 摸头姿势保持时长（ms），到点收尾 */
+const PAT_HOLD_MS = 2200;
+/** overlay 轨道的进出混入时长（秒）：姿势层是单帧，直接切会跳，混合一下更自然 */
+const OVERLAY_MIX = 0.18;
+/** 0 轨 = 常驻站姿；1 轨 = 附件姿势层(A)；2 轨 = 骨骼动作层(M) */
+const TRACK_ATTACH = 1;
+const TRACK_MOTION = 2;
 
 /** 立绘情绪状态：站姿 / 看向（悬停）/ 摸头（点击） */
 type DutyMood = "idle" | "look" | "pat";
 
-interface AnimationChains {
-  idle: string[];
-  look: string[];
-  lookEnd: string[];
-  pat: string[];
-  patEnd: string[];
+/** 一组反应动画：A=附件层，M=动作层，End*=收尾层 */
+interface Reaction {
+  a?: string;
+  m?: string;
+  endA?: string;
+  endM?: string;
+}
+
+interface Animations {
+  idle?: string;
+  look: Reaction;
+  pat: Reaction;
 }
 
 let runtimePromise: Promise<void> | null = null;
@@ -120,23 +136,24 @@ function visibleBounds(
   return Number.isFinite(minX) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
 }
 
-/**
- * 组装动作链（过滤掉资源里不存在的动画，缺失时整条链可能为空 → 调用方跳过）。
- * Spine 的惯例是 `X_01_A`（入）→ `X_01_M`（维持循环），`XEnd_01_*` 收尾。
- * idle 只取首个可用站姿动画（单节链 = 直接循环），不能把候选全接成链。
- */
-function buildChains(names: string[]): AnimationChains {
+/** 按名称挑出可用动画（资源里缺哪个就少哪层） */
+function pickAnimations(names: string[]): Animations {
   const has = new Set(names);
-  const first = (...candidates: Array<string | undefined>): string | undefined =>
-    candidates.find((name): name is string => !!name && has.has(name));
-  const seq = (...candidates: string[]): string[] => candidates.filter((name) => has.has(name));
-  const idle = first("Idle_01", "Start01_Idle_01", names[0]);
+  const pick = (...candidates: string[]): string | undefined => candidates.find((name) => has.has(name));
   return {
-    idle: idle ? [idle] : [],
-    look: seq("Look_01_A", "Look_01_M"),
-    lookEnd: seq("LookEnd_01_A", "Idle_01"),
-    pat: seq("Pat_01_A", "Pat_01_M"),
-    patEnd: seq("PatEnd_01_A", "Idle_01"),
+    idle: pick("Idle_01", "Start01_Idle_01", names[0]),
+    look: {
+      a: pick("Look_01_A", "Dev_Look_01_M"),
+      m: pick("Look_01_M"),
+      endA: pick("LookEnd_01_A"),
+      endM: pick("LookEnd_01_M"),
+    },
+    pat: {
+      a: pick("Pat_01_A", "Dev_Pat_01_M"),
+      m: pick("Pat_01_M"),
+      endA: pick("PatEnd_01_A"),
+      endM: pick("PatEnd_01_M"),
+    },
   };
 }
 
@@ -145,6 +162,8 @@ function buildChains(names: string[]): AnimationChains {
  *
  * - 运行时与资源都在 public/ 下按需加载，主包不引入 pixi；
  * - 隐藏週間ダンジョン场景自带的 UI 分支，只保留角色，并按「上一半」取景；
+ * - 动画分层：Idle 常驻 0 轨；Look / Pat 的 A（附件）与 M（动作）分别叠到 1 / 2 轨，
+ *   收尾用对应的 End* 播一遍再清轨，因此站姿的呼吸/头发不会被反应动画打断；
  * - 交互：悬停 → 看向（Look）；移开 → 收尾回站姿；摸头（Pat）只在卡片上方 2/5 生效，
  *   且该区域内不让事件冒泡到磁贴壳（不拖动、不打开面板）；下方 3/5 留给磁贴壳的拖动/打开；
  * - 容器变化（磁贴开合/缩放）用 ResizeObserver 跟随；
@@ -178,6 +197,7 @@ export default function DutyPortrait() {
     };
     card.addEventListener("mousedown", blockCardInPatZone);
     card.addEventListener("click", blockCardInPatZone);
+
     let disposed = false;
     let app: any = null;
     let spine: any = null;
@@ -187,7 +207,7 @@ export default function DutyPortrait() {
     let stateListener: any = null;
     let hovering = false;
     let mood: DutyMood = "idle";
-    let chains: AnimationChains | null = null;
+    let anims: Animations | null = null;
 
     /** 量取画布实际占据的盒子：优先立绘舞台自身（绝对定位后尺寸确定）；退化时回退到外层立绘区 */
     const measure = () => {
@@ -223,14 +243,35 @@ export default function DutyPortrait() {
       fit();
     };
 
-    /** 播一条动作链：首节按需一次性播完，末节循环（单节链直接循环） */
-    const playChain = (chain: string[]) => {
-      if (!spine || chain.length === 0) return;
-      spine.state.clearTracks();
-      spine.state.setAnimation(0, chain[0], chain.length === 1);
-      for (let i = 1; i < chain.length; i += 1) {
-        spine.state.addAnimation(0, chain[i], i === chain.length - 1, 0);
+    /** 把一条 overlay 轨设成指定动画（0 时长姿势用 loop 保持住）；name 为空则淡出清轨 */
+    const setOverlay = (track: number, name: string | undefined) => {
+      if (!spine) return;
+      if (!name) {
+        spine.state.setEmptyAnimation(track, OVERLAY_MIX);
+        return;
       }
+      spine.state.setAnimation(track, name, true);
+    };
+
+    /** 进入某组反应：A（附件）与 M（动作）分层叠加，Idle 继续在 0 轨跑 */
+    const applyReaction = (reaction: Reaction) => {
+      if (!spine) return;
+      setOverlay(TRACK_ATTACH, reaction.a);
+      setOverlay(TRACK_MOTION, reaction.m);
+    };
+
+    /** 收尾：先播对应 End*（若资源提供），播完由状态机监听清轨；没有就用淡出 */
+    const releaseReaction = (reaction: Reaction) => {
+      if (!spine) return;
+      if (!reaction.endA && !reaction.endM) {
+        setOverlay(TRACK_ATTACH, undefined);
+        setOverlay(TRACK_MOTION, undefined);
+        return;
+      }
+      if (reaction.endA) spine.state.setAnimation(TRACK_ATTACH, reaction.endA, false);
+      else setOverlay(TRACK_ATTACH, undefined);
+      if (reaction.endM) spine.state.setAnimation(TRACK_MOTION, reaction.endM, false);
+      else setOverlay(TRACK_MOTION, undefined);
     };
 
     const clearPatTimer = () => {
@@ -240,60 +281,53 @@ export default function DutyPortrait() {
       }
     };
 
-    /** 摸头收尾：仍悬停就回「看向」，否则回站姿 */
-    const schedulePatExit = () => {
-      clearPatTimer();
-      patTimer = window.setTimeout(() => {
-        patTimer = null;
-        if (!chains) return;
-        if (hovering && chains.look.length > 0) {
-          playChain(chains.look);
-          mood = "look";
-        } else {
-          playChain(chains.patEnd.length > 0 ? chains.patEnd : chains.idle);
-          mood = "idle";
-        }
-      }, PAT_HOLD_MS);
-    };
-
-    /**
-     * 摸头入场（非循环）播完才开始保持计时。
-     * 用状态机监听而不是写死入场时长，这样入场长短变化时不会被截断。
-     */
+    /** 收尾动画播完 → 清空 overlay 轨，完全交回 Idle */
     const onStateComplete = (entry: any) => {
-      if (disposed || !chains) return;
-      if (entry?.trackIndex !== 0) return;
-      if (mood !== "pat" || chains.pat.length < 2) return;
-      if (entry.animation?.name !== chains.pat[0]) return;
-      schedulePatExit();
+      if (disposed || !anims) return;
+      const name: string | undefined = entry?.animation?.name;
+      if (!name || entry.trackIndex === 0) return;
+      const endNames = [anims.look.endA, anims.look.endM, anims.pat.endA, anims.pat.endM].filter(Boolean) as string[];
+      if (!endNames.includes(name)) return;
+      if (mood !== "idle") return; // 收尾途中又被悬停/摸头接管，交给新的反应轨道
+      setOverlay(TRACK_ATTACH, undefined);
+      setOverlay(TRACK_MOTION, undefined);
     };
 
     /** 悬停：看向（摸头进行中不打断） */
     const onEnter = () => {
       hovering = true;
-      if (!chains || mood === "pat") return;
-      if (chains.look.length === 0) return;
-      playChain(chains.look);
+      if (!anims || mood === "pat") return;
+      if (!anims.look.a && !anims.look.m) return;
       mood = "look";
+      applyReaction(anims.look);
     };
 
     /** 移开：仅打断「看向」，让它收尾回站姿；摸头等计时器自然收尾 */
     const onLeave = () => {
       hovering = false;
-      if (!chains || mood !== "look") return;
-      playChain(chains.lookEnd.length > 0 ? chains.lookEnd : chains.idle);
+      if (!anims || mood !== "look") return;
       mood = "idle";
+      releaseReaction(anims.look);
     };
 
     /** 点击：摸头；仅在卡片上方 2/5 生效（下方 3/5 留给磁贴壳的打开/拖动） */
     const onClick = (event: MouseEvent) => {
-      if (!chains || chains.pat.length === 0) return;
+      if (!anims || (!anims.pat.a && !anims.pat.m)) return;
       if (!inPatZone(event.clientY)) return;
       clearPatTimer();
-      playChain(chains.pat);
       mood = "pat";
-      // 单节链（只有维持动作）不会触发 complete，直接计时收尾
-      if (chains.pat.length === 1) schedulePatExit();
+      applyReaction(anims.pat);
+      patTimer = window.setTimeout(() => {
+        patTimer = null;
+        if (!anims) return;
+        mood = "idle";
+        releaseReaction(anims.pat);
+        if (hovering && (anims.look.a || anims.look.m)) {
+          // 摸头结束时指针仍停在立绘上：接着看向
+          mood = "look";
+          applyReaction(anims.look);
+        }
+      }, PAT_HOLD_MS);
     };
 
     void ensureSpineRuntime()
@@ -330,13 +364,11 @@ export default function DutyPortrait() {
           app.stage.addChild(stage);
 
           const names: string[] = (data.animations ?? []).map((animation: { name: string }) => animation.name);
-          chains = buildChains(names);
-          playChain(chains.idle);
-          mood = "idle";
+          anims = pickAnimations(names);
+          // overlay 层是单帧姿势，切换时混合一下，避免硬跳
+          if (spine.state.data) spine.state.data.defaultMix = OVERLAY_MIX;
+          if (anims.idle) spine.state.setAnimation(0, anims.idle, true);
           spine.update(0); // 先把第一帧姿态算出来，再取景
-
-          stateListener = { complete: onStateComplete };
-          spine.state.addListener(stateListener);
 
           hideUiSlots(spine.skeleton);
           spine.skeleton.updateWorldTransform();
@@ -346,6 +378,8 @@ export default function DutyPortrait() {
           window.requestAnimationFrame(resize);
           window.setTimeout(resize, 150);
 
+          stateListener = { complete: onStateComplete };
+          spine.state.addListener(stateListener);
           resizeObserver = new ResizeObserver(resize);
           resizeObserver.observe(box);
           host.addEventListener("pointerenter", onEnter);

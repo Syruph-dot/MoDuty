@@ -86,6 +86,12 @@ export interface ModelRunContext {
   runId?: string;
   matchedSkills: MatchedSkill[];
   requestKind: "chat" | "continuation" | "revision";
+  /**
+   * 本轮允许模型调用的工具表（TOOL_SPECS 的子集）。
+   * 缺省 = 全量 TOOL_SPECS；受限角色（值日生 dispatcher）传 toolSpecsForKind 裁剪后的白名单，
+   * 让「提示词只允许 run_momoka_cli」的约束落到工具层——模型看不到的工具就调不了。
+   */
+  tools?: readonly unknown[];
   /** 流式/进度事件回调（SSE 转发用） */
   onEvent?: (event: StreamEvent) => void;
   /** 外部取消信号（客户端断开/超时） */
@@ -289,6 +295,11 @@ export interface ChatRequest {
   outputId?: string;
   topic?: string;
   workDir?: string;
+  /**
+   * 系统注入的驱动/判读请求：只进本轮模型输入，**不写入会话历史**。
+   * 用于值日生唤醒等系统驱动轮次——避免驱动话术永久污染历史与缓存前缀。
+   */
+  transient?: boolean;
   onEvent?: (event: StreamEvent) => void;
   signal?: AbortSignal;
 }

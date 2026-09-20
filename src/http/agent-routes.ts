@@ -6,7 +6,7 @@ import { buildDispatchTaskMessage } from "../dispatch-message.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
 import { corsHeaders, json, readJsonBody, sseData } from "./http-utils.js";
 import { ensureAgents, requireAgent, type RouteContext } from "./route-context.js";
-import { checkHasPendingApproval, checkHasPendingQuestion, driveQuestionAnswered, driveUserInstruction, orchestrationOf } from "./agent-orchestration.js";
+import { driveAgentTurn, driveQuestionAnswered, handleDispatchBridge, orchestrationOf } from "./agent-orchestration.js";
 import { abortChatStreamByAgent, registerChatStream, unregisterChatStream } from "./chat-streams.js";
 import { agentToSnake, chatToSnake } from "./serialization.js";
 
@@ -125,12 +125,92 @@ export async function handleAgentRoutes(
       return `Q${index + 1}: ${question.prompt}\n  答案: ${chosen}`;
     });
     await agent.sessionManager.addMessage(record.sessionId, "user", `用户对提问的回答：\n${lines.join("\n")}`);
-    // Agent 联动：脱离 requiring_input → 异步续跑（不阻塞答案响应）
+    // Agent 联动：确认即执行（载荷流）或旧行为（续跑）
     const deps = orchestrationOf(ctx);
+    const action = set.dispatch;
+    const primaryAnswer = answers.find((item) => item.questionIndex === 0);
+    const autoDispatchable =
+      Boolean(action) &&
+      set.questions.length === 1 &&
+      Boolean(primaryAnswer) &&
+      (primaryAnswer?.choiceIndex === 0 || primaryAnswer?.choiceIndex === 1);
+
+    if (action && autoDispatchable) {
+      // 确认即执行（2026-09-19 小微调拍板）：老师作答 → 系统自动派发，值日生不再消耗一轮 LLM。
+      // 挂起态收尾：requiring_input → running → completed
+      deps.machine.answerReceived(record.id);
+      deps.machine.complete(record.id);
+      const reuse = primaryAnswer?.choiceIndex === 0;
+      try {
+        let executorId = action.targetId;
+        let executorLabel = action.targetId;
+        if (!reuse) {
+          if (!action.newName) throw new Error("载荷缺少 newName，无法自动新建执行者");
+          const created = await runtime.registry.createAgent({ name: action.newName, role: "", workspaceDir: "" });
+          runtime.machine.seed(created.id, created.state, created.phase);
+          executorId = created.id;
+          executorLabel = `${created.id}「${created.name}」`;
+        }
+        const result = await handleDispatchBridge(deps, {
+          kind: "dispatch",
+          executorId,
+          task: action.task,
+          confirm: reuse ? set.id : undefined,
+          callerSessionId: set.sessionId,
+        });
+        if (!result.ok) throw new Error(result.output);
+        // 留痕：区分“确认的候选”与“实际派发的执行者”（新建分支两者不同）
+        await agent.sessionManager.addMessage(
+          record.sessionId,
+          "system",
+          `【自动派发】老师已确认${reuse ? "复用" : "新建"}，实际派发给 ${executorLabel}（台账 ${result.dispatchId}）。执行者完成/出错/停转后系统会唤醒你判读。`,
+        );
+        json(response, 200, { success: true, question: set, autoDispatched: true, dispatchId: result.dispatchId });
+        return true;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        await agent.sessionManager.addMessage(
+          record.sessionId,
+          "system",
+          `【自动派发失败】${reason.slice(0, 200)}。请按老师的选择手动完成派发。`,
+        );
+        // 失败回落：恢复旧续跑路径，让值日生自行处理
+        void driveQuestionAnswered(deps, record).catch((err: unknown) => {
+          console.error("[question] 自动派发失败回落续跑异常:", err);
+        });
+        json(response, 200, { success: true, question: set, autoDispatched: false });
+        return true;
+      }
+    }
+
+    // 无载荷（旧式提问）：答案已写入会话，续跑由值日生自主处理
     void driveQuestionAnswered(deps, record).catch((error: unknown) => {
       console.error("[question] 答案后驱失败:", error);
     });
     json(response, 200, { success: true, question: set });
+    return true;
+  }
+
+  // 结构化派发（A5）：任务书 + 可选复用凭证 → 台账建条目 + 驱动执行者。
+  // 本地受信 API（run_momoka_cli 进程内拦截之外给 CLI/外部工具的同口径入口）。
+  const agentDispatchMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/dispatch$/);
+  if (agentDispatchMatch && request.method === "POST") {
+    ensureAgents(ctx);
+    const executorId = decodeURIComponent(agentDispatchMatch[1] ?? "");
+    const body = await readJsonBody(request) as { task?: unknown; confirm?: unknown; dispatcherSessionId?: unknown };
+    const task = typeof body.task === "string" ? body.task.trim() : "";
+    if (!task) throw new MomokaHttpError(400, "task is required");
+    const callerSessionId = typeof body.dispatcherSessionId === "string" ? body.dispatcherSessionId : "";
+    if (!callerSessionId) throw new MomokaHttpError(400, "dispatcherSessionId is required");
+    const deps = orchestrationOf(ctx);
+    const result = await handleDispatchBridge(deps, {
+      kind: "dispatch",
+      executorId,
+      task,
+      confirm: typeof body.confirm === "string" ? body.confirm : undefined,
+      callerSessionId,
+    });
+    json(response, result.ok ? 200 : 422, { success: result.ok, dispatchId: result.dispatchId, message: result.output });
     return true;
   }
 
@@ -181,11 +261,16 @@ export async function handleAgentRoutes(
     // 构造任务书：全部路径逐行加引号 + 用户指令（一次选择 = 一条消息）
     const taskMessage = buildDispatchTaskMessage(files, message);
     await agent.sessionManager.addMessage(record.sessionId, "user", taskMessage);
-    // 异步触发 chat（不阻塞响应），由 orchestration 驱动：
-    // 右键菜单进来的是“全新任务”，必须用 driveUserInstruction；
-    // 若用 driveQuestionAnswered，模型会以为在回答旧提问而重复上一轮旧任务。
+    // 异步触发 chat（不阻塞响应）：右键菜单进来的是“全新任务”，驱动话术 transient 注入
+    //（不落历史）；任务书本身已在上一行落盘。
     const deps = orchestrationOf(ctx);
-    void driveUserInstruction(deps, record).catch((error: unknown) => {
+    void driveAgentTurn(deps, record, {
+      message:
+        "用户刚刚通过资源管理器右键菜单发来了一条新的任务，内容就是上一条消息（文件路径列表 + 用户指示）。" +
+        "请把它当作全新的用户指令：直接按这条消息里的路径和指示执行，" +
+        "不要沿用、重复或继续之前对话中的旧任务；也不要再向用户复述任务内容。",
+      transient: true,
+    }).catch((error: unknown) => {
       console.error("[dispatch-files] 驱动失败:", error);
     });
     json(response, 200, { success: true, filesCount: files.length, message: "已分发给 Agent" });
@@ -346,8 +431,8 @@ export async function handleAgentRoutes(
 }
 
 /**
- * /api/agents/:id/chat：SSE 流式，作用域锁定 Agent 绑定的 session，事件喂给状态机。
- * pending_approval 时不 complete（保持等待，等审批通过后续跑）。
+ * /api/agents/:id/chat：SSE 流式薄壳。终点处理（complete/fail/cancel + pending 挂起）
+ * 全部在统一驱动器 driveAgentTurn 内；这里只负责 SSE 转发与连接生命周期。
  */
 async function streamAgentChat(
   ctx: RouteContext,
@@ -355,7 +440,7 @@ async function streamAgentChat(
   record: AgentRecord,
   message: string,
 ): Promise<void> {
-  const { agent, machine, workspaces, registry } = orchestrationOf(ctx);
+  const deps = orchestrationOf(ctx);
   const startedAt = Date.now(); // 运行耗时：无论正常结束/异常/取消都记一次
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -371,33 +456,21 @@ async function streamAgentChat(
   // 显式停止走 POST /api/agents/:id/chat/cancel（abort）或服务退出。
   // 任务结束（finally）时才从注册表移除，保证 cancel/退出仍能找到它。
   try {
-    const result = await agent.chat({
+    const result = await driveAgentTurn(deps, record, {
       message,
-      sessionId: record.sessionId,
-      onEvent: (event: StreamEvent) => {
-        machine.consumeEvent(record.id, event);
-        sseData(response, event);
-      },
+      onEvent: (event) => sseData(response, event),
       signal: controller.signal,
     });
-    const hasPendingApproval = await checkHasPendingApproval(workspaces, record);
-    const hasPendingQuestion = await checkHasPendingQuestion(registry, record);
-    if (!hasPendingApproval && !hasPendingQuestion) {
-      machine.complete(record.id);
-    }
-    sseData(response, { type: "done", ...chatToSnake(result) });
+    sseData(response, { type: "done", ...chatToSnake(result.response) });
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      // 显式停止：回 idle（agent.chat 已把流式消息标记为 stopped）
-      machine.cancel(record.id);
-    } else {
-      machine.fail(record.id);
+    if (!(error instanceof Error && error.name === "AbortError")) {
+      // 显式停止由驱动器记 cancel（无 error 帧）；其余失败已记 fail，这里补 error 帧
       sseData(response, { type: "error", error: error instanceof Error ? error.message : String(error) });
     }
   } finally {
     unregisterChatStream(streamId);
     // 记录本次运行耗时（不阻塞响应；写队列串行落盘）
-    void orchestrationOf(ctx).registry.updateLastRun(record.id, Date.now() - startedAt).catch(() => undefined);
+    void deps.registry.updateLastRun(record.id, Date.now() - startedAt).catch(() => undefined);
     try {
       response.end();
     } catch {

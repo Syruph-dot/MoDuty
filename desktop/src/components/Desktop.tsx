@@ -15,6 +15,8 @@ import { computeBands, UNGROUPED_BAND_ID, SYSTEM_BAND_ID, type Band } from "../l
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
+import { emitDutyEvent } from "../lib/dutyEvents";
+import VerdictToasts from "./VerdictToasts";
 import { startBrowserEventStream } from "../lib/browserEvents";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
 import { useBrowserStore } from "../state/browserStore";
@@ -241,10 +243,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
-  // 橡皮筋越界（Android 式）：
+  // 橡皮筋越界（混合版）：
   // - 内容层（.tile-wall__content）在停靠点之外由 overscrollRef 驱动 translateX 真实位移
-  // - raw = 越过停靠点的“拖动/滚轮量”，经指数阻尼换算成有限位移 d（→ MAX_OVERSCROLL_PX）
-  // - 松手 / 滚轮停顿后 rAF 把 raw 衰减回 0（内容平滑弹回停靠点）
+  // - 第一段：raw 线性换成真实位移（拉一小段额外距离）；到 OVERSCROLL_FREE_PX 碰壁，位移锁死
+  // - 碰壁后继续拉：位移不再增加，超出量转成 Glow——左右弧由淡变实、模糊增强（EdgeEffect Glow 式）
+  // - 松手 / 滚轮停顿后 rAF 把 raw 衰减回 0（内容弹回停靠点、弧消散）
   const overscrollRef = useRef<{ raw: number; side: -1 | 0 | 1; raf: number; wheelTimer: number | null }>({
     raw: 0,
     side: 0,
@@ -257,8 +260,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   // 常量
   const EDGE_RATIO = 0.2; // 停靠点留白 = 1/5 屏宽（磁贴阵列首/尾距屏幕边缘的空档）
-  const MAX_OVERSCROLL_PX = 150; // 越界最大位移 px（指数阻尼渐近线）
-  const MAX_RAW_PX = 4000; // 越界原始量上限（数值保护，位移仍被阻尼在 MAX_OVERSCROLL_PX）
+  const OVERSCROLL_FREE_PX = 40; // 混合版：碰壁前允许的真实位移（一小段额外距离）
+  const GLOW_SCALE_PX = 300; // Glow 强度指数刻度（碰壁后继续拉的量越大弧越实）
+  const MAX_RAW_PX = 4000; // 越界原始量上限（数值保护）
   const SPRING_BACK_DURATION = 340; // 弹回动画时长 ms
   const WHEEL_RELEASE_DELAY = 160; // 滚轮停顿多久后自动弹回 ms
 
@@ -291,7 +295,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const base = await awaitApiBase();
         if (cancelled) return;
         stream = startAgentEventStream(base, {
-          onEvent: (event) => applyAgentEvent(event),
+          onEvent: (event) => {
+            applyAgentEvent(event);
+            // 收尾单链：判读上报 toast / 值日生磁贴刷新都从这里扇出
+            emitDutyEvent(event);
+          },
           onPolling: () => {
             // 降级轮询：状态仍会经 applyAgentEvent 反映到磁贴
           },
@@ -798,17 +806,16 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (rightArcRef.current) rightArcRef.current.style.opacity = "0";
       return;
     }
-    // 指数阻尼：raw 越大阻力越大，位移趋近 MAX_OVERSCROLL_PX（Android 橡皮筋手感）
-    const d = MAX_OVERSCROLL_PX * (1 - Math.exp(-o.raw / MAX_OVERSCROLL_PX));
-    const t = Math.max(0, Math.min(1, d / MAX_OVERSCROLL_PX)).toFixed(3);
+    // 混合版：raw ≤ OVERSCROLL_FREE_PX 时线性位移（一小段额外距离）；
+    // 到壁锁死后继续拉的量不再产生位移，转为 Glow——线性渐变条贴边由淡变实
+    const d = Math.min(o.raw, OVERSCROLL_FREE_PX);
+    const excess = Math.max(0, o.raw - OVERSCROLL_FREE_PX);
+    const glow = 1 - Math.exp(-excess / GLOW_SCALE_PX);
     layer.style.transform = `translateX(${(o.side === -1 ? d : -d).toFixed(2)}px)`;
-    if (o.side === -1) {
-      if (leftArcRef.current) leftArcRef.current.style.opacity = t;
-      if (rightArcRef.current) rightArcRef.current.style.opacity = "0";
-    } else {
-      if (leftArcRef.current) leftArcRef.current.style.opacity = "0";
-      if (rightArcRef.current) rightArcRef.current.style.opacity = t;
-    }
+    const band = o.side === -1 ? leftArcRef.current : rightArcRef.current;
+    const other = o.side === -1 ? rightArcRef.current : leftArcRef.current;
+    if (band) band.style.opacity = glow.toFixed(3);
+    if (other) other.style.opacity = "0";
   }, []);
 
   // 清除越界：transform/弧归零，取消回弹动画与滚轮计时器
@@ -1190,42 +1197,22 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   return (
     <div className={`tile-wall${openMode ? " tile-wall--open" : ""}${settingsOpen ? " tile-wall--settings-leaving" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
-      {/* 橡皮筋越界弧：仅 free 模式；透明度由 overscrollRef 实时驱动（无发光边缘）
-          凸向朝屏幕内侧：左弧向右凸、右弧向左凸（对称于越界露出的内容边缘） */}
+      {/* 橡皮筋越界 Glow：仅 free 模式；透明度由 overscrollRef 实时驱动。
+          线性渐变条贴边铺开（碰壁后继续拉 → 由淡变实），无形状、无模糊 */}
       {!openMode && !groupedMode ? (
         <>
           <div
             ref={leftArcRef}
-            className="tile-wall__tension-arc tile-wall__tension-arc--left"
+            className="tile-wall__tension-glow tile-wall__tension-glow--left"
             style={{ opacity: 0 }}
             aria-hidden="true"
-          >
-            <svg viewBox="0 0 60 100" preserveAspectRatio="none" style={{ width: 60, height: "100%" }}>
-              <path
-                d="M0,0 Q60,50 0,100"
-                stroke="currentColor"
-                strokeWidth="3"
-                fill="none"
-                strokeLinecap="round"
-              />
-            </svg>
-          </div>
+          />
           <div
             ref={rightArcRef}
-            className="tile-wall__tension-arc tile-wall__tension-arc--right"
+            className="tile-wall__tension-glow tile-wall__tension-glow--right"
             style={{ opacity: 0 }}
             aria-hidden="true"
-          >
-            <svg viewBox="0 0 60 100" preserveAspectRatio="none" style={{ width: 60, height: "100%" }}>
-              <path
-                d="M60,0 Q0,50 60,100"
-                stroke="currentColor"
-                strokeWidth="3"
-                fill="none"
-                strokeLinecap="round"
-              />
-            </svg>
-          </div>
+          />
         </>
       ) : null}
       {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
@@ -1559,6 +1546,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           全屏设置页打开时停用左栏（其左缘热区会干扰设置页左侧导航），右栏保留 */}
       <RightCharm />
       {!settingsOpen ? <LeftSidePanel /> : null}
+
+      {/* 值日生判读上报（A6）：右下角 toast */}
+      <VerdictToasts />
     </div>
   );
 }

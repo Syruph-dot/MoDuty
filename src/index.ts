@@ -15,9 +15,11 @@ export {
   readFileTool,
   resolveWorkspacePath,
   runShellTool,
+  toolSpecsForKind,
   TOOL_SPECS,
   writeFileTool,
 } from "./tools.js";
+export { isDispatcherAgent } from "./agent-registry.js";
 export type {
   ChatRequest,
   ChatResponse,

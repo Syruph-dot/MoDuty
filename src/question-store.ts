@@ -20,6 +20,16 @@ export interface QuestionItem {
   options: string[];
 }
 
+/** 确认即执行的派发载荷：老师作答后系统自动派发，无需 Agent 再发起（2026-09-19 小微调拍板） */
+export interface QuestionDispatchAction {
+  /** 复用分支的目标执行者 */
+  targetId: string;
+  /** 任务书（老师确认后原样派发） */
+  task: string;
+  /** 老师选「新建」时使用该名字建执行者（缺省则新建分支回落旧续跑流程） */
+  newName?: string;
+}
+
 export interface QuestionAnswer {
   questionIndex: number;
   /** 选中的选项下标；-1 表示"自定义" */
@@ -36,6 +46,8 @@ export interface QuestionSet {
   status: "pending" | "answered";
   questions: QuestionItem[];
   answers?: QuestionAnswer[];
+  /** 复用确认载荷：单题集 + 老师 choiceIndex 0/1 时由答案路由自动派发 */
+  dispatch?: QuestionDispatchAction;
 }
 
 function shortId(prefix: string): string {
@@ -69,6 +81,7 @@ export class QuestionStore {
     agentId: string;
     sessionId: string;
     questions: QuestionItem[];
+    dispatch?: QuestionDispatchAction;
   }): Promise<QuestionSet> {
     return await withFileLock(this.file, async () => {
       const all = await this.listAll();

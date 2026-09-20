@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useDialogStore } from "../state/dialogStore";
 import {
+  getOverscrollEffect,
+  onOverscrollEffectChange,
+  setOverscrollEffect,
+  useEdgeOverscroll,
+  type EdgeOverscrollMode,
+} from "../lib/edgeOverscroll";
+import {
   fetchModels,
   fetchSettings,
   fetchShellVerbStatus,
@@ -63,6 +70,10 @@ export default function SettingsScreen() {
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const firstInputRef = useRef<HTMLInputElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  useEdgeOverscroll(mainRef); // 设置页滚动容器：边界拖动效果（Glow/Stretch 跟随下方选择）
+  const [overscrollEffect, setOverscrollEffectState] = useState<EdgeOverscrollMode>(getOverscrollEffect());
+  useEffect(() => onOverscrollEffectChange(setOverscrollEffectState), []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -309,7 +320,7 @@ export default function SettingsScreen() {
       </nav>
 
       {/* 右侧大平面 */}
-      <main className="settings-main" style={{ outline: "none" }} tabIndex={-1}>
+      <main ref={mainRef} className="settings-main" style={{ outline: "none" }} tabIndex={-1}>
         {tab === "models" ? (
           <>
             <h2 className="settings-main__title">模型与轨道</h2>
@@ -548,6 +559,34 @@ export default function SettingsScreen() {
                         {shellVerb.detail}
                       </pre>
                     ) : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section className="settings-group">
+              <h3 className="settings-group__title">界面</h3>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row__grow">
+                    <div className="settings-row__label">滚动边界效果（其它页面）</div>
+                    <div className="settings-row__desc">
+                      列表/页面滚到尽头继续拉时的反馈。Glow：弧形半透明阴影从边缘长出；Stretch：内容被拉出一小段后弹回。主桌面固定为混合版（拉出一小段 → 碰壁 → Glow）。
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {(["glow", "stretch"] as EdgeOverscrollMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={`settings-btn${overscrollEffect === mode ? " settings-btn--primary" : ""}`}
+                        onClick={() => {
+                          setOverscrollEffect(mode);
+                          setOverscrollEffectState(mode);
+                        }}
+                      >
+                        {mode === "glow" ? "Glow 弧影" : "Stretch 拉伸"}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>

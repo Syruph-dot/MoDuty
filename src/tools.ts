@@ -11,8 +11,11 @@ import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
 import { isSandboxEnabled } from "./settings.js";
 import { browserService, toBrowserFriendlyError } from "./browser-service.js";
+import { getDispatchHandler } from "./dispatch-bridge.js";
+import { isDispatcherAgent } from "./agent-registry.js";
 import type { SessionManager } from "./session-manager.js";
 import type { AgentRegistry } from "./agent-registry.js";
+import type { AgentKind } from "./types.js";
 
 export interface WorkspaceManifest {
   name: string;
@@ -280,6 +283,8 @@ const MOMOKA_CLI_PATH = fileURLToPath(new URL("../bin/momoka.mjs", import.meta.u
 const MOMOKA_CLI_COMMANDS: Record<string, Set<string>> = {
   agent: new Set(["list", "create", "chat", "dispatch", "reset", "stop"]),
   session: new Set(["list", "inspect"]),
+  // dispatch verdict <dsp_id> deliver|continue [备注]：值日生收尾判读结论提交（进程内处理，见 interceptDispatchCli）
+  dispatch: new Set(["verdict"]),
 };
 
 export function validateMomokaCliArgs(args: string[]): string | null {
@@ -295,6 +300,7 @@ export function validateMomokaCliArgs(args: string[]): string | null {
   if (cmd === "agent" && ["chat", "dispatch", "reset", "stop"].includes(sub) && rest.length === 0) {
     return `${sub} 需要 agentId`;
   }
+  if (cmd === "dispatch" && sub === "verdict" && rest.length < 2) return "dispatch verdict 需要 <dsp_id> 与 deliver|continue";
   if (cmd === "session" && sub === "inspect" && rest.length === 0) return "inspect 需要会话句柄（ses_<id>）";
   for (const a of args) {
     if (typeof a !== "string" || a.includes("\0")) return "包含非法控制字符";
@@ -303,54 +309,69 @@ export function validateMomokaCliArgs(args: string[]): string | null {
 }
 
 /**
- * 值日生派发台账记录：当前调用者是 dispatcher 且 CLI 参数为 `agent chat <targetId> <任务>` 时，
- * 记录“值日生→执行者”派发关系。完成后由 orchestration 层向 dispatcher 会话投递结果链接。
+ * 收尾单链拦截：值日生（dispatcher）发起的 agent chat/dispatch 与 dispatch verdict
+ * 不再走「spawn CLI → HTTP 回环」，直接进编排层 handleDispatchBridge——
+ * 台账创建、复用校验、判读回路都在那里结构化完成。
+ * 返回 null 表示不拦截（桥未接线 / 非 dispatcher / 其余子命令），沿用旧 CLI 路径。
  */
-async function recordDispatchIfDispatcher(
+async function interceptDispatchCli(
   cliArgs: string[],
   approvalOrigin: { sessionId?: string; runId?: string } | undefined,
   agentRegistry: AgentRegistry | undefined,
-): Promise<void> {
-  // 只关心 agent chat/dispatch <target>：需要 registry 解析 dispatcher 与目标会话。
-  if (!agentRegistry || !approvalOrigin?.sessionId) return;
-  if (cliArgs[0] !== "agent" || (cliArgs[1] !== "chat" && cliArgs[1] !== "dispatch")) return;
+): Promise<string | null> {
+  const handler = getDispatchHandler();
+  if (!handler || !approvalOrigin?.sessionId || !agentRegistry) return null;
+
+  // dispatch verdict <dsp_id> deliver|continue [备注...]
+  if (cliArgs[0] === "dispatch" && cliArgs[1] === "verdict") {
+    const [entryId, rawChoice, ...noteWords] = cliArgs.slice(2);
+    const choice = rawChoice === "deliver" || rawChoice === "continue" ? rawChoice : undefined;
+    if (!entryId || !choice) {
+      return "错误：dispatch verdict 需要 <dsp_id> 与 deliver|continue。";
+    }
+    const result = await handler({
+      kind: "verdict",
+      entryId,
+      choice,
+      note: noteWords.join(" ").trim(),
+      callerSessionId: approvalOrigin.sessionId,
+    });
+    return result.output;
+  }
+
+  if (cliArgs[0] !== "agent" || (cliArgs[1] !== "chat" && cliArgs[1] !== "dispatch")) return null;
   const targetId = cliArgs[2];
-  if (!targetId || !targetId.startsWith("agt_")) return;
-  // 任务书 = 目标 id 之后的参数；开关（--xxx）与其取值（如 --confirm <qst_id>）都要剔除
+  if (!targetId || !targetId.startsWith("agt_")) return null;
+  // 只拦值日生：普通 Agent 之间的 agent chat 不属于收尾单链，保持原路径
+  const caller = await agentRegistry.agentBySessionId(approvalOrigin.sessionId);
+  if (!caller || !isDispatcherAgent(caller)) return null;
+
+  // 任务书 = 目标 id 之后的参数；--confirm/--link 开关及其取值剔除
   const taskWords: string[] = [];
+  let confirm: string | undefined;
   for (let i = 3; i < cliArgs.length; i += 1) {
     const token = cliArgs[i];
-    if (!token.startsWith("--")) {
-      taskWords.push(token);
+    if (token === "--confirm") {
+      confirm = cliArgs[i + 1];
+      i += 1;
       continue;
     }
-    // 带取值的开关：跳过它的值
-    if (token === "--confirm" || token === "--link") i += 1;
+    if (token === "--link") {
+      i += 1;
+      continue;
+    }
+    if (!token.startsWith("--")) {
+      taskWords.push(token);
+    }
   }
-  const task = taskWords.join(" ").trim();
-
-  // 调用者必须是被识别的值日生（当前会话反查）
-  const caller = await agentRegistry.agentBySessionId(approvalOrigin.sessionId);
-  const isDispatcher =
-    caller?.kind === "dispatcher" || (caller?.name === "值日生" && caller.kind !== "worker");
-  if (!caller || !isDispatcher) return;
-  const target = await agentRegistry.getAgent(targetId);
-  if (!target) return;
-
-  // 从任务书中提取择优链接的会话句柄（&ses_xxx），留作展示线索
-  const linkedSessions: string[] = [];
-  const refRegex = /&ses_([a-z0-9]+)/gi;
-  for (const match of task.matchAll(refRegex)) {
-    linkedSessions.push(`ses_${match[1]}`);
-  }
-  await agentRegistry.recordDispatch({
-    dispatcherId: caller.id,
-    dispatcherSessionId: caller.sessionId,
-    targetAgentId: target.id,
-    targetSessionId: target.sessionId,
-    task: task.slice(0, 500),
-    linkedSessions,
+  const result = await handler({
+    kind: cliArgs[1] === "chat" ? "chat" : "dispatch",
+    executorId: targetId,
+    task: taskWords.join(" ").trim(),
+    confirm,
+    callerSessionId: approvalOrigin.sessionId,
   });
+  return result.output;
 }
 
 /**
@@ -376,9 +397,7 @@ async function validateDispatcherReuse(
   if (!targetId || !targetId.startsWith("agt_")) return null;
 
   const caller = await agentRegistry.agentBySessionId(approvalOrigin.sessionId);
-  const isDispatcher =
-    caller?.kind === "dispatcher" || (caller?.name === "值日生" && caller.kind !== "worker");
-  if (!caller || !isDispatcher) return null;
+  if (!caller || !isDispatcherAgent(caller)) return null;
 
   const target = await agentRegistry.getAgent(targetId);
   if (!target) return null;
@@ -391,10 +410,9 @@ async function validateDispatcherReuse(
     return [
       "【已拦截】复用既有执行者必须先获得老师确认。",
       `目标 ${target.id}「${target.name}」已有 ${existingMessages} 条历史消息，属于复用而不是新建。`,
-      "请先用 ask_question 提问（选项必须依次为 [\"复用\",\"新建\"]，题干里包含目标 id）：",
+      "请改用带载荷的 ask_question：选项依次为 [\"复用\",\"新建\"]、题干里包含目标 id，并附 dispatch 载荷 { targetId: \"" + target.id + "\", task: <任务书>, newName: <新建名字> }：",
       `  复用 ${target.id}「${target.name}」吗？`,
-      "拿到回答后：老师选“复用” → run_momoka_cli agent dispatch <target> --confirm <qst_id> <任务书>；",
-      "老师选“新建” → run_momoka_cli agent create --name <任务短主题> 另建一个执行者。",
+      "老师作答后系统会自动派发（无需 --confirm）；CLI 人工派发仍可用 --confirm <qst_id>。",
     ].join("\n");
   }
 
@@ -485,6 +503,12 @@ const TOOL_ARGUMENT_SCHEMAS = {
       prompt: z.string().min(1),
       options: z.array(z.string()).min(1).max(8),
     })).min(1).max(6),
+    /** 确认即执行载荷：单题集 + 老师选「复用/新建」后系统自动派发，无需 Agent 再调 dispatch */
+    dispatch: z.object({
+      targetId: z.string().min(1),
+      task: z.string().min(1),
+      newName: z.string().min(1).optional(),
+    }).optional(),
   }).strict(),
 };
 
@@ -600,9 +624,11 @@ export const TOOL_SPECS = [
       name: "run_momoka_cli",
       description:
         "调用 MOMOKA CLI 驱动/管理其它 Agent 应用（让 Agent 用 Agent 应用）。" +
-        "参数 args 是参数数组，首个元素为命令族（agent | session），第二个为子命令：" +
+        "参数 args 是参数数组，首个元素为命令族（agent | session | dispatch），第二个为子命令：" +
         "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄链接相关会话）/ agent dispatch <agentId> <消息…>（异步派发，发起后立即返回，适合“派发完即回 idle”的懒调度）/ agent reset <agentId> / agent stop <agentId>；" +
-        "session list / session inspect <ses_<id>>。只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",
+        "session list / session inspect <ses_<id>>；" +
+        "dispatch verdict <dsp_id> deliver|continue [备注]（收尾判读结论：交付上报 / 返工继续，仅用于响应台账判读请求）。" +
+        "只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",
       parameters: {
         type: "object",
         properties: {
@@ -633,7 +659,8 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "ask_question",
-      description: "向桌面用户发起结构化提问（选择题）。参数 questions 为问题数组（一次最多 6 题）：每题包含 prompt（题干）与 options（选项，2-8 个）。桌面会把问题渲染成单选卡片，最后一项固定为“自定义”输入，用户可逐题作答后提交；你的本次工具调用会返回 pending 等待，用户提交答案后系统会自动把答案写回会话并让你继续。用于需要用户明确选择/确认的场景（如复用哪个会话、选择方案）。不要用它问可以自行检索/推断的问题。",
+      description: "向桌面用户发起结构化提问（选择题）。参数 questions 为问题数组（一次最多 6 题）：每题包含 prompt（题干）与 options（选项，2-8 个）。桌面会把问题渲染成单选卡片，最后一项固定为“自定义”输入，用户可逐题作答后提交；你的本次工具调用会返回 pending 等待，用户提交答案后系统会自动把答案写回会话并让你继续。用于需要用户明确选择/确认的场景（如复用哪个会话、选择方案）。不要用它问可以自行检索/推断的问题。" +
+        "确认即执行：复用确认类提问应携带可选 dispatch 载荷 { targetId, task, newName }——老师选「复用」→ 系统自动派发任务书到 targetId；选「新建」→ 系统按 newName 建执行者并派发；你无需再调用 agent dispatch。",
       parameters: {
         type: "object",
         properties: {
@@ -651,6 +678,17 @@ export const TOOL_SPECS = [
               required: ["prompt", "options"],
               additionalProperties: false,
             },
+          },
+          dispatch: {
+            type: "object",
+            description: "确认即执行载荷（复用确认类提问必带）：老师作答后系统自动派发，无需再调 agent dispatch",
+            properties: {
+              targetId: { type: "string", minLength: 1, description: "复用分支的目标执行者 agt_id" },
+              task: { type: "string", minLength: 1, description: "确认后原样派发的任务书" },
+              newName: { type: "string", minLength: 1, description: "老师选「新建」时使用的执行者名字（2-6 字主题）" },
+            },
+            required: ["targetId", "task"],
+            additionalProperties: false,
           },
         },
         required: ["questions"],
@@ -937,6 +975,24 @@ export const TOOL_SPECS = [
   },
 ]
 
+/** 值日生（dispatcher）允许调用的工具白名单：会话元数据检索/检视/片段搜索 + 结构化问答 + MOMOKA CLI + 时间。
+ *  对应 DISPATCHER_SYSTEM_PROMPT 的「除搜索/检视外，只允许 run_momoka_cli」——执行代码/读写文件/浏览器等工作是执行者的事。 */
+const DISPATCHER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "search_sessions",
+  "inspect_session",
+  "read_session",
+  "search_content",
+  "ask_question",
+  "run_momoka_cli",
+  "get_current_time",
+]);
+
+/** 按角色类别裁剪模型可见的工具表：dispatcher 只见调度类工具（工具层白名单，模型调不到看不见的工具）；其余角色全量。 */
+export function toolSpecsForKind(kind?: AgentKind): typeof TOOL_SPECS {
+  if (kind !== "dispatcher") return TOOL_SPECS;
+  return TOOL_SPECS.filter((spec) => DISPATCHER_TOOL_NAMES.has(spec.function.name));
+}
+
 export async function executeToolCall(
   name: string,
   rawArguments: string,
@@ -1063,23 +1119,35 @@ export async function executeToolCall(
     }
     const agent = await agentRegistry.agentBySessionId(sessionId);
     if (!agent) return "错误：无法定位当前会话对应的 Agent，无法发起桌面提问。";
+    const dispatchPayload = (args.dispatch && typeof args.dispatch === "object")
+      ? {
+          targetId: String((args.dispatch as Record<string, unknown>).targetId ?? "").trim(),
+          task: String((args.dispatch as Record<string, unknown>).task ?? "").trim(),
+          newName: typeof (args.dispatch as Record<string, unknown>).newName === "string"
+            ? String((args.dispatch as Record<string, unknown>).newName).trim() || undefined
+            : undefined,
+        }
+      : undefined;
     const set = await agentRegistry.createQuestionSet({
       agentId: agent.id,
       sessionId: agent.sessionId,
       questions: clean,
+      ...(dispatchPayload && dispatchPayload.targetId && dispatchPayload.task ? { dispatch: dispatchPayload } : {}),
     });
-    return `桌面用户问题已发出（${clean.length} 题，等待回答）。用户提交后系统会把答案写回会话并让你继续（pending question: ${set.id}）。请停止当前工具循环，等待用户回答。`;
+    const autoNote = set.dispatch
+      ? "老师作答后系统会**自动派发**（复用→派给载荷目标；新建→按载荷名字建执行者后派发），你无需再调用 agent dispatch，只需查看会话里的【自动派发】留痕。"
+      : "用户提交后系统会把答案写回会话并让你继续";
+    return `桌面用户问题已发出（${clean.length} 题，等待回答）。${autoNote}（pending question: ${set.id}）。请停止当前工具循环，等待用户回答。`;
   }
   if (name === "run_momoka_cli") {
     const cliArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-    // 硬约束：值日生复用既有执行者必须先拿到老师确认（提示词拦不住，只能靠机制）
+    // 收尾单链：值日生的 agent chat/dispatch 与 dispatch verdict 进程内直调编排层
+    // （台账创建/复用校验/判读回路集中在 handleDispatchBridge），不再 spawn CLI 回环。
+    const intercepted = await interceptDispatchCli(cliArgs, approvalOrigin, agentRegistry);
+    if (intercepted !== null) return intercepted;
+    // 其余子命令（agent list/create/reset/stop、session …）与无桥环境保持 CLI 路径
     const refusal = await validateDispatcherReuse(cliArgs, approvalOrigin, agentRegistry);
     if (refusal) return refusal;
-    // 值日生派发台账：dispatcher 调用 agent chat <target> 时记录派发关系，供完成后投递链接回调。
-    // 记录不阻塞执行；仅在能识别 dispatcher 且解析出目标时发生。
-    void recordDispatchIfDispatcher(cliArgs, approvalOrigin, agentRegistry).catch((error: unknown) => {
-      console.error("[dispatch] record dispatch failed:", error);
-    });
     return await runMomokaCliTool({
       args: cliArgs,
       workDir: targetWorkspace,

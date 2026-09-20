@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAgentsStore } from "../../state/agentsStore";
+import { subscribeDutyEvents } from "../../lib/dutyEvents";
 import AgentWindow from "../AgentWindow";
 
 /**
@@ -227,12 +228,21 @@ export default function DutyGirl() {
       }
     };
     void loadHistory();
-    const timer = window.setInterval(() => {
-      if (!streamingRef.current) void loadHistory();
-    }, 4000);
+    // 事件驱动刷新（替代 4s 轮询）：值日生终态（判读/被唤醒轮结束）或台账判读结论到达时
+    // 增量同步（transient 注入不落历史，但判读回复与 system 留痕都会出现在会话里）。
+    // 流式进行中不覆盖（守卫同旧轮询）。
+    const unsubscribe = subscribeDutyEvents((event) => {
+      if (!alive || streamingRef.current) return;
+      const relevant =
+        (event.type === "agent_state" &&
+          event.agent_id === agentId &&
+          (event.state === "completed" || event.state === "error")) ||
+        (event.type === "dispatch_verdict" && event.dispatcher_agent_id === agentId);
+      if (relevant) void loadHistory();
+    });
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      unsubscribe();
     };
   }, [open, agentId]);
 

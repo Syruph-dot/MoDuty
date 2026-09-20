@@ -7,10 +7,10 @@ import { MemoryStore } from "./memory.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
-import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT } from "./agent-registry.js";
+import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
-import { executeApprovedToolCall } from "./tools.js";
+import { executeApprovedToolCall, toolSpecsForKind } from "./tools.js";
 import { buildBoundedHistoryMessages } from "./context.js";
 import { buildContextStats } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
@@ -98,6 +98,16 @@ export class MomokaAgentCore implements MomokaAgent {
   }
 
   /**
+   * 按会话归属 Agent 的 kind 裁剪本轮模型可见工具表：值日生（dispatcher）只保留调度类白名单
+   * （toolSpecsForKind），让「提示词只允许 run_momoka_cli」落到工具层；其余角色返回 undefined = 全量。
+   */
+  private async toolsForSession(sessionId: string | null | undefined): Promise<readonly unknown[] | undefined> {
+    if (!sessionId || !this.agentRegistry) return undefined;
+    const record = await this.agentRegistry.agentBySessionId(sessionId);
+    return isDispatcherAgent(record) ? toolSpecsForKind("dispatcher") : undefined;
+  }
+
+  /**
    * 组装 system prompt：人格层（Agent role / Settings 默认人格）+ 平台规则层（SYSTEM_RULES.md） + 技能/记忆。
    * - role：Agent 自定义 system；未显式传入且 sessionId 可反查时自动取 AgentRecord.role；
    *   等于 DEFAULT_SYSTEM_PROMPT 视为“未自定义”，改用 Settings 默认人格；
@@ -116,7 +126,7 @@ export class MomokaAgentCore implements MomokaAgent {
     let isDispatcher = false;
     if (input.sessionId && this.agentRegistry) {
       const record = await this.agentRegistry.agentBySessionId(input.sessionId);
-      isDispatcher = record?.kind === "dispatcher" || (record?.name === "值日生" && record.kind !== "worker");
+      isDispatcher = isDispatcherAgent(record);
       customRole = input.role?.trim() ?? record?.role?.trim() ?? "";
     }
     // 值日生（dispatcher）单源：无论 agents.json 里存的旧 role 如何，一律用后端 DISPATCHER 常量，
@@ -239,15 +249,19 @@ ${ref.message.content}`;
       const session = await this.sessionManager.getSession(sessionId);
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       workDir = session.folderPath;
-      await this.sessionManager.addMessage(sessionId, "user", message);
-      // 自动生成标题：若是首条用户消息（messageCount 从 0 变 1），生成标题并更新会话
-      const updatedSession = await this.sessionManager.getSession(sessionId);
-      if (updatedSession && updatedSession.messageCount === 1) {
-        const title = await this.generateTitle(message);
-        await this.sessionManager.updateSession(sessionId, { name: title });
+      if (!request.transient) {
+        await this.sessionManager.addMessage(sessionId, "user", message);
+        // 自动生成标题：若是首条用户消息（messageCount 从 0 变 1），生成标题并更新会话
+        const updatedSession = await this.sessionManager.getSession(sessionId);
+        if (updatedSession && updatedSession.messageCount === 1) {
+          const title = await this.generateTitle(message);
+          await this.sessionManager.updateSession(sessionId, { name: title });
+        }
       }
+      // transient（系统注入）不落历史：历史取全量；普通消息：历史排除刚写入的这条
+      const stored = await this.sessionManager.getMessages(sessionId, null);
       historyMessages = buildBoundedHistoryMessages(
-        (await this.sessionManager.getMessages(sessionId, null)).slice(0, -1),
+        request.transient ? stored : stored.slice(0, -1),
       ).messages as Array<{ role: "system" | "user" | "assistant"; content: string }>;
     }
     // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
@@ -322,13 +336,16 @@ ${ref.message.content}`;
         [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"),
         {
         systemPrompt: await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+        tools: await this.toolsForSession(sessionId),
         historyMessages,
         onEvent, signal: request.signal,
         sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
         },
       );
-      // 空响应判定：上游偶尔只回一个空流（http 200、无内容、无工具调用、无 usage）。
-      // 必须当失败：否则状态机会记 completed，调度者收到“已完成”，用户被告知成功，而实际上什么都没做。
+      // 空响应兜底：上游只回空流且没有任何工具调用（连"干了活"的证据都没有）→ 本轮必然无产出。
+      // 必须当失败：否则状态机会记 completed，值日生判读会拿到"完成"假信号，用户被告知成功。
+      // 注意：有工具调用但空收尾的情况**不在此拦**——那属于"产出是否有效"的判读范畴，
+      // 由收尾链路（dispatch-ledger → 唤醒值日生判读）处理，这里只兜硬失败。
       if (!result.output.trim() && (result.toolCalls ?? []).length === 0) {
         await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage, emptyResponse: true });
         throw new MomokaHttpError(502, "模型返回空响应（上游只回了空流），本轮没有任何产出");
@@ -389,6 +406,7 @@ ${ref.message.content}`;
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const result = await this.options.modelClient.run(buildFollowupPrompt({ topic: output.topic, outputText: output.response, judgment: { ...judgment, label }, reflection }), {
       systemPrompt: await this.buildSystemPrompt({ workDir, topic: output.topic, sessionId }), topic: output.topic, workDir, tracePath, sessionId, runId: base.runId, matchedSkills: [], requestKind: "continuation",
+      tools: await this.toolsForSession(sessionId),
       sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
     });
     await this.recordRunUsage(result, sessionId);

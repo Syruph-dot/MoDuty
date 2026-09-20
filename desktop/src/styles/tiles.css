@@ -63,30 +63,34 @@
 
 /* ---- 橡皮筋越界弧（Android 式 overscroll 指示；无发光边缘） */
 
-.tile-wall__tension-arc {
+.tile-wall__tension-glow {
   position: fixed;
   top: 0;
   bottom: 0;
-  width: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 140px;
   pointer-events: none;
   z-index: 100; /* 高于滚动内容，低于模态 */
-  color: #4f8cff20; /* 近无色 */
 }
 
-.tile-wall__tension-arc--left {
+/* Glow：简单线性渐变，贴边最实、向内线性变透明，无形状 */
+.tile-wall__tension-glow--left {
   left: 0;
+  background: linear-gradient(
+    to right,
+    rgba(158, 198, 255, 0.42),
+    rgba(158, 198, 255, 0.14) 45%,
+    transparent
+  );
 }
 
-.tile-wall__tension-arc--right {
+.tile-wall__tension-glow--right {
   right: 0;
-}
-
-.tile-wall__tension-arc svg {
-  height: 100%;
-  width: 60px;
+  background: linear-gradient(
+    to left,
+    rgba(158, 198, 255, 0.42),
+    rgba(158, 198, 255, 0.14) 45%,
+    transparent
+  );
 }
 
 .tile-wall__error {

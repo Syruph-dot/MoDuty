@@ -27,6 +27,8 @@ export interface StoredToolCall {
   result: string;
   /** 完成时的状态 */
   status?: "running" | "done" | "error";
+  /** 部分工具以布尔标记错误（与 status 二选一或并存） */
+  isError?: boolean;
 }
 
 /** 一个完整的对话轮次（Turn）：用户提问 + Agent 回答（含工具调用） */
@@ -84,6 +86,7 @@ export function messageFromDisk(raw: Record<string, unknown>): StoredMessage {
             args: String(t.args ?? t.arguments ?? "{}"),
             result: String(t.result ?? t.output ?? ""),
             status: t.status as StoredToolCall["status"],
+            isError: typeof t.isError === "boolean" ? t.isError : undefined,
           };
         })
       : undefined,

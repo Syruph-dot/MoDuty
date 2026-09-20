@@ -19,10 +19,8 @@ export interface AgentStateEvent {
 
 export type AgentStateListener = (event: AgentStateEvent) => void;
 
-export interface AgentStateMachineOptions {
-  /** completed 停留后自动回 idle 的时长（ms），默认 8000 */
-  completedHoldMs?: number;
-}
+/** @deprecated 已无选项（completedHoldMs 随定时器自转移一并删除）；仅为兼容旧调用方保留 */
+export interface AgentStateMachineOptions {}
 
 interface AgentRuntimeState {
   state: AgentState;
@@ -30,29 +28,30 @@ interface AgentRuntimeState {
 }
 
 /**
- * Agent 生命周期状态机（纯内存，不落盘）。
+ * Agent 生命周期状态机（纯内存，不落盘；**仅为磁贴 UI 投影**）。
  *
- * 状态图（计划 §2）：
- *   idle ──chat开始──▶ running(phase 流转)
+ * 状态图：
+ *   idle/completed/error ──新事件(token/tool_start)──▶ running(phase 流转)
  *   running ──approval_requested──▶ waiting_approval
- *   waiting_approval ──审批决策──▶ running / idle
- *   running ──done──▶ completed ──(短暂后)──▶ idle
- *   任意 ──异常──▶ error
+ *   running ──question_requested──▶ requiring_input
+ *   running ──done──▶ completed（稳定终态；下轮 chat 首个事件转回 running）
+ *   任意 ──异常──▶ error；用户取消 ──▶ idle
+ *
+ * 注意：业务触发（值日生收尾判读等）**不得**订阅本状态机——那类事实源是派发台账
+ * （dispatch-ledger）。本机只服务 UI 展示与 pending approval/input 的挂起语义。
  *
  * phase 由 StreamEvent 推导：首轮 token → planning；tool_start 按工具名
  * 分流 searching/reading/executing；纯文本执行 → executing/verifying。
  *
  * 状态变化通过 subscribe 的 listener 广播 {type:"agent_state",...}；
- * 持久化由订阅方（http 层）负责，定时器驱动的转移同样经 listener 广播。
+ * 持久化由订阅方（http 层）负责。
  */
 export class AgentStateMachine {
   private readonly states = new Map<string, AgentRuntimeState>();
-  private readonly holdTimers = new Map<string, NodeJS.Timeout>();
   private readonly listeners = new Set<AgentStateListener>();
-  private readonly options: Required<AgentStateMachineOptions>;
 
-  constructor(options: AgentStateMachineOptions = {}) {
-    this.options = { completedHoldMs: options.completedHoldMs ?? 8000 };
+  constructor(_options: AgentStateMachineOptions = {}) {
+    // 兼容保留空 options 形参（历史调用方传 completedHoldMs 已无效果）
   }
 
   subscribe(listener: AgentStateListener): () => void {
@@ -63,7 +62,6 @@ export class AgentStateMachine {
   }
 
   seed(agentId: string, state: AgentState, phase?: AgentPhase): void {
-    this.clearHold(agentId);
     this.states.set(agentId, { state, ...(phase ? { phase } : {}) });
   }
 
@@ -98,11 +96,6 @@ export class AgentStateMachine {
         }
         nextPhase = phaseForTool(event.name);
         break;
-      case "tool_result":
-        if (current.state === "idle" || current.state === "completed") {
-          next = "running";
-        }
-        break;
       case "approval_requested":
         next = "waiting_approval";
         nextPhase = undefined;
@@ -119,21 +112,12 @@ export class AgentStateMachine {
     return this.transition(agentId, next, nextPhase);
   }
 
-  /** 流正常结束（http 层发 done 后调用） */
+  /** 流正常结束（http 层发 done 后调用）；completed 为稳定终态，UI 层自行决定展示 */
   complete(agentId: string): AgentStateEvent | null {
     if (this.getState(agentId)?.state === "completed") {
       return null;
     }
-    const event = this.transition(agentId, "completed", undefined);
-    const holdMs = this.options.completedHoldMs;
-    if (event && holdMs > 0) {
-      const timer = setTimeout(() => {
-        this.holdTimers.delete(agentId);
-        this.transition(agentId, "idle", undefined);
-      }, holdMs);
-      this.holdTimers.set(agentId, timer);
-    }
-    return event;
+    return this.transition(agentId, "completed", undefined);
   }
 
   /** 流异常（http 层 catch 到错误后调用） */
@@ -175,16 +159,11 @@ export class AgentStateMachine {
   }
 
   dispose(): void {
-    for (const timer of this.holdTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.holdTimers.clear();
     this.states.clear();
   }
 
   /** 删除 Agent 时丢弃其内存态（不再广播） */
   drop(agentId: string): void {
-    this.clearHold(agentId);
     this.states.delete(agentId);
   }
 
@@ -210,14 +189,6 @@ export class AgentStateMachine {
       listener(event);
     }
     return event;
-  }
-
-  private clearHold(agentId: string): void {
-    const timer = this.holdTimers.get(agentId);
-    if (timer) {
-      clearTimeout(timer);
-      this.holdTimers.delete(agentId);
-    }
   }
 }
 

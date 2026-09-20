@@ -54,7 +54,7 @@ async function writeGraph(sessionsDir: string, graph: GraphData): Promise<void> 
 /**
  * 从会话消息中提取 ampersand 引用
  */
-function extractAmpersandRefs(content: string): Set<string> {
+export function extractAmpersandRefs(content: string): Set<string> {
   const refs = new Set<string>();
   const ampRefRegex = /&(ses_[a-z0-9]+|tile_[a-z0-9]+)/gi;
   let match;

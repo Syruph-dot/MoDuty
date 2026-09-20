@@ -9,7 +9,8 @@ import type { MomokaHttpHandler } from "./types.js";
 import { AgentEventBroadcaster } from "./http/sse.js";
 import { corsHeaders, json } from "./http/http-utils.js";
 import type { RouteContext } from "./http/route-context.js";
-import { orchestrationOf, wireAgentStatePersistence } from "./http/agent-orchestration.js";
+import { handleDispatchBridge, orchestrationOf, startDispatchStallScanner, wireAgentStatePersistence } from "./http/agent-orchestration.js";
+import { setDispatchHandler } from "./dispatch-bridge.js";
 import { handleSettingsRoutes } from "./http/settings-routes.js";
 import { handleSessionRoutes } from "./http/session-routes.js";
 import { handleRelationRoutes } from "./http/relation-routes.js";
@@ -49,8 +50,13 @@ export function createMomokaHttpHandler(agent: MomokaAgentCore, options: AgentHt
     workspaces: options.workspaces ?? new WorkspaceManager(),
   };
   if (ctx.registry && ctx.machine) {
-    // 全局编排：任何状态/phase 转移 → 持久化注册表 + 广播给 /api/agents/events 的客户端
-    wireAgentStatePersistence(orchestrationOf(ctx));
+    const deps = orchestrationOf(ctx);
+    // 全局编排：任何状态/phase 转移 → 持久化注册表 + 广播给 /api/agents/events 的客户端；
+    // 执行者终态同时作为收尾单链的传感器（台账 → 判读 → 返工/上报）
+    wireAgentStatePersistence(deps);
+    // 收尾单链接线：run_momoka_cli agent chat/dispatch/verdict 进程内直调；停转扫描器
+    setDispatchHandler((input) => handleDispatchBridge(deps, input));
+    startDispatchStallScanner(deps);
   }
   return (request: IncomingMessage, response: ServerResponse) => {
     void dispatch(ctx, request, response);

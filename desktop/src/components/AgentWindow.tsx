@@ -5,6 +5,7 @@ import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
 import { consumeJump, requestJump } from "../lib/sessionJump";
 import { buildMessageSequence } from "../lib/sessionMessages";
+import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -227,6 +228,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   /** 后台流式任务的轮询刷新器（重开窗口时跟随流式落盘） */
   const pollTimerRef = useRef<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  useEdgeOverscroll(listRef); // 消息列表滚到头继续拉：Glow/Stretch（设置页可切）
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const [sessions, setSessions] = useState<SessionCandidate[]>([]);

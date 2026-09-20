@@ -98,7 +98,8 @@ export function usePendingQuestions(agentId: string | null): PendingQuestionsSta
     const timer = window.setInterval(load, FALLBACK_POLL_MS);
     const unsubscribe = subscribeDutyEvents((event) => {
       if (!alive) return;
-      if (event.type === "agent_state" && event.state === "waiting_approval") load();
+      // 问题集的产生（requiring_input）与作答后的状态回落都要立刻刷新，不能只等 20s 轮询
+      if (event.type === "agent_state" && event.agent_id === agentId) load();
     });
     return () => {
       alive = false;

@@ -16,6 +16,7 @@ import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { emitDutyEvent } from "../lib/dutyEvents";
+import { useAgentAlerts } from "../hooks/useAgentAlerts";
 import VerdictToasts from "./VerdictToasts";
 import { startBrowserEventStream } from "../lib/browserEvents";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
@@ -257,6 +258,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
+  // Agent 需要介入（待答提问 / 待审批）时发 OS 级提醒；窗口已开且页面可见时不打扰
+  useAgentAlerts();
 
   // 橡皮筋越界（混合版）：
   // - 内容层（.tile-wall__content）在停靠点之外由 overscrollRef 驱动 translateX 真实位移

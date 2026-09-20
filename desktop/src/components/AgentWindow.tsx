@@ -6,6 +6,8 @@ import { renderMarkdown } from "../lib/markdown";
 import { consumeJump, requestJump } from "../lib/sessionJump";
 import { buildMessageSequence } from "../lib/sessionMessages";
 import { useEdgeOverscroll } from "../lib/edgeOverscroll";
+import { usePendingQuestions } from "../hooks/useDutyData";
+import QuestionCard from "./ui/QuestionCard";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -86,6 +88,9 @@ const MessageItem = memo(function MessageItem({
   onEditSave,
   onEditCancel,
   jump = false,
+  agentId,
+  pendingQuestionSets,
+  onQuestionAnswered,
 }: {
   message: DisplayMessage;
   onToggleTool: (key: string) => void;
@@ -98,6 +103,12 @@ const MessageItem = memo(function MessageItem({
   onEditCancel: () => void;
   /** 检索命中闪动高亮 */
   jump?: boolean;
+  /** 归属 Agent（提问卡提交答案需要） */
+  agentId: string;
+  /** 仍在等待作答的问题集：setId → 题目。命中时工具卡内渲染可交互问答 */
+  pendingQuestionSets: Map<string, Array<{ prompt: string; options: string[] }>>;
+  /** 作答成功后的收尾（折叠卡片 + 刷新问题集） */
+  onQuestionAnswered: (key: string) => void;
 }) {
   // agent 消息才走 markdown；content 不变时复用上一次的解析结果
   const html = useMemo(
@@ -112,6 +123,16 @@ const MessageItem = memo(function MessageItem({
 
   if (message.role === "tool" && message.toolCard) {
     const tc = message.toolCard;
+    const isAskQuestion = tc.name === "ask_question";
+    const parsedQuestions = isAskQuestion ? parseAskQuestionArgs(tc.args) : [];
+    // args 是对象数组，shortArgs 只能得到 "questions=[object Object]"，这里换成可读的题数
+    const argsLabel = isAskQuestion && parsedQuestions.length > 0
+      ? `${parsedQuestions.length} 题`
+      : shortArgs(tc.args);
+    // 只有问题集仍在 pending 时才渲染可交互卡片（答过/已失效的退回普通工具卡）
+    const questionSetId = isAskQuestion ? pendingQuestionSetId(tc.result) : undefined;
+    const pendingQuestions = questionSetId ? pendingQuestionSets.get(questionSetId) : undefined;
+    const statusLabel = isAskQuestion && !pendingQuestions && questionSetId ? " · 已作答" : "";
     return (
       <div
         className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}${jump ? " tool-card--jump" : ""}`}
@@ -124,11 +145,19 @@ const MessageItem = memo(function MessageItem({
         <div className="tool-card__head">
           <span className={`tool-card__dot tool-card__dot--${tc.status}`} aria-hidden="true" />
           <span className="tool-card__name">{tc.name}</span>
-          <span className="tool-card__args">{shortArgs(tc.args)}</span>
+          <span className="tool-card__args">{argsLabel}{statusLabel}</span>
           <span className="tool-card__toggle" aria-hidden="true">{tc.collapsed ? "▶" : "▼"}</span>
         </div>
-        <div className="tool-card__body">
-          {tc.result ? (
+        {/* 卡体内点击不能冒泡到卡头，否则会在作答时把卡片折叠掉 */}
+        <div className="tool-card__body" onClick={pendingQuestions ? (event) => event.stopPropagation() : undefined}>
+          {pendingQuestions ? (
+            <QuestionCard
+              agentId={agentId}
+              setId={questionSetId}
+              questions={pendingQuestions}
+              onAnswered={() => onQuestionAnswered(message.key)}
+            />
+          ) : tc.result ? (
             <pre className="tool-card__result">{tc.result.length > 500 ? `${tc.result.slice(0, 500)}…` : tc.result}</pre>
           ) : null}
         </div>
@@ -215,6 +244,29 @@ function shortArgs(args: string): string {
   } catch {
     return args.slice(0, 80);
   }
+}
+
+/** 解析 ask_question 的工具参数（题干 + 选项）；解析不出返回空数组 */
+function parseAskQuestionArgs(args: string): Array<{ prompt: string; options: string[] }> {
+  try {
+    const parsed = JSON.parse(args) as { questions?: Array<{ prompt?: unknown; options?: unknown }> };
+    const list = Array.isArray(parsed.questions) ? parsed.questions : [];
+    const result: Array<{ prompt: string; options: string[] }> = [];
+    for (const item of list) {
+      const prompt = String(item?.prompt ?? "").trim();
+      const options = Array.isArray(item?.options) ? item.options.map((option) => String(option)) : [];
+      if (prompt && options.length >= 1) result.push({ prompt, options });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+/** 从 ask_question 的工具结果里取待答问题集 id（形如 qst_xxx） */
+function pendingQuestionSetId(result?: string): string | undefined {
+  if (!result) return undefined;
+  return result.match(/pending question: (qst_[A-Za-z0-9_]+)/)?.[1];
 }
 
 /** 嵌入分屏窗口：作为展开磁贴内容（由 TileShell 定位），header 可拖拽，× 或拖到左坞收起 */
@@ -741,6 +793,33 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     );
   }, []);
 
+  // 待答桌面提问：以服务端问题集为准（已作答的不再可答），SSE 变化即刷新
+  const { sets: questionSets, refresh: refreshQuestions } = usePendingQuestions(agent.id);
+  // 依赖内容签名而非数组引用：20s 轮询返回同样内容时保持 Map 引用稳定，避免 MessageItem 全量重渲染
+  const pendingQuestionSignature = useMemo(
+    () =>
+      questionSets
+        .filter((set) => set.status === "pending")
+        .map((set) => `${set.id}:${set.questions.map((question) => question.prompt).join("|")}`)
+        .join("||"),
+    [questionSets],
+  );
+  const pendingQuestionSets = useMemo(() => {
+    const map = new Map<string, Array<{ prompt: string; options: string[] }>>();
+    for (const set of questionSets) {
+      if (set.status === "pending") map.set(set.id, set.questions);
+    }
+    return map;
+  }, [pendingQuestionSignature]);
+
+  // 作答完成：收起该工具卡并重拉问题集（已答的集合随之退出 pending）
+  const onQuestionAnswered = useCallback((key: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.key === key && m.toolCard ? { ...m, toolCard: { ...m.toolCard, collapsed: true } } : m)),
+    );
+    refreshQuestions();
+  }, [refreshQuestions]);
+
   // tool result 到达后 3 秒自动折叠
   const collapseAfterDelay = (key: string) => {
     setTimeout(() => {
@@ -1175,6 +1254,9 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
                   onEditSave={() => void saveEdit()}
                   onEditCancel={cancelEdit}
                   jump={jumpKeys.has(message.key)}
+                  agentId={agent.id}
+                  pendingQuestionSets={pendingQuestionSets}
+                  onQuestionAnswered={onQuestionAnswered}
                 />,
               );
             });

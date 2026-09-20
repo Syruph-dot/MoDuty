@@ -13,16 +13,21 @@ declare global {
  * 这套骨架是「週間ダンジョン」整场景：左侧是角色，右侧挂了一整套 UI（按钮/能量条/背景线），
  * 所以渲染前要先把 UI 分支隐藏，再按角色包围盒取景；磁贴只要上半身，故再截角色高度的上一半。
  *
- * 动画分层（关键）：该资源的 react 动画是按 A / M 两层设计的——
- *   `X_01_A` 只键少量附件（表情/眼睛贴图），`X_01_M` 只键骨骼位移，两者都是 0 时长单帧姿势，
- *   必须叠在常驻的 Idle 之上同时播放。若像早先那样用 clearTracks 把它们放到 0 轨，Idle 会被停掉，
- *   表现为整只人冻住（只剩眼睛换图）。
+ * 动画分层：该资源的反应动画是 A / M 两层设计——`X_01_A` 只键少量附件（表情/眼睛贴图），
+ * `X_01_M` 只键骨骼位移，两者都是 0 时长单帧姿势，必须叠在常驻的 Idle 之上同时播放。
+ * 若把它们放到 0 轨（clearTracks），Idle 会被停掉，表现为整只人冻住。
+ *
+ * 视线：资源里的 `Look_*` 只是「眼球朝某个固定方向」的单帧姿势（把 R_Eye / L_Eye 骨平移几单位），
+ * 不会跟随鼠标。要跟随鼠标只能自己驱动这两根眼骨：每帧在 `state.apply` 之后、`updateWorldTransform`
+ * 之前按指针位置叠加位移（见 applyGaze）。
  */
 const SPINE_URL = "/spines/momoka_weekdungeon/Momoka_weekdungeon.skel";
 const PIXI_URL = "/lib/pixi.js";
 const PIXI_SPINE_URL = "/lib/pixi-spine.js";
 /** UI 元素的根骨骼：其整棵子树的 slot 都不是立绘的一部分 */
 const UI_ROOT_BONE = "UI_Con";
+/** 视线骨骼（瞳孔/眼球），父级是 Head_Rot */
+const EYE_BONE_NAMES = ["R_Eye", "L_Eye"];
 /** 立绘只取角色高度的上一半（上半身） */
 const UPPER_BODY_RATIO = 0.5;
 /**
@@ -37,9 +42,14 @@ const OVERLAY_MIX = 0.18;
 /** 0 轨 = 常驻站姿；1 轨 = 附件姿势层(A)；2 轨 = 骨骼动作层(M) */
 const TRACK_ATTACH = 1;
 const TRACK_MOTION = 2;
+/** 视线最大偏转（spine 世界单位，y 向下）；资源自带的 Look 姿势约 7 单位 */
+const GAZE_MAX_X = 10;
+const GAZE_MAX_Y = 6;
+/** 视线平滑系数（每帧向目标插值），越小越黏 */
+const GAZE_SMOOTH = 0.22;
 
-/** 立绘情绪状态：站姿 / 看向（悬停）/ 摸头（点击） */
-type DutyMood = "idle" | "look" | "pat";
+/** 立绘情绪状态：站姿 / 摸头（点击上方 2/5） */
+type DutyMood = "idle" | "pat";
 
 /** 一组反应动画：A=附件层，M=动作层，End*=收尾层 */
 interface Reaction {
@@ -47,12 +57,6 @@ interface Reaction {
   m?: string;
   endA?: string;
   endM?: string;
-}
-
-interface Animations {
-  idle?: string;
-  look: Reaction;
-  pat: Reaction;
 }
 
 let runtimePromise: Promise<void> | null = null;
@@ -136,36 +140,15 @@ function visibleBounds(
   return Number.isFinite(minX) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
 }
 
-/** 按名称挑出可用动画（资源里缺哪个就少哪层） */
-function pickAnimations(names: string[]): Animations {
-  const has = new Set(names);
-  const pick = (...candidates: string[]): string | undefined => candidates.find((name) => has.has(name));
-  return {
-    idle: pick("Idle_01", "Start01_Idle_01", names[0]),
-    look: {
-      a: pick("Look_01_A", "Dev_Look_01_M"),
-      m: pick("Look_01_M"),
-      endA: pick("LookEnd_01_A"),
-      endM: pick("LookEnd_01_M"),
-    },
-    pat: {
-      a: pick("Pat_01_A", "Dev_Pat_01_M"),
-      m: pick("Pat_01_M"),
-      endA: pick("PatEnd_01_A"),
-      endM: pick("PatEnd_01_M"),
-    },
-  };
-}
-
 /**
  * 值日生立绘（Spine 实时渲染）。
  *
  * - 运行时与资源都在 public/ 下按需加载，主包不引入 pixi；
  * - 隐藏週間ダンジョン场景自带的 UI 分支，只保留角色，并按「上一半」取景；
- * - 动画分层：Idle 常驻 0 轨；Look / Pat 的 A（附件）与 M（动作）分别叠到 1 / 2 轨，
- *   收尾用对应的 End* 播一遍再清轨，因此站姿的呼吸/头发不会被反应动画打断；
- * - 交互：悬停 → 看向（Look）；移开 → 收尾回站姿；摸头（Pat）只在卡片上方 2/5 生效，
- *   且该区域内不让事件冒泡到磁贴壳（不拖动、不打开面板）；下方 3/5 留给磁贴壳的拖动/打开；
+ * - 动画分层：Idle 常驻 0 轨；摸头的 A（附件）与 M（动作）分别叠到 1 / 2 轨，收尾用 End* 播一遍再清轨；
+ * - 视线：每帧驱动 R_Eye / L_Eye 两根眼骨跟随鼠标（资源自带的 Look 只是固定方向的单帧姿势）；
+ * - 交互：摸头只在卡片上方 2/5 生效，且该区域内不让事件冒泡到磁贴壳（不拖动、不打开面板）；
+ *   下方 3/5 留给磁贴壳的拖动/打开；
  * - 容器变化（磁贴开合/缩放）用 ResizeObserver 跟随；
  * - 任一环节失败（脚本、资源、解码）都回落到「立绘待提供」占位，不影响磁贴其它功能。
  */
@@ -205,9 +188,12 @@ export default function DutyPortrait() {
     let resizeObserver: ResizeObserver | null = null;
     let patTimer: number | null = null;
     let stateListener: any = null;
-    let hovering = false;
     let mood: DutyMood = "idle";
-    let anims: Animations | null = null;
+    let pat: Reaction = {};
+    let eyeBones: any[] = [];
+    /** 视线目标 / 当前（spine 世界单位，y 向下）；离开立绘时回中 */
+    const gazeTarget = { x: 0, y: 0 };
+    const gazeCurrent = { x: 0, y: 0 };
 
     /** 量取画布实际占据的盒子：优先立绘舞台自身（绝对定位后尺寸确定）；退化时回退到外层立绘区 */
     const measure = () => {
@@ -243,6 +229,41 @@ export default function DutyPortrait() {
       fit();
     };
 
+    /**
+     * 视线：把「世界方向」的偏移换算到眼骨的父骨局部坐标系后写回骨骼。
+     * 眼骨父级是 Head_Rot（头部带旋转），所以不能直接把鼠标方向当局部方向用，
+     * 必须用父骨世界矩阵的逆来换基；否则头一歪视线方向就不对了。
+     */
+    const applyGaze = () => {
+      gazeCurrent.x += (gazeTarget.x - gazeCurrent.x) * GAZE_SMOOTH;
+      gazeCurrent.y += (gazeTarget.y - gazeCurrent.y) * GAZE_SMOOTH;
+      if (eyeBones.length === 0) return;
+      for (const bone of eyeBones) {
+        const parent = bone.parent;
+        if (!parent) continue;
+        // 注意：a/b/c/d 在 bone.matrix 上（PIXI.Matrix），Bone 本身没有这四个直属性
+        const m = parent.matrix;
+        const det = m.a * m.d - m.b * m.c;
+        if (!Number.isFinite(det) || Math.abs(det) < 1e-6) continue;
+        bone.x = bone.data.x + (m.d * gazeCurrent.x - m.c * gazeCurrent.y) / det;
+        bone.y = bone.data.y + (-m.b * gazeCurrent.x + m.a * gazeCurrent.y) / det;
+      }
+    };
+
+    /** 指针移动 → 归一化到 -1..1 → 换算成最大偏转内的世界偏移 */
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = host.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return;
+      const nx = Math.max(-1, Math.min(1, ((event.clientX - rect.left) / rect.width) * 2 - 1));
+      const ny = Math.max(-1, Math.min(1, ((event.clientY - rect.top) / rect.height) * 2 - 1));
+      gazeTarget.x = nx * GAZE_MAX_X;
+      gazeTarget.y = ny * GAZE_MAX_Y;
+    };
+    const onPointerOut = () => {
+      gazeTarget.x = 0;
+      gazeTarget.y = 0;
+    };
+
     /** 把一条 overlay 轨设成指定动画（0 时长姿势用 loop 保持住）；name 为空则淡出清轨 */
     const setOverlay = (track: number, name: string | undefined) => {
       if (!spine) return;
@@ -253,24 +274,24 @@ export default function DutyPortrait() {
       spine.state.setAnimation(track, name, true);
     };
 
-    /** 进入某组反应：A（附件）与 M（动作）分层叠加，Idle 继续在 0 轨跑 */
-    const applyReaction = (reaction: Reaction) => {
+    /** 进入摸头：A（附件：腮红/眉毛/眼睑）与 M（动作）分层叠加，Idle 继续在 0 轨跑 */
+    const applyPat = () => {
       if (!spine) return;
-      setOverlay(TRACK_ATTACH, reaction.a);
-      setOverlay(TRACK_MOTION, reaction.m);
+      setOverlay(TRACK_ATTACH, pat.a);
+      setOverlay(TRACK_MOTION, pat.m);
     };
 
-    /** 收尾：先播对应 End*（若资源提供），播完由状态机监听清轨；没有就用淡出 */
-    const releaseReaction = (reaction: Reaction) => {
+    /** 摸头收尾：先播 PatEnd_*（若资源提供），播完由状态机监听清轨；没有就淡出 */
+    const releasePat = () => {
       if (!spine) return;
-      if (!reaction.endA && !reaction.endM) {
+      if (!pat.endA && !pat.endM) {
         setOverlay(TRACK_ATTACH, undefined);
         setOverlay(TRACK_MOTION, undefined);
         return;
       }
-      if (reaction.endA) spine.state.setAnimation(TRACK_ATTACH, reaction.endA, false);
+      if (pat.endA) spine.state.setAnimation(TRACK_ATTACH, pat.endA, false);
       else setOverlay(TRACK_ATTACH, undefined);
-      if (reaction.endM) spine.state.setAnimation(TRACK_MOTION, reaction.endM, false);
+      if (pat.endM) spine.state.setAnimation(TRACK_MOTION, pat.endM, false);
       else setOverlay(TRACK_MOTION, undefined);
     };
 
@@ -283,50 +304,27 @@ export default function DutyPortrait() {
 
     /** 收尾动画播完 → 清空 overlay 轨，完全交回 Idle */
     const onStateComplete = (entry: any) => {
-      if (disposed || !anims) return;
+      if (disposed) return;
       const name: string | undefined = entry?.animation?.name;
       if (!name || entry.trackIndex === 0) return;
-      const endNames = [anims.look.endA, anims.look.endM, anims.pat.endA, anims.pat.endM].filter(Boolean) as string[];
+      const endNames = [pat.endA, pat.endM].filter(Boolean) as string[];
       if (!endNames.includes(name)) return;
-      if (mood !== "idle") return; // 收尾途中又被悬停/摸头接管，交给新的反应轨道
+      if (mood !== "idle") return; // 收尾途中又被摸头接管，交给新的反应
       setOverlay(TRACK_ATTACH, undefined);
       setOverlay(TRACK_MOTION, undefined);
     };
 
-    /** 悬停：看向（摸头进行中不打断） */
-    const onEnter = () => {
-      hovering = true;
-      if (!anims || mood === "pat") return;
-      if (!anims.look.a && !anims.look.m) return;
-      mood = "look";
-      applyReaction(anims.look);
-    };
-
-    /** 移开：仅打断「看向」，让它收尾回站姿；摸头等计时器自然收尾 */
-    const onLeave = () => {
-      hovering = false;
-      if (!anims || mood !== "look") return;
-      mood = "idle";
-      releaseReaction(anims.look);
-    };
-
     /** 点击：摸头；仅在卡片上方 2/5 生效（下方 3/5 留给磁贴壳的打开/拖动） */
     const onClick = (event: MouseEvent) => {
-      if (!anims || (!anims.pat.a && !anims.pat.m)) return;
+      if (!pat.a && !pat.m) return;
       if (!inPatZone(event.clientY)) return;
       clearPatTimer();
       mood = "pat";
-      applyReaction(anims.pat);
+      applyPat();
       patTimer = window.setTimeout(() => {
         patTimer = null;
-        if (!anims) return;
         mood = "idle";
-        releaseReaction(anims.pat);
-        if (hovering && (anims.look.a || anims.look.m)) {
-          // 摸头结束时指针仍停在立绘上：接着看向
-          mood = "look";
-          applyReaction(anims.look);
-        }
+        releasePat();
       }, PAT_HOLD_MS);
     };
 
@@ -364,10 +362,29 @@ export default function DutyPortrait() {
           app.stage.addChild(stage);
 
           const names: string[] = (data.animations ?? []).map((animation: { name: string }) => animation.name);
-          anims = pickAnimations(names);
+          const has = new Set(names);
+          const pick = (...candidates: string[]): string | undefined => candidates.find((name) => has.has(name));
+          const idle = pick("Idle_01", "Start01_Idle_01", names[0]);
+          pat = {
+            a: pick("Pat_01_A", "Dev_Pat_01_M"),
+            m: pick("Pat_01_M"),
+            endA: pick("PatEnd_01_A"),
+            endM: pick("PatEnd_01_M"),
+          };
+          eyeBones = spine.skeleton.bones.filter((bone: any) => EYE_BONE_NAMES.includes(bone.data?.name));
+
+          // 视线注入点：Spine.update 的顺序是 state.update → state.apply → skeleton.updateWorldTransform
+          // → slot 同步。包一层 updateWorldTransform，就能在「动画写回骨骼之后、算世界矩阵之前」改眼骨。
+          const skeleton = spine.skeleton;
+          const originalUpdateWorldTransform = skeleton.updateWorldTransform.bind(skeleton);
+          skeleton.updateWorldTransform = () => {
+            applyGaze();
+            originalUpdateWorldTransform();
+          };
+
           // overlay 层是单帧姿势，切换时混合一下，避免硬跳
           if (spine.state.data) spine.state.data.defaultMix = OVERLAY_MIX;
-          if (anims.idle) spine.state.setAnimation(0, anims.idle, true);
+          if (idle) spine.state.setAnimation(0, idle, true);
           spine.update(0); // 先把第一帧姿态算出来，再取景
 
           hideUiSlots(spine.skeleton);
@@ -382,8 +399,8 @@ export default function DutyPortrait() {
           spine.state.addListener(stateListener);
           resizeObserver = new ResizeObserver(resize);
           resizeObserver.observe(box);
-          host.addEventListener("pointerenter", onEnter);
-          host.addEventListener("pointerleave", onLeave);
+          host.addEventListener("pointermove", onPointerMove);
+          host.addEventListener("pointerleave", onPointerOut);
           host.addEventListener("click", onClick);
         });
       })
@@ -402,8 +419,8 @@ export default function DutyPortrait() {
       } catch {
         /* 已销毁的 state 忽略 */
       }
-      host.removeEventListener("pointerenter", onEnter);
-      host.removeEventListener("pointerleave", onLeave);
+      host.removeEventListener("pointermove", onPointerMove);
+      host.removeEventListener("pointerleave", onPointerOut);
       host.removeEventListener("click", onClick);
       try {
         app?.destroy(true, { children: true });

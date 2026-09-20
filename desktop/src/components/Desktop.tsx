@@ -492,6 +492,92 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     setOpenWorldX(next);
   }, [openMode, openAgentIds, openWorldX, metrics, bandById, bandOf]);
 
+  // ---- 打开卡片后平滑滚动，使被打开的卡片在屏幕上水平居中 ----
+  // 以前进入 open 模式时内容层会变窄（band 宽度 → 舞台宽度），浏览器会把 scrollLeft 立刻夹到新的
+  // maxScroll，视觉上就是“突然跳到一个 X 位置”。现在两道保险：
+  // 1) open 模式的内容宽度不窄于自由布局宽度（见 contentWidth），从根上避免被夹；
+  // 2) 新打开一张卡片后，用 rAF 缓动把 scrollLeft 移到“该卡片水平居中”的目标位置。
+  const scrollAnimRef = useRef<number | null>(null);
+  const centerPendingRef = useRef<string | null>(null);
+  const prevOpenIdsRef = useRef<string[]>([]);
+  /** 自由布局的内容宽度（进 open 模式后不让内容层比它更窄，避免宽度收缩引发滚动夹取） */
+  const freeContentWidthRef = useRef(0);
+
+  useEffect(() => {
+    if (!openMode) freeContentWidthRef.current = bandLayout?.contentWidth ?? 0;
+  }, [openMode, bandLayout]);
+
+  /** 平滑滚动到目标 scrollLeft（easeOutCubic；新目标会取消上一个动画） */
+  const animateWallScrollTo = useCallback((target: number) => {
+    const el = wallRef.current;
+    if (!el) return;
+    if (scrollAnimRef.current !== null) {
+      cancelAnimationFrame(scrollAnimRef.current);
+      scrollAnimRef.current = null;
+    }
+    const from = el.scrollLeft;
+    const delta = target - from;
+    if (Math.abs(delta) < 1) {
+      el.scrollLeft = target;
+      return;
+    }
+    const started = performance.now();
+    const DURATION = Math.min(720, Math.max(240, Math.abs(delta) * 0.45)); // 距离越远缓动越久（有上下限）
+    const tick = () => {
+      const node = wallRef.current;
+      if (!node) {
+        scrollAnimRef.current = null;
+        return;
+      }
+      const t = Math.min(1, (performance.now() - started) / DURATION);
+      const eased = 1 - Math.pow(1 - t, 3);
+      node.scrollLeft = from + delta * eased;
+      scrollAnimRef.current = t < 1 ? requestAnimationFrame(tick) : null;
+    };
+    scrollAnimRef.current = requestAnimationFrame(tick);
+  }, []);
+
+  // 记录“这次新打开的那张”（等它的世界 X 就绪后再居中）
+  useEffect(() => {
+    const prev = prevOpenIdsRef.current;
+    if (openMode) {
+      const fresh = openIds.filter((id) => !prev.includes(id));
+      if (fresh.length > 0) centerPendingRef.current = fresh[fresh.length - 1];
+    } else {
+      centerPendingRef.current = null;
+    }
+    prevOpenIdsRef.current = openIds;
+  }, [openIds, openMode]);
+
+  // 居中滚动：等一帧让内容层按新布局落地（scrollWidth 才是新的），再缓动过去
+  useLayoutEffect(() => {
+    const id = centerPendingRef.current;
+    if (!id || !openMode || !layout) return;
+    const geom = layout.geometryOf[id];
+    // 与渲染保持一致：agent 用 openWorldX；browser 用舞台几何 X
+    const worldX = Number.isFinite(openWorldX[id]) ? openWorldX[id] : id.startsWith("browser:") ? geom?.x : undefined;
+    if (worldX === undefined || !Number.isFinite(worldX)) return;
+    if (!wallRef.current) return;
+    centerPendingRef.current = null;
+    const raf = requestAnimationFrame(() => {
+      const node = wallRef.current;
+      if (!node) return;
+      const cardW = layout.stage.w > 0 ? layout.stage.w : bounds.width;
+      const maxScroll = Math.max(0, node.scrollWidth - node.clientWidth);
+      // 目标：卡片中心对齐视口中心（左右两端夹到可滚动范围）
+      const target = Math.max(0, Math.min(maxScroll, worldX + cardW / 2 - node.clientWidth / 2));
+      animateWallScrollTo(target);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [openMode, layout, bounds.width, openWorldX, animateWallScrollTo]);
+
+  useEffect(
+    () => () => {
+      if (scrollAnimRef.current !== null) cancelAnimationFrame(scrollAnimRef.current);
+    },
+    [],
+  );
+
   // ---- 拖拽落点：指针 → 灰框位置 → 含义（Desktop 是唯一落点权威）----
   //  鼠标指针 →（TileShell 像素跟手并上报磁贴中心）→ 灰框落在哪条带/哪个格 → 解译含义：
   //  - 同带 → 移位（占用了别人的格时由让位预览把对方推开，落盘再规范化）
@@ -685,19 +771,23 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const contentWidth = useMemo(() => {
     if (groupedMode || !metrics) return "100%";
     if (openMode) {
-      // 草稿纸桌面：内容层至少铺满视口；若有卡片在视口外右方则右扩，供横向平移
-      const cardW = layout?.stage.w ?? bounds.width;
+      // 草稿纸桌面：内容层至少铺满视口；尾部留白 = 半个视口宽，保证任何一张打开的卡片
+      // 都能被滚到屏幕正中（否则靠右的卡片永远居中不了）。
+      const cardW = layout?.stage.w || bounds.width;
       let maxX = 0;
-      for (const id of openAgentIds) {
-        const x = openWorldX[id];
-        if (Number.isFinite(x)) maxX = Math.max(maxX, x + cardW);
+      for (const id of openIds) {
+        const geom = layout?.geometryOf[id];
+        const x = Number.isFinite(openWorldX[id]) ? openWorldX[id] : geom?.x;
+        if (x !== undefined && Number.isFinite(x)) maxX = Math.max(maxX, x + cardW);
       }
-      const need = Math.max(bounds.width, Math.ceil(maxX) + 80);
+      const stable = Math.ceil(Math.max(bounds.width, maxX + bounds.width / 2));
+      // 不窄于自由布局：进入 open 模式时宽度收缩会让浏览器立刻夹掉当前滚动（表现为“瞬跳”）
+      const need = Math.max(stable, Math.ceil(freeContentWidthRef.current));
       return `${need}px`;
     }
     const w = bandLayout?.contentWidth ?? 0;
     return `${Math.max(w, 1)}px`;
-  }, [openMode, groupedMode, metrics, bandLayout, layout, bounds.width, openAgentIds, openWorldX]);
+  }, [openMode, groupedMode, metrics, bandLayout, layout, bounds.width, openIds, openWorldX]);
 
   // 把 overscrollRef 的 raw/side 画到内容层与左右弧上
   const paintOverscroll = useCallback(() => {
@@ -817,6 +907,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (openMode) {
         // T2：草稿纸桌面用容器 scrollLeft 直接平移，不做橡皮筋越界（free 模式的越界弹回逻辑保留在其后）
         event.preventDefault();
+        // 用户自己开始滚就停掉“打开后居中”的缓动，避免两个滚动源互相抢
+        if (scrollAnimRef.current !== null) {
+          cancelAnimationFrame(scrollAnimRef.current);
+          scrollAnimRef.current = null;
+        }
         const maxScroll = el.scrollWidth - el.clientWidth;
         const cur = el.scrollLeft;
         el.scrollLeft = Math.min(maxScroll, Math.max(0, cur + delta));

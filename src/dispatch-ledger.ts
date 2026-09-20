@@ -27,6 +27,13 @@ export type DispatchVerdict = "deliver" | "continue";
 /** 「继续」轮次上限（2026-09-10 拍板决策 2） */
 export const DISPATCH_MAX_CONTINUE = 3;
 
+/**
+ * 台账里保存的任务书上限（字符）。
+ * 以前是 500，导致值日生页“展开台账”看不到完整任务书；提到与执行者输出上限（4000）一致。
+ * 旧记录仍是写入时的长度（不会回填）。
+ */
+export const LEDGER_TASK_MAX_CHARS = 4000;
+
 export interface DispatchRecord {
   id: string;
   /** 派发者 Agent（值日生） */

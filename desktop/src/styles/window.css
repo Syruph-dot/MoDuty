@@ -1831,3 +1831,144 @@
   color: rgba(232, 237, 247, 0.6);
   background: rgba(255, 255, 255, 0.06);
 }
+
+/* ── 台账卡片：折叠/展开（展开看完整任务书与细节） ── */
+.duty-ledger__card {
+  cursor: default;
+}
+
+.duty-ledger__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.duty-ledger__fold {
+  flex: none;
+  font-size: 10px;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.duty-ledger__card--expanded {
+  border-color: rgba(96, 200, 255, 0.42);
+  background: rgba(28, 40, 62, 0.9);
+}
+
+/* 折叠：任务书两行截断 */
+.duty-ledger__task--full {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.duty-ledger__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.duty-ledger__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.62);
+  word-break: break-all;
+}
+
+.duty-ledger__warn {
+  color: rgb(255, 170, 170);
+}
+
+.duty-ledger__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.duty-ledger__links-label {
+  font-size: 11px;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.duty-ledger__open {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(96, 200, 255, 0.4);
+  background: rgba(38, 86, 120, 0.35);
+  color: rgb(170, 220, 255);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.duty-ledger__open:hover {
+  border-color: rgba(96, 200, 255, 0.75);
+  background: rgba(38, 86, 120, 0.55);
+}
+
+/* ── 「派给过哪些 Agent」汇总 ── */
+.duty-screen__targets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.duty-screen__targets-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(232, 237, 247, 0.5);
+}
+
+.duty-screen__targets-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.duty-screen__target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(22, 30, 46, 0.75);
+  color: rgba(232, 237, 247, 0.86);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.duty-screen__target-chip:hover {
+  border-color: rgba(96, 200, 255, 0.5);
+  color: #fff;
+}
+
+.duty-screen__target-count {
+  font-size: 10px;
+  color: rgb(150, 210, 255);
+}

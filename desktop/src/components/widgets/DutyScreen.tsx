@@ -41,6 +41,9 @@ const STATE_LABEL: Record<DispatchView["state"], string> = {
   done: "已交付",
 };
 
+/** 与后端 dispatch-ledger.ts 的 DISPATCH_MAX_CONTINUE 保持一致（仅用于展示 x/3） */
+const DISPATCH_MAX_CONTINUE = 3;
+
 function isToday(iso: string | null): boolean {
   if (!iso) return false;
   const t = Date.parse(iso);
@@ -52,22 +55,38 @@ function isToday(iso: string | null): boolean {
   );
 }
 
-function LedgerCard({ view, onOpen }: { view: DispatchView; onOpen: (agentId: string) => void }) {
+/**
+ * 台账卡片：默认折叠（任务书两行截断），点标题展开 → 全文任务书 + 元数据 + 引用会话 + 打开执行者。
+ * 展开不抢导航：点标题只开合，“打开执行者窗口”是展开区里的独立动作。
+ */
+function LedgerCard({
+  view,
+  expanded,
+  onToggle,
+  onOpenAgent,
+  onOpenSession,
+}: {
+  view: DispatchView;
+  expanded: boolean;
+  onToggle: () => void;
+  onOpenAgent: (agentId: string) => void;
+  onOpenSession: (sessionId: string) => void;
+}) {
   const badge = view.stalled_at ? "停转" : STATE_LABEL[view.state];
   const tone = view.stalled_at ? "stalled" : view.state;
+  const lastStatusText =
+    view.last_status === "completed" ? "执行者完成" : view.last_status === "error" ? "执行者出错" : view.last_status === "stalled" ? "检出停转" : null;
   return (
-    <button
-      type="button"
-      className={`duty-ledger__card duty-ledger__card--${tone}`}
-      onClick={() => onOpen(view.target.agent_id)}
-      title={`打开执行者窗口：${view.target.name ?? view.target.agent_id}`}
-    >
-      <div className="duty-ledger__row">
+    <div className={`duty-ledger__card duty-ledger__card--${tone}${expanded ? " duty-ledger__card--expanded" : ""}`}>
+      <button type="button" className="duty-ledger__head" onClick={onToggle} aria-expanded={expanded}>
         <span className={`duty-ledger__badge duty-ledger__badge--${tone}`}>{badge}</span>
         <span className="duty-ledger__name">{view.target.name ?? view.target.agent_id}</span>
         <span className="duty-ledger__time">{relativeTime(view.last_status_at ?? view.dispatched_at)}</span>
-      </div>
-      <p className="duty-ledger__task">
+        <span className="duty-ledger__fold" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+      </button>
+      <p className={`duty-ledger__task${expanded ? " duty-ledger__task--full" : ""}`}>
         {view.task}
         {view.task_truncated ? " …" : ""}
       </p>
@@ -77,8 +96,47 @@ function LedgerCard({ view, onOpen }: { view: DispatchView; onOpen: (agentId: st
         {view.linked_sessions.length > 0 ? (
           <span className="duty-ledger__chip">引用 {view.linked_sessions.length}</span>
         ) : null}
+        {view.target.state ? <span className="duty-ledger__chip">执行者 {view.target.state}</span> : null}
       </div>
-    </button>
+      {expanded ? (
+        <div className="duty-ledger__detail">
+          <div className="duty-ledger__facts">
+            <span>派发 {relativeTime(view.dispatched_at)}</span>
+            <span>台账 {view.id}</span>
+            {lastStatusText ? <span>最近 {lastStatusText}</span> : null}
+            {view.stalled_at ? <span className="duty-ledger__warn">停转于 {relativeTime(view.stalled_at)}</span> : null}
+            <span>
+              返工 {view.continue_count}/{DISPATCH_MAX_CONTINUE}
+            </span>
+            {view.last_verdict ? <span>上次判读 {view.last_verdict}</span> : null}
+          </div>
+          <div className="duty-ledger__facts">
+            <span>执行者会话 {view.target.session_id}</span>
+            {view.target.phase ? <span>阶段 {view.target.phase}</span> : null}
+          </div>
+          {view.linked_sessions.length > 0 ? (
+            <div className="duty-ledger__links">
+              <span className="duty-ledger__links-label">派发携带的会话</span>
+              {view.linked_sessions.map((session) => (
+                <button
+                  key={session}
+                  type="button"
+                  className="duty-dialog__link"
+                  title={`打开会话 ${session} 对应的 Agent`}
+                  onClick={() => onOpenSession(session)}
+                >
+                  <span className="duty-dialog__link-icon">↗</span>
+                  会话·{session.replace(/^ses_/, "").slice(0, 6)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <button type="button" className="duty-ledger__open" onClick={() => onOpenAgent(view.target.agent_id)}>
+            打开执行者窗口 →
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -89,6 +147,8 @@ export default function DutyScreen() {
   const openAgentById = useAgentsStore((state) => state.openAgent);
 
   const [closing, setClosing] = useState(false);
+  /** 展开的台账卡片 id（展开看完整任务书与细节） */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   /** 值日生 = kind=dispatcher 的 agent（id 解析与磁贴侧同一份逻辑） */
   const dutyAgent: Agent | null = useMemo(() => {
@@ -140,7 +200,33 @@ export default function DutyScreen() {
 
   const pendingSets = useMemo(() => questions.sets.filter((set) => set.status === "pending"), [questions.sets]);
   const active = useMemo(() => ledger.dispatches.filter((view) => view.state !== "done"), [ledger.dispatches]);
-  const closed = useMemo(() => ledger.dispatches.filter((view) => view.state === "done").slice(0, 8), [ledger.dispatches]);
+  const closed = useMemo(() => ledger.dispatches.filter((view) => view.state === "done"), [ledger.dispatches]);
+
+  /** 「派给了哪些 Agent」：按执行者去重汇总（含派发次数），点击直接打开对方窗口 */
+  const targets = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; state: string | null; count: number }>();
+    for (const view of ledger.dispatches) {
+      const key = view.target.agent_id;
+      const prev = map.get(key);
+      map.set(key, {
+        id: key,
+        name: view.target.name ?? key,
+        state: view.target.state,
+        count: (prev?.count ?? 0) + 1,
+      });
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }, [ledger.dispatches]);
+
+  /** 引用会话（&ses_…）→ 反查绑定 agent 并打开窗口（与对话 chip 同一套解析） */
+  const openSession = useCallback(
+    (sessionId: string) => {
+      const bare = sessionId.replace(/^ses_/, "");
+      const bound = agents.find((agent) => agent.session_id === sessionId || agent.session_id === bare || agent.session_id === `ses_${bare}`);
+      if (bound) openAgentById(bound.id);
+    },
+    [agents, openAgentById],
+  );
 
   if (!open) return null;
 
@@ -195,6 +281,7 @@ export default function DutyScreen() {
         <aside className="duty-screen__ledger" aria-label="调度台账">
           <h3 className="duty-screen__section-title">
             调度台账
+            <span className="duty-screen__section-count">{ledger.dispatches.length}</span>
             {ledger.loading ? <span className="duty-screen__section-count">…</span> : null}
           </h3>
           {ledger.error ? (
@@ -204,15 +291,48 @@ export default function DutyScreen() {
               <span className="duty-screen__hint">（后端若是旧进程，重启后才有 GET /api/dispatches）</span>
             </p>
           ) : null}
+          {targets.length > 0 ? (
+            <div className="duty-screen__targets">
+              <span className="duty-screen__targets-label">派给过 {targets.length} 个 Agent</span>
+              <div className="duty-screen__targets-chips">
+                {targets.map((target) => (
+                  <button
+                    key={target.id}
+                    type="button"
+                    className="duty-screen__target-chip"
+                    title={`打开执行者窗口：${target.name}`}
+                    onClick={() => openAgentById(target.id)}
+                  >
+                    {target.name}
+                    {target.count > 1 ? <span className="duty-screen__target-count">×{target.count}</span> : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {active.length === 0 && closed.length === 0 && !ledger.error ? (
             <p className="duty-screen__empty">还没派发过任务。对我说“帮我做…”，我会挑合适的执行者。</p>
           ) : null}
           {active.map((view) => (
-            <LedgerCard key={view.id} view={view} onOpen={openAgentById} />
+            <LedgerCard
+              key={view.id}
+              view={view}
+              expanded={expandedId === view.id}
+              onToggle={() => setExpandedId((prev) => (prev === view.id ? null : view.id))}
+              onOpenAgent={openAgentById}
+              onOpenSession={openSession}
+            />
           ))}
-          {closed.length > 0 ? <h4 className="duty-screen__sub-title">最近交付</h4> : null}
+          {closed.length > 0 ? <h4 className="duty-screen__sub-title">已交付 {closed.length}</h4> : null}
           {closed.map((view) => (
-            <LedgerCard key={view.id} view={view} onOpen={openAgentById} />
+            <LedgerCard
+              key={view.id}
+              view={view}
+              expanded={expandedId === view.id}
+              onToggle={() => setExpandedId((prev) => (prev === view.id ? null : view.id))}
+              onOpenAgent={openAgentById}
+              onOpenSession={openSession}
+            />
           ))}
         </aside>
       </div>

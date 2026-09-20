@@ -7,7 +7,7 @@ import { isDispatcherAgent } from "../agent-registry.js";
 import type { AgentStateMachine, AgentStateEvent, ContextStatsSnake } from "../agent-state.js";
 import type { WorkspaceManager } from "../workspace-manager.js";
 import type { AgentRecord, ChatResponse, StreamEvent } from "../types.js";
-import { DISPATCH_MAX_CONTINUE, type DispatchRecord, type DispatchTrigger, type DispatchVerdict } from "../dispatch-ledger.js";
+import { DISPATCH_MAX_CONTINUE, LEDGER_TASK_MAX_CHARS, type DispatchRecord, type DispatchTrigger, type DispatchVerdict } from "../dispatch-ledger.js";
 import type { DispatchBridgeInput } from "../dispatch-bridge.js";
 import type { RouteContext } from "./route-context.js";
 import { ensureAgents } from "./route-context.js";
@@ -253,7 +253,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     dispatcherSessionId: caller.sessionId,
     targetAgentId: target.id,
     targetSessionId: target.sessionId,
-    task: task.slice(0, 500),
+    task: task.slice(0, LEDGER_TASK_MAX_CHARS),
     linkedSessions: extractSessionRefs(task),
   });
 

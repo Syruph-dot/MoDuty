@@ -9,8 +9,11 @@ import type { DispatchEntryState, DispatchRecord, DispatchTrigger, DispatchVerdi
  * - 排序固定为「等判读 → 进行中 → 已交付」，同组按最近动作时间倒序。
  */
 
-/** 任务书预览长度（字符） */
+/** 任务书预览长度（字符）：**已不再用于截断**，仅作为旧接口的兼容导出保留 */
 export const TASK_PREVIEW_CHARS = 80;
+
+/** 台账视图里任务书的安全上限（与写入上限一致；正常情况不会触发） */
+export const TASK_MAX_CHARS = 4000;
 
 /** 台账状态的展示优先级（越小越靠前） */
 export const DISPATCH_STATE_ORDER: Record<DispatchEntryState, number> = {
@@ -38,7 +41,7 @@ export interface DispatchView {
   last_verdict: DispatchVerdict | "deliver_forced" | null;
   stalled_at: string | null;
   dispatched_at: string;
-  /** 任务书预览（超长时截断并置 task_truncated） */
+  /** 任务书（完整；仅在超过安全上限时置 task_truncated） */
   task: string;
   task_truncated: boolean;
   linked_sessions: string[];
@@ -53,10 +56,10 @@ export interface DispatchTargetRecord {
   phase?: string | null;
 }
 
-/** 截断到最多 max 个字符（中文按字符计，尾部加省略号） */
-export function truncateTask(task: string, max: number = TASK_PREVIEW_CHARS): { text: string; truncated: boolean } {
+/** 截断到最多 max 个字符（中文按字符计，尾部加省略号）；max 为 null/Infinity 时不截断 */
+export function truncateTask(task: string, max: number): { text: string; truncated: boolean } {
   const text = task ?? "";
-  if (text.length <= max) return { text, truncated: false };
+  if (!Number.isFinite(max) || text.length <= max) return { text, truncated: false };
   return { text: `${text.slice(0, Math.max(0, max - 1))}…`, truncated: true };
 }
 
@@ -65,7 +68,8 @@ export function toDispatchView(
   target: DispatchTargetRecord | null,
   opts: { taskChars?: number } = {},
 ): DispatchView {
-  const preview = truncateTask(record.task, opts.taskChars ?? TASK_PREVIEW_CHARS);
+  // 默认返回完整任务书（值日生页的台账卡片要能展开看全文），只在极端长度上做安全截断
+  const preview = truncateTask(record.task, opts.taskChars ?? TASK_MAX_CHARS);
   return {
     id: record.id,
     state: record.state,

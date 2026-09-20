@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -7,6 +7,7 @@ import { readJsonList, writeJsonList } from "./json-file.js";
 import { atomicWriteJson } from "./write-queue.js";
 import { ACTIVE_CONFIDENCE, consolidateEntry, newMemoryId, type MemoryEntryLike, type MemoryStatus, type MemoryType, type TypedMemoryInput } from "./memory-extract.js";
 import { recall, type RecallOptions, type ScoredMemory } from "./memory-retrieval.js";
+import { INDEX_PREFILTER_MIN_ENTRIES, IndexStore } from "./index-store.js";
 import type { JudgmentRecord, OutputRecord } from "./types.js";
 
 const CONTEXT_WINDOW_CHARS = 20;
@@ -65,8 +66,16 @@ const MIGRATION_MARKER = ".lt-migrated.json";
  * 原文件保留不动（可回滚），迁移完成后写 `<memoryDir>/memory/lt/.lt-migrated.json` 标记。
  */
 export class MemoryStore {
-  constructor(readonly memoryDir: string) { this.memoryDir = path.resolve(memoryDir); }
+  constructor(readonly memoryDir: string, options: { index?: IndexStore; indexPrefilterMinEntries?: number } = {}) {
+    this.memoryDir = path.resolve(memoryDir);
+    this.index = options.index ?? null;
+    this.indexPrefilterMinEntries = options.indexPrefilterMinEntries ?? INDEX_PREFILTER_MIN_ENTRIES;
+  }
   private migrationChecked = false;
+  /** 索引层（P7，可选）：JSON 仍是事实源，索引只承担查询与全文检索，不可用时静默降级 */
+  readonly index: IndexStore | null;
+  /** 语料少于该条数时不走索引预筛（内存扫描更快也更准） */
+  private readonly indexPrefilterMinEntries: number;
 
   outputsPath() { return path.join(this.memoryDir, ".outputs", "outputs.json"); }
   annotationLedgerPath() { return path.join(this.memoryDir, ".annotations", "ledger.json"); }
@@ -177,7 +186,17 @@ export class MemoryStore {
         all.push(entry);
       }
     }
-    const picked = recall(all, topic, options);
+
+    // 语料量大时（P7）：先用索引召回候选（FTS 对 ≥3 字有效、短查询回落 LIKE），再做混合打分；
+    // 索引不可用或召回为空 → 退回全量扫描，行为与 P4 一致。
+    let candidates = all;
+    if (this.index && all.length >= this.indexPrefilterMinEntries && await this.index.open()) {
+      const hits = await this.index.searchMemories(topic, { limit: 200 });
+      const ids = new Set(hits.map((hit) => hit.id));
+      const filtered = ids.size > 0 ? all.filter((entry) => ids.has(entry.id)) : [];
+      if (filtered.length > 0) candidates = filtered;
+    }
+    const picked = recall(candidates, topic, options);
 
     // 访问统计回写（按分区聚合，避免同一分区反复写盘）
     const byScope = new Map<string, { ref: MemoryScopeRef; ids: Set<string> }>();
@@ -250,6 +269,64 @@ export class MemoryStore {
     await this.writeScope(ref, entries);
   }
 
+  /**
+   * 把某个作用域的条目同步到索引层（P7）。索引失败不影响主流程——
+   * 它随时可以从 JSON 重建，所以这里只记日志不抛错。
+   */
+  async syncIndex(ref: MemoryScopeRef): Promise<number> {
+    if (!this.index) return 0;
+    if (!(await this.index.open())) return 0;
+    const entries = await this.readScope(ref);
+    return await this.index.upsertMemories(entries.map((entry) => ({
+      id: entry.id,
+      scope: entry.ownerScope,
+      scopeId: entry.scopeId,
+      type: entry.type,
+      status: entry.status,
+      confidence: entry.confidence,
+      content: entry.content,
+      sourceRefs: entry.sourceRefs,
+      createdAt: entry.createdAt,
+      updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : undefined,
+    })));
+  }
+
+  /** 全量重建索引（JSON → SQLite），用于换库/损坏/版本升级后 */
+  async rebuildIndex(): Promise<{ available: boolean; written: number }> {
+    if (!this.index) return { available: false, written: 0 };
+    if (!(await this.index.open())) return { available: false, written: 0 };
+    const refs: MemoryScopeRef[] = [USER_SCOPE, PROJECT_SCOPE];
+    const scopesDir = path.join(this.longTermRoot());
+    const scopeNames = await readdir(scopesDir, { withFileTypes: true }).catch(() => []);
+    for (const scopeDir of scopeNames.filter((entry) => entry.isDirectory())) {
+      const scope = scopeDir.name as MemoryScope;
+      const files = await readdir(path.join(scopesDir, scopeDir.name), { withFileTypes: true }).catch(() => []);
+      for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))) {
+        refs.push({ scope, scopeId: file.name.replace(/\.json$/u, "") });
+      }
+    }
+    const seen = new Set<string>();
+    const payload: Array<Parameters<IndexStore["upsertMemories"]>[0][number]> = [];
+    for (const ref of refs) {
+      for (const entry of await this.readScope(ref)) {
+        if (seen.has(entry.id)) continue;
+        seen.add(entry.id);
+        payload.push({
+          id: entry.id,
+          scope: entry.ownerScope,
+          scopeId: entry.scopeId,
+          type: entry.type,
+          status: entry.status,
+          confidence: entry.confidence,
+          content: entry.content,
+          sourceRefs: entry.sourceRefs,
+          createdAt: entry.createdAt,
+        });
+      }
+    }
+    return await this.index.rebuildMemories(payload);
+  }
+
   /** 幂等迁移旧版全局长期记忆到 user 作用域；返回迁移条数 */
   async migrateLegacy(): Promise<number> {
     if (this.migrationChecked) return 0;
@@ -297,6 +374,24 @@ export class MemoryStore {
 
   private async writeScope(ref: MemoryScopeRef, records: LongTermMemoryEntry[]): Promise<void> {
     await atomicWriteJson(this.longTermPath(ref), records);
+    // 写后同步索引（P7）：失败只记日志，索引可随时从 JSON 重建
+    if (this.index) {
+      try {
+        await this.index.open();
+        await this.index.upsertMemories(records.map((entry) => ({
+          id: entry.id,
+          scope: ref.scope,
+          scopeId: ref.scopeId,
+          type: entry.type,
+          status: entry.status,
+          confidence: entry.confidence,
+          content: entry.content,
+          sourceRefs: entry.sourceRefs,
+          createdAt: entry.createdAt,
+          updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : undefined,
+        })));
+      } catch { /* 索引写失败不影响 JSON 事实源 */ }
+    }
   }
 }
 

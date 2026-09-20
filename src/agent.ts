@@ -4,6 +4,7 @@ import path from "node:path";
 import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore, USER_SCOPE, PROJECT_SCOPE, type MemoryScopeRef } from "./memory.js";
+import { IndexStore } from "./index-store.js";
 import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
@@ -112,7 +113,7 @@ export class MomokaAgentCore implements MomokaAgent {
     this.projectRoot = resolveProjectRoot(options.projectRoot);
     initSettings(this.projectRoot);
     const paths = defaultPaths(this.projectRoot);
-    this.memoryStore = new MemoryStore(paths.dataDir);
+    this.memoryStore = new MemoryStore(paths.dataDir, { index: new IndexStore(paths.dataDir) });
     this.plans = new PlanStore(paths.dataDir);
     this.sessionManager = new SessionManager(paths.dataDir);
     this.workspaces = options.workspaceManager ?? new WorkspaceManager();

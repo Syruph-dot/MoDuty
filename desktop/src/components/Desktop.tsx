@@ -257,6 +257,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   const [bounds, setBounds] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
+
   // 橡皮筋越界（混合版）：
   // - 内容层（.tile-wall__content）在停靠点之外由 overscrollRef 驱动 translateX 真实位移
   // - 第一段：raw 线性换成真实位移（拉一小段额外距离）；到 OVERSCROLL_FREE_PX 碰壁，位移锁死
@@ -893,10 +894,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     [paintOverscroll, releaseOverscroll],
   );
 
-  // 滚轮/触控板平移桌面（上下、左右皆可）；Ctrl+滚轮 → 缩放（仅 free 模式；open 模式不拦截窗口滚动）
-  // 方向约定：滚动方向与桌面移动方向相反——
-  //   下滚 / 向右滚 → scrollLeft 增大（桌面向左移）；上滚 / 向左滚 → scrollLeft 减小（桌面向右移）。
-  // 对角线手势取主导轴，避免两轴叠加导致速度翻倍。
+  // 滚轮/触控板平移桌面（只认横向分量）；Ctrl+滚轮 → 缩放（仅 free 模式；open 模式不拦截窗口滚动）
+  // 方向约定：横向滚动方向与桌面移动方向相反——
+  //   向右滚 → scrollLeft 增大（桌面向左移）；向左滚 → scrollLeft 减小（桌面向右移）。
+  // 纵向分量（deltaY）不再参与平移：磁贴墙是 overflow-y:hidden 的横向条带，
+  // 上下滚不产生任何位移，也不 preventDefault，直接放行交还默认行为。
   // 范围内自由滚动；贴住停靠点（scrollLeft=0 / maxScroll）后继续往外的量转为橡皮筋越界
   useEffect(() => {
     const el = wallRef.current;
@@ -908,8 +910,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         else if (event.deltaY > 0) zoomOut();
         return;
       }
-      // 横向滚动接入同一平移量：向右滚 = 桌面向左，向左滚 = 桌面向右（与纵向同号，取主导轴）
-      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      // 只取横向分量：上下滚动不再平移桌面（纯纵向滚直接放行，不拦截）
+      const delta = event.deltaX;
+      if (delta === 0) return;
       if (openMode) {
         // T2：草稿纸桌面用容器 scrollLeft 直接平移，不做橡皮筋越界（free 模式的越界弹回逻辑保留在其后）
         event.preventDefault();

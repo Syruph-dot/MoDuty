@@ -6,7 +6,7 @@
   position: relative;
   width: 100%;
   height: 100%;
-  /* 去自由化：横向滚动容器（上滚=左、下滚=右） */
+  /* 去自由化：横向滚动容器（滚轮只认横向分量；上下滚不平移桌面） */
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0;

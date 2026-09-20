@@ -259,13 +259,28 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
 
   if (input.kind === "chat") {
     // 同步派发：等执行者本轮结束（结果给调用者）；台账照常进入判读队列
-    const result = await driveAgentTurn(deps, target, { message: task });
-    const output = result.response.response.trim();
+    const result = await driveAgentTurn(deps, target, { message: task });    const output = result.response.response.trim();
     return {
       ok: true,
       dispatchId: entry.id,
       output: output.slice(0, 4000) || `（执行者无文本输出；台账 ${entry.id} 已进入判读队列）`,
     };
+  }
+
+  // 计划接线（P1）：每次派发追加一条计划步（任务书要点→验收标准、执行者→owner），
+  // 供 P5 客观验收与 P9 DAG 编排挂靠。失败不影响派发主流程。
+  if (input.kind === "dispatch") {
+    try {
+      await deps.agent.plans.appendDispatchStep({
+        dispatchId: entry.id,
+        task,
+        ownerAgentId: target.id,
+        dispatcherId: caller.id,
+        goal: task.split(/\r?\n/u).map((line) => line.trim()).find(Boolean),
+      });
+    } catch (error) {
+      console.error("[plan] 落计划步失败（不阻断派发）:", error);
+    }
   }
 
   // 异步派发：发起即回（懒调度）

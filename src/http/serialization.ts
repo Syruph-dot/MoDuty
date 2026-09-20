@@ -81,6 +81,8 @@ export function sessionToSnake(session: {
   };
 }
 
+import type { PlanRecord, PlanStepRecord } from "../plan-store.js";
+
 export function agentToSnake(record: AgentRecord, session: SessionRecord | null): Record<string, unknown> {
   return {
     id: record.id,
@@ -106,6 +108,58 @@ export function agentToSnake(record: AgentRecord, session: SessionRecord | null)
           last_message_at: session.lastMessageAt,
         }
       : null,
+  };
+}
+
+/** 计划步骤（camel 内存）→ 对外 snake 结构 */
+export function planStepToSnake(step: PlanStepRecord): Record<string, unknown> {
+  return {
+    id: step.id,
+    title: step.title,
+    detail: step.detail ?? null,
+    status: step.status,
+    depends_on: step.dependsOn,
+    owner_agent_id: step.ownerAgentId ?? null,
+    acceptance_criteria: step.acceptanceCriteria,
+    artifacts: step.artifacts,
+    attempts: step.attempts,
+    evidence: step.evidence.map((item) => ({
+      at: item.at,
+      kind: item.kind,
+      summary: item.summary,
+      source_refs: item.sourceRefs ?? [],
+    })),
+    dispatch_ids: step.dispatchIds,
+    created_at: step.createdAt,
+    updated_at: step.updatedAt,
+    started_at: step.startedAt ?? null,
+    finished_at: step.finishedAt ?? null,
+    last_error: step.lastError ?? null,
+  };
+}
+
+/** 计划（camel 内存）→ 对外 snake 结构；progress 是给 UI 直接用的派生进度 */
+export function planToSnake(plan: PlanRecord): Record<string, unknown> {
+  const count = (status: string) => plan.steps.filter((step) => step.status === status).length;
+  return {
+    id: plan.id,
+    goal: plan.goal,
+    status: plan.status,
+    dispatcher_id: plan.dispatcherId ?? null,
+    session_id: plan.sessionId ?? null,
+    created_at: plan.createdAt,
+    updated_at: plan.updatedAt,
+    progress: {
+      total: plan.steps.length,
+      done: count("done"),
+      running: count("running"),
+      ready: count("ready"),
+      blocked: count("blocked"),
+      failed: count("failed"),
+      skipped: count("skipped"),
+      pending: count("pending"),
+    },
+    steps: plan.steps.map(planStepToSnake),
   };
 }
 

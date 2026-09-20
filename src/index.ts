@@ -1,5 +1,15 @@
 export { createMomokaAgent, MomokaAgentCore, MomokaHttpError } from "./agent.js";
 export { MemoryStore } from "./memory.js";
+export { PlanStore, refreshPlan } from "./plan-store.js";
+export type {
+  NewPlanInput,
+  NewPlanStepInput,
+  PlanRecord,
+  PlanStatus,
+  PlanStepEvidence,
+  PlanStepRecord,
+  PlanStepStatus,
+} from "./plan-store.js";
 export { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 export { createMomokaHttpHandler } from "./http.js";
 export { createMomokaServer } from "./server.js";

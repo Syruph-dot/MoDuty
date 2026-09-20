@@ -4,6 +4,7 @@ import path from "node:path";
 import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore } from "./memory.js";
+import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
@@ -95,6 +96,8 @@ const DEFAULT_AGENT_PERSONA = `# 文件助手
 export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
   readonly memoryStore: MemoryStore;
+  /** 计划存储：把「要做什么」持久化（P1） */
+  readonly plans: PlanStore;
   readonly sessionManager: SessionManager;
   readonly workspaces: WorkspaceManager;
   agentRegistry?: AgentRegistry;
@@ -104,6 +107,7 @@ export class MomokaAgentCore implements MomokaAgent {
     initSettings(this.projectRoot);
     const paths = defaultPaths(this.projectRoot);
     this.memoryStore = new MemoryStore(paths.dataDir);
+    this.plans = new PlanStore(paths.dataDir);
     this.sessionManager = new SessionManager(paths.dataDir);
     this.workspaces = options.workspaceManager ?? new WorkspaceManager();
     this.agentRegistry = options.agentRegistry;

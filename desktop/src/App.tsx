@@ -9,6 +9,7 @@ import Desktop from "./components/Desktop";
 import NewAgentDialog from "./components/NewAgentDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 import SettingsScreen from "./components/SettingsScreen";
+import DutyScreen from "./components/widgets/DutyScreen";
 import WallpaperDialog from "./components/WallpaperDialog";
 import WidgetPickerCard from "./components/WidgetPickerCard";
 import RenameWidgetDialog from "./components/RenameWidgetDialog";
@@ -61,6 +62,7 @@ export default function App() {
       <RenameWidgetDialog />
       <ConfirmDialog />
       <SettingsScreen />
+      <DutyScreen />
       <WallpaperDialog />
     </div>
   );

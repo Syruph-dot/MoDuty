@@ -7,7 +7,7 @@ import { useAgentsStore } from "../../state/agentsStore";
 /**
  * 值日生对话内核（从 DutyGirl 的对话框里抽出，供两种壳共用）：
  * - 小对话框（磁贴旁 330px，快捷指令）；
- * - DutyWindow（磁贴背面的大窗口）。
+ * - 值日生页（DutyScreen，整页调度视图）。
  *
  * 两者共用同一份消息状态与同一套 SSE 解析、& 会话候选、&ses_/&tile_ chip 跳转，
  * 避免出现“对话框里有、窗口里没有”的行为差异。

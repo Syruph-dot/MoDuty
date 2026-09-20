@@ -333,20 +333,7 @@
   background: #3d7df0;
 }
 
-/* DutyWindow 覆盖层（值日生完整窗口，portal 到 body） */
-.duty-window-overlay {
-  position: fixed;
-  left: 12vw;
-  right: 12vw;
-  top: 9vh;
-  bottom: 9vh;
-  z-index: 420;
-}
-
-.duty-window-overlay .agent-window {
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 12px;
-}
+/* （已移除）DutyWindow 覆盖层：值日生改为整页视图 DutyScreen，不再用 portal 浮层 */
 
 .agent-window__list {
   flex: 1;
@@ -1526,108 +1513,121 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
-   值日生窗口（DutyWindow）：duty 磁贴的背面，三区布局
-   左 = 立绘 + 待老师拍板；中 = 对话（DutyChatPanel）；右 = 调度台账
+   值日生页（DutyScreen）：与设置页同构的整页视图（z-index 300，左右浮入浮出）
+   上：状态带；下三区 = 立绘 + 待拍板 / 对话 / 调度台账
    ───────────────────────────────────────────────────────────── */
-.duty-window {
-  position: absolute;
+.duty-screen {
+  position: fixed;
   inset: 0;
+  z-index: 300;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  background: linear-gradient(180deg, rgba(16, 24, 42, 0.96), rgba(12, 18, 32, 0.96));
+  overflow: hidden;
+  background: #141b2b;
   color: #e8edf7;
-  font-size: 13px;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  animation: momoka-settings-in 400ms cubic-bezier(0.16, 1, 0.3, 1) 90ms backwards;
 }
 
-/* 展开态允许对话窗口内文本选择（磁贴壳默认 user-select:none 是为拖拽防选） */
-.tile-shell--expanded .duty-window {
-  user-select: text;
+.duty-screen--exit {
+  pointer-events: none;
+  animation: momoka-settings-out 260ms cubic-bezier(0.5, 0, 0.75, 0) forwards;
 }
 
-.duty-window__header {
+.duty-screen__top {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+  gap: 12px;
+  padding: 14px 20px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  cursor: grab;
 }
 
-.duty-window__header:active {
-  cursor: grabbing;
-}
-
-.duty-window__title {
-  font-size: 15px;
+.duty-screen__title {
+  font-size: 17px;
   font-weight: 300;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
-.duty-window__state {
+.duty-screen__state {
   font-size: 12px;
   color: rgba(232, 237, 247, 0.55);
 }
 
-.duty-window__stats {
+.duty-screen__stats {
   margin-left: auto;
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 
-.duty-window__stat {
-  padding: 2px 8px;
+.duty-screen__stat {
+  padding: 3px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   border: 1px solid transparent;
   white-space: nowrap;
 }
 
-.duty-window__stat--tracking {
+.duty-screen__stat--tracking {
   color: rgb(150, 210, 255);
   background: rgba(38, 86, 120, 0.5);
   border-color: rgba(96, 200, 255, 0.35);
 }
 
-.duty-window__stat--awaiting {
+.duty-screen__stat--awaiting {
   color: rgb(250, 208, 122);
   background: rgba(112, 82, 30, 0.5);
   border-color: rgba(240, 180, 90, 0.4);
 }
 
-.duty-window__stat--done {
+.duty-screen__stat--done {
   color: rgb(126, 231, 165);
   background: rgba(38, 92, 60, 0.5);
   border-color: rgba(94, 196, 130, 0.4);
 }
 
-.duty-window__body {
+.duty-screen__back {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: rgba(232, 237, 247, 0.8);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.duty-screen__back:hover {
+  border-color: rgba(96, 200, 255, 0.5);
+  color: #fff;
+}
+
+.duty-screen__body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
 }
 
-.duty-window__aside {
+.duty-screen__aside {
   flex: none;
-  width: 34%;
-  min-width: 230px;
-  max-width: 380px;
-  padding: 12px;
+  width: 320px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   overflow-y: auto;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.duty-window__portrait {
+.duty-screen__portrait {
   flex: none;
   width: 100%;
   aspect-ratio: 3 / 4;
 }
 
-.duty-window__chat {
+.duty-screen__chat {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -1635,18 +1635,17 @@
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.duty-window__ledger {
+.duty-screen__ledger {
   flex: none;
-  width: 300px;
-  min-width: 250px;
-  padding: 12px;
+  width: 360px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   overflow-y: auto;
 }
 
-.duty-window__section-title {
+.duty-screen__section-title {
   margin: 0;
   font-size: 12px;
   font-weight: 700;
@@ -1657,15 +1656,15 @@
   gap: 6px;
 }
 
-.duty-window__sub-title {
-  margin: 4px 0 0;
+.duty-screen__sub-title {
+  margin: 6px 0 0;
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0.06em;
   color: rgba(232, 237, 247, 0.45);
 }
 
-.duty-window__section-count {
+.duty-screen__section-count {
   padding: 1px 6px;
   border-radius: 999px;
   font-size: 11px;
@@ -1674,24 +1673,42 @@
   background: rgba(38, 86, 120, 0.5);
 }
 
-.duty-window__empty {
+.duty-screen__empty {
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
   color: rgba(232, 237, 247, 0.5);
 }
 
-.duty-window__error {
+.duty-screen__error {
   margin: 0;
   font-size: 12px;
+  line-height: 1.6;
   color: rgb(240, 140, 140);
 }
 
-.duty-window__question {
+.duty-screen__hint {
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.duty-screen__question {
   border: 1px solid rgba(96, 200, 255, 0.35);
   border-radius: 12px;
   background: rgba(20, 32, 54, 0.7);
   padding: 8px;
+}
+
+/* 整页时给对话气泡与输入区更宽的呼吸空间 */
+.duty-screen .duty-dialog__list {
+  padding: 16px 22px;
+}
+
+.duty-screen .duty-dialog__msg {
+  max-width: 70%;
+}
+
+.duty-screen .duty-dialog__composer {
+  padding: 12px 22px;
 }
 
 /* 对话面板：两种壳共用（对话框里撑满剩余高度，窗口里撑满整栏） */

@@ -4,7 +4,6 @@ import AgentTile from "./AgentTile";
 import AgentWindow from "./AgentWindow";
 import BrowserTile from "./BrowserTile";
 import BrowserWindow from "./BrowserWindow";
-import DutyWindow from "./widgets/DutyWindow";
 import GhostPreview from "./GhostPreview";
 import GroupedWall from "./GroupedWall";
 import LeftSidePanel from "./LeftSidePanel";
@@ -13,7 +12,6 @@ import TileShell from "./TileShell";
 import { AnimationProvider, useTileAnimation } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
 import { computeBands, resolveDropIntent, UNGROUPED_BAND_ID, type Band, type DropIntent } from "../lib/bandLayout";
-import { resolveDutyAgentId } from "../lib/dutyAgent";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
@@ -50,15 +48,18 @@ const EMPTY_TILE: TileGeometry = { x: 0, y: 0, w: 0, h: 0 };
  */
 function WallEnterReplay() {
   const { replayEnter } = useTileAnimation();
+  // 整页视图（设置页 / 值日生页）占屏时磁贴墙先退场，返回桌面时重播入场
   const settingsOpen = useDialogStore((state) => state.settingsOpen);
-  const prevOpen = useRef(settingsOpen);
+  const dutyPageOpen = useDialogStore((state) => state.dutyOpen);
+  const pageOpen = settingsOpen || dutyPageOpen;
+  const prevOpen = useRef(pageOpen);
   useLayoutEffect(() => {
-    if (prevOpen.current && !settingsOpen) {
-      // 设置页刚关闭：重播入场
+    if (prevOpen.current && !pageOpen) {
+      // 整页视图刚关闭：重播入场
       replayEnter();
     }
-    prevOpen.current = settingsOpen;
-  }, [settingsOpen, replayEnter]);
+    prevOpen.current = pageOpen;
+  }, [pageOpen, replayEnter]);
   return null;
 }
 
@@ -119,6 +120,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const openWallpaper = useDialogStore((state) => state.openWallpaper);
   const openSettings = useDialogStore((state) => state.openSettings);
   const settingsOpen = useDialogStore((state) => state.settingsOpen);
+  const dutyPageOpen = useDialogStore((state) => state.dutyOpen);
+  /** 整页视图（设置 / 值日生页）占屏：磁贴墙退场、左栏不显示 */
+  const pageOpen = settingsOpen || dutyPageOpen;
   const openRenameWidget = useDialogStore((state) => state.openRenameWidget);
   const snapGuides = useSnapGuideStore((state) => state.guides);
   const zoom = useZoomStore((state) => state.level);
@@ -163,11 +167,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
-
-  /** 值日生 agent id 与“窗口是否已打开”：值日生窗口不走 widget 自己的 id，
-   *  而是走它对应的 dispatcher Agent（openAgent → 舞台卡片 → back 面换 DutyWindow）。 */
-  const dutyAgentId = useMemo(() => resolveDutyAgentId(agents), [agents]);
-  const dutyOpen = !!dutyAgentId && openAgentIds.includes(dutyAgentId);
 
   /**
    * 最近访问时间（epoch ms）：agent 用后端 last_active_at，browser 用 lastActiveAt。
@@ -1187,7 +1186,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   return (
-    <div className={`tile-wall${openMode ? " tile-wall--open" : ""}${settingsOpen ? " tile-wall--settings-leaving" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
+    <div className={`tile-wall${openMode ? " tile-wall--open" : ""}${pageOpen ? " tile-wall--settings-leaving" : ""}`} ref={wallRef} onContextMenu={onContextMenu}>
       {/* 橡皮筋越界 Glow：仅 free 模式；透明度由 overscrollRef 实时驱动。
           线性渐变条贴边铺开（碰壁后继续拉 → 由淡变实），无形状、无模糊 */}
       {!openMode && !groupedMode ? (
@@ -1353,13 +1352,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             bandX={bandX}
             canvasGhost={canvasGhost}
             flipped={isOpen}
-            back={isOpen ? (
-              agent.kind === "dispatcher" ? (
-                <DutyWindow agent={agent} onClose={() => closeAgent(agent.id)} />
-              ) : (
-                <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} />
-              )
-            ) : undefined}
+            back={isOpen ? <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} /> : undefined}
             onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
             onCommit={(next) => handleTileCommit(agent.id, next)}
             dropTarget={dropHint?.tileId === agent.id}
@@ -1453,8 +1446,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       {/* Widget 磁贴：并入未分组带（不再固定进系统组），可自由排布 */}
       {widgets.map((widget) => {
         if (groupedMode) return null; // 分组视图仅展示 Agent 分组
-        // 值日生窗口打开时，隐藏墙面上的值日生磁贴（同一角色的两种形态，不同时出现，也避免两份 Spine 渲染）
-        if (widget.kind === "duty" && dutyOpen) return null;
         const def = getWidgetDef(widget.kind);
         if (!def) return null;
         // 统一事实源：所属带（用户组/未分组带）的局部网格；widget 入 hydration 后必有 tile，无 1×1 fallback
@@ -1523,7 +1514,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       {/* Win8 左右栏：右缘 45px 模态切换 + 左缘 240px hover 滑出分类卡片
           全屏设置页打开时停用左栏（其左缘热区会干扰设置页左侧导航），右栏保留 */}
       <RightCharm />
-      {!settingsOpen ? <LeftSidePanel /> : null}
+      {!pageOpen ? <LeftSidePanel /> : null}
 
       {/* 值日生判读上报（A6）：右下角 toast */}
       <VerdictToasts />

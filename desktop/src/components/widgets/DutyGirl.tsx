@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { createDutyAgent, resolveDutyAgentId } from "../../lib/dutyAgent";
+import { useDialogStore } from "../../state/dialogStore";
 import { useAgentsStore } from "../../state/agentsStore";
 import { DutyChatPanel, useDutyChat } from "./DutyChat";
 import DutyPortrait from "./DutyPortrait";
@@ -11,10 +12,9 @@ import DutyPortrait from "./DutyPortrait";
  *
  * 两个入口分工：
  * - 点立绘（上方 2/5 留在 DutyPortrait 里做摸头）→ 磁贴旁 330px 小对话框：一句话快捷指挥；
- * - 对话框里的「窗口 ↗」→ 打开值日生窗口（DutyWindow，走磁贴墙打开态：
- *   卡片进舞台、打开即居中、可拖、拖入左坞收起）。
+ * - 对话框里的「值日生页 ↗」→ 打开整页调度视图（DutyScreen：台账 / 待拍板 / 对话）。
  *
- * 对话框与窗口共用 DutyChat 的同一份消息状态与 SSE 逻辑。
+ * 对话框与整页共用 DutyChat 的同一份消息状态与 SSE 逻辑。
  */
 
 export default function DutyGirl() {
@@ -24,7 +24,7 @@ export default function DutyGirl() {
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const agents = useAgentsStore((state) => state.agents);
-  const openAgentById = useAgentsStore((state) => state.openAgent);
+  const openDuty = useDialogStore((state) => state.openDuty);
   const chat = useDutyChat(agentId);
 
   /*
@@ -91,12 +91,12 @@ export default function DutyGirl() {
     });
   }, [chat]);
 
-  /** 展开成值日生窗口：交给磁贴墙打开态（卡片进舞台、打开即居中） */
+  /** 展开成值日生页（整页视图，与设置页同构） */
   const openWindow = useCallback(() => {
     setOpen(false);
     setDialogPos(null);
-    if (agentId) openAgentById(agentId);
-  }, [agentId, openAgentById]);
+    openDuty();
+  }, [openDuty]);
 
   const dialog =
     open && dialogPos
@@ -122,11 +122,11 @@ export default function DutyGirl() {
                   type="button"
                   className="duty-dialog__close"
                   aria-label="打开完整窗口"
-                  title="打开值日生窗口（调度台账 / 待拍板 / 对话）"
+                  title="打开值日生页（调度台账 / 待拍板 / 对话）"
                   disabled={!agentId}
                   onClick={openWindow}
                 >
-                  窗口 ↗
+                  值日生页 ↗
                 </button>
                 <button type="button" className="duty-dialog__close" aria-label="关闭" onClick={toggle}>
                   ×

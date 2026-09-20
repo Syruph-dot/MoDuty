@@ -660,7 +660,8 @@ export const TOOL_SPECS = [
     function: {
       name: "ask_question",
       description: "向桌面用户发起结构化提问（选择题）。参数 questions 为问题数组（一次最多 6 题）：每题包含 prompt（题干）与 options（选项，2-8 个）。桌面会把问题渲染成单选卡片，最后一项固定为“自定义”输入，用户可逐题作答后提交；你的本次工具调用会返回 pending 等待，用户提交答案后系统会自动把答案写回会话并让你继续。用于需要用户明确选择/确认的场景（如复用哪个会话、选择方案）。不要用它问可以自行检索/推断的问题。" +
-        "确认即执行：复用确认类提问应携带可选 dispatch 载荷 { targetId, task, newName }——老师选「复用」→ 系统自动派发任务书到 targetId；选「新建」→ 系统按 newName 建执行者并派发；你无需再调用 agent dispatch。",
+        "确认即执行：复用确认类提问应携带可选 dispatch 载荷 { targetId, task, newName }——老师选「复用」→ 系统自动派发任务书到 targetId；选「新建」→ 系统按 newName 建执行者并派发；你无需再调用 agent dispatch。" +
+        "禁止用于请求权限或审批（例：是否允许我访问某个路径）：跨工作区/敏感操作直接真实调用工具，需要审批时系统会自行弹出审批面板；用本工具代问审批会让任务无谓阻塞。",
       parameters: {
         type: "object",
         properties: {

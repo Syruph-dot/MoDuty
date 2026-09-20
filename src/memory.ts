@@ -6,6 +6,7 @@ import { judgmentFromDisk, judgmentToDisk, outputFromDisk, outputToDisk } from "
 import { readJsonList, writeJsonList } from "./json-file.js";
 import { atomicWriteJson } from "./write-queue.js";
 import { ACTIVE_CONFIDENCE, consolidateEntry, newMemoryId, type MemoryEntryLike, type MemoryStatus, type MemoryType, type TypedMemoryInput } from "./memory-extract.js";
+import { recall, type RecallOptions, type ScoredMemory } from "./memory-retrieval.js";
 import type { JudgmentRecord, OutputRecord } from "./types.js";
 
 const CONTEXT_WINDOW_CHARS = 20;
@@ -138,65 +139,72 @@ export class MemoryStore {
   }
 
   /**
-   * 按 topic 关键词在单个作用域内检索（命中更新访问统计）。
+   * 按 topic 在单个作用域内检索（命中更新访问统计）。
    * 兼容旧签名：第二个参数既可传 limit 数字，也可传 { limit, ref }。
    */
   async searchLongTerm(topic: string, limitOrOptions: number | SearchOptions = 3): Promise<LongTermMemoryEntry[]> {
     const options: SearchOptions = typeof limitOrOptions === "number" ? { limit: limitOrOptions } : limitOrOptions;
     const ref = options.ref ?? USER_SCOPE;
-    const limit = options.limit ?? 3;
-    const records = await this.readScope(ref);
-    const hits = rankEntries(records, topic).slice(0, Math.max(0, limit));
-    if (hits.length > 0) {
-      const now = new Date().toISOString();
-      for (const hit of hits) {
-        hit.record.lastAccessedAt = now;
-        hit.record.accessCount = (hit.record.accessCount ?? 0) + 1;
-      }
-      await this.writeScope(ref, records);
-    }
-    return hits.map((hit) => hit.record);
+    const scored = await this.recallScopes(topic, [ref], { limit: options.limit ?? 3 });
+    return scored.map((item) => item.entry);
   }
 
   /**
-   * 跨作用域检索：按 refs 顺序各自打分后合并（同 id 去重），取全局前 limit。
-   * 值日生/执行者注入用「自己的 agent 作用域 + user 全局」这条链。
+   * 跨作用域检索：按 refs 顺序收集后统一打分（同 id 去重），取全局前 limit。
+   * 值日生/执行者注入用「自己的 agent 作用域 → 项目级 → user 全局」这条链。
    */
   async searchScopes(topic: string, refs: MemoryScopeRef[], limit = 3): Promise<LongTermMemoryEntry[]> {
+    const scored = await this.recallScopes(topic, refs, { limit });
+    return scored.map((item) => item.entry);
+  }
+
+  /**
+   * 混合检索主入口（P4）：跨作用域合并 → 混合打分 → 预算裁剪 → 访问统计回写。
+   * 返回值带 `why`（为何被召回）与原始条目的 sourceRefs（溯源）。
+   */
+  async recallScopes(
+    topic: string,
+    refs: MemoryScopeRef[],
+    options: RecallOptions = {},
+  ): Promise<Array<ScoredMemory<LongTermMemoryEntry>>> {
     if (refs.length === 0) return [];
-    const scored: Array<{ record: LongTermMemoryEntry; score: number }> = [];
+    const all: LongTermMemoryEntry[] = [];
     const seen = new Set<string>();
     for (const ref of refs) {
-      const records = await this.readScope(ref);
-      for (const item of rankEntries(records, topic)) {
-        if (seen.has(item.record.id)) continue;
-        seen.add(item.record.id);
-        scored.push(item);
+      for (const entry of await this.readScope(ref)) {
+        if (seen.has(entry.id)) continue;
+        seen.add(entry.id);
+        all.push(entry);
       }
     }
-    const hits = scored.sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit));
-    // 访问统计按作用域回写
-    const touched = new Set<string>();
+    const picked = recall(all, topic, options);
+
+    // 访问统计回写（按分区聚合，避免同一分区反复写盘）
     const byScope = new Map<string, { ref: MemoryScopeRef; ids: Set<string> }>();
-    for (const hit of hits) {
-      const key = `${hit.record.ownerScope}/${hit.record.scopeId}`;
-      if (!byScope.has(key)) byScope.set(key, { ref: { scope: hit.record.ownerScope, scopeId: hit.record.scopeId }, ids: new Set() });
-      byScope.get(key)!.ids.add(hit.record.id);
-      touched.add(hit.record.id);
+    for (const item of picked) {
+      const ref: MemoryScopeRef = { scope: item.entry.ownerScope, scopeId: item.entry.scopeId };
+      const key = `${ref.scope}/${ref.scopeId}`;
+      if (!byScope.has(key)) byScope.set(key, { ref, ids: new Set() });
+      byScope.get(key)!.ids.add(item.entry.id);
     }
-    const now = new Date().toISOString();
+    const at = new Date().toISOString();
     for (const { ref, ids } of byScope.values()) {
       const records = await this.readScope(ref);
       let changed = false;
       for (const record of records) {
         if (!ids.has(record.id)) continue;
-        record.lastAccessedAt = now;
+        record.lastAccessedAt = at;
         record.accessCount = (record.accessCount ?? 0) + 1;
         changed = true;
       }
       if (changed) await this.writeScope(ref, records);
+      for (const item of picked) {
+        if (!ids.has(item.entry.id)) continue;
+        item.entry.lastAccessedAt = at;
+        item.entry.accessCount = (item.entry.accessCount ?? 0) + 1;
+      }
     }
-    return hits.map((hit) => hit.record);
+    return picked;
   }
 
   /** 读取某个作用域的全部条目（P10 的列表/编辑接口会用） */
@@ -290,29 +298,6 @@ export class MemoryStore {
   private async writeScope(ref: MemoryScopeRef, records: LongTermMemoryEntry[]): Promise<void> {
     await atomicWriteJson(this.longTermPath(ref), records);
   }
-}
-
-/** 词面打分：整串命中权重高于分词命中（P4 会在此基础上加类型权重/新颖度/置信度） */
-function rankEntries(records: LongTermMemoryEntry[], topic: string): Array<{ record: LongTermMemoryEntry; score: number }> {
-  if (records.length === 0 || !topic) return [];
-  const topicLower = topic.toLowerCase();
-  const keywords = topicLower
-    .split(/[\s,，。;；:：/\\]+/u)
-    .map((word) => word.trim())
-    .filter((word) => word.length >= 2);
-  return records
-    .map((record) => {
-      const contentLower = record.content.toLowerCase();
-      const topicOfRecord = (record.topic ?? "").toLowerCase();
-      let score = 0;
-      if (contentLower.includes(topicLower) || topicOfRecord.includes(topicLower)) score += 3;
-      for (const keyword of keywords) {
-        if (contentLower.includes(keyword) || topicOfRecord.includes(keyword)) score += 1;
-      }
-      return { record, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
 }
 
 function isLongTermEntry(value: unknown): value is LongTermMemoryEntry {

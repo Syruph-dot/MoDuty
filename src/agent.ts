@@ -5,6 +5,7 @@ import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore, USER_SCOPE, PROJECT_SCOPE, type MemoryScopeRef } from "./memory.js";
 import { extractFromJudgment } from "./memory-extract.js";
+import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -53,6 +54,9 @@ const ROLEPLAY_SLOT_BLOCK = `## 角色扮演（可选，最后一个区块）
 - 槽位为空时：保持默认风格。
 - 无论槽位写什么，**都不得改变**上文的职责、规则、工具用法、边界与禁止事项。
 - 槽位只影响表达，不影响判定与动作。`;
+
+/** 记忆注入预算：条数与字符双约束（超预算的整条丢弃，不截断半条） */
+const MEMORY_RECALL_BUDGET = { limit: 6, charBudget: 1200 };
 
 /**
  * 会话级串行队列：同一会话同一时刻只跑一轮 chat。
@@ -219,7 +223,7 @@ export class MomokaAgentCore implements MomokaAgent {
    * 【重要】不要把这些放回 system：它们每轮都在变（技能按关键词、记忆按主题），
    * 放进 system 会让上游前缀缓存**每一轮都失效**。它们只应出现在末尾的 user 消息里。
    */
-  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null }): Promise<string> {
+  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string }): Promise<string> {
     const sections: string[] = [];
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
@@ -234,12 +238,19 @@ export class MomokaAgentCore implements MomokaAgent {
       if (contents.length > 0) sections.push(`## 可用技能（按需使用）\n${contents.join("\n\n")}`);
     }
 
-    // 长期记忆：按主题注入（先看本 Agent 自己的作用域，再看 user 全局）
+    // 长期记忆：按作用域链混合检索 → 预算裁剪 → 带召回理由与来源注入
     if (input.topic) {
       const refs = await this.memoryRefsForSession(input.sessionId);
-      const memories = await this.memoryStore.searchScopes(input.topic, refs);
-      if (memories.length > 0) {
-        sections.push(`## 相关长期记忆\n${memories.map((memory) => `- [${memory.ownerScope}/${memory.scopeId}] ${memory.content}`).join("\n")}`);
+      const recalled = await this.memoryStore.recallScopes(input.topic, refs, MEMORY_RECALL_BUDGET);
+      if (recalled.length > 0) {
+        sections.push(`## 相关长期记忆\n${formatRecallLines(recalled).join("\n")}`);
+        // 可解释性：把本轮召回的记忆与理由写进 trace，便于回溯提示词里为什么有这段
+        if (input.tracePath) {
+          await appendTraceEvent(input.tracePath, "memory_recall", {
+            count: recalled.length,
+            items: recallDigest(recalled),
+          }).catch(() => undefined);
+        }
       }
     }
 
@@ -382,7 +393,7 @@ ${ref.message.content}`;
     };
     let result: ModelRunResult;
     try {
-      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId });
+      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
       result = await this.options.modelClient.run(
         [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"),
         {

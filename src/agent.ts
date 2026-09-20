@@ -6,6 +6,7 @@ import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore, USER_SCOPE, PROJECT_SCOPE, type MemoryScopeRef } from "./memory.js";
 import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
+import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -392,25 +393,57 @@ ${ref.message.content}`;
       request.onEvent?.(event);
     };
     let result: ModelRunResult;
+    let retryAttempts = 0;
     try {
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
-      result = await this.options.modelClient.run(
-        [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"),
-        {
-        systemPrompt: await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId }), topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
-        tools: await this.toolsForSession(sessionId),
-        historyMessages,
-        onEvent, signal: request.signal,
-        sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
-        },
-      );
-      // 空响应兜底：上游只回空流且没有任何工具调用（连"干了活"的证据都没有）→ 本轮必然无产出。
-      // 必须当失败：否则状态机会记 completed，值日生判读会拿到"完成"假信号，用户被告知成功。
-      // 注意：有工具调用但空收尾的情况**不在此拦**——那属于"产出是否有效"的判读范畴，
-      // 由收尾链路（dispatch-ledger → 唤醒值日生判读）处理，这里只兜硬失败。
-      if (!result.output.trim() && (result.toolCalls ?? []).length === 0) {
-        await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage, emptyResponse: true });
-        throw new MomokaHttpError(502, "模型返回空响应（上游只回了空流），本轮没有任何产出");
+      const prompt = [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n");
+      const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
+      const tools = await this.toolsForSession(sessionId);
+      // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；
+      // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
+      try {
+        result = await withRetry(
+          async () => {
+            const runResult = await this.options.modelClient.run(prompt, {
+              systemPrompt, topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+              tools,
+              historyMessages,
+              onEvent, signal: request.signal,
+              sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
+            });
+            // 空响应：本轮没有任何产出（连工具调用都没有）→ 当成可重试失败，而不是交给上层记 completed
+            if (!runResult.output.trim() && (runResult.toolCalls ?? []).length === 0) {
+              const empty = new Error("模型返回空响应（上游只回了空流），本轮没有任何产出");
+              empty.name = "EmptyResponseError";
+              throw empty;
+            }
+            return runResult;
+          },
+          {
+            attempts: 3,
+            baseMs: 800,
+            maxMs: 6000,
+            classify: (error: unknown) => {
+              if (error instanceof Error && (error.name === "EmptyResponseError" || /空响应|空流/u.test(error.message))) return "retryable";
+              return classifyRunFailure(error);
+            },
+            onRetry: (info) => {
+              retryAttempts = info.attempt;
+              void appendTraceEvent(tracePath, "run_retry", {
+                attempt: info.attempt,
+                delayMs: info.delayMs,
+                reason: info.error instanceof Error ? info.error.message : String(info.error),
+              });
+            },
+          },
+        );
+      } catch (error) {
+        // 重试耗尽仍为空流：保持原有的 502 语义（上层据此标记 streaming 消息与状态机）
+        if (error instanceof Error && error.name === "EmptyResponseError") {
+          await appendTraceEvent(tracePath, "final_answer", { response: "", emptyResponse: true });
+          throw new MomokaHttpError(502, "模型返回空响应（上游只回了空流），本轮没有任何产出");
+        }
+        throw error;
       }
     } catch (error) {
       // 收尾标记：主动停止→stopped，其他异常→error（原异常继续抛给路由层）
@@ -424,6 +457,18 @@ ${ref.message.content}`;
             ...(isEmptyResponse ? { content: "（本轮无任何输出：上游模型返回空流，已按失败处理）" } : {}),
           })
           .catch(() => undefined);
+      }
+      // 死信（P6）：重试耗尽/硬失败的运行记一封，方便事后查（主动取消不记）
+      const isAbortError = error instanceof Error && error.name === "AbortError";
+      if (!isAbortError) {
+        await appendDeadLetter(workDir ?? this.projectRoot, {
+          runId,
+          ...(sessionId ? { sessionId } : {}),
+          reason: error instanceof MomokaHttpError && error.message.includes("空响应") ? "empty_response" : "run_failed",
+          error: error instanceof Error ? error.message : String(error),
+          attempts: retryAttempts + 1,
+          workDir,
+        }).catch(() => undefined);
       }
       throw error;
     }

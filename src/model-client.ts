@@ -1,6 +1,19 @@
 import { executeToolCall, TOOL_SPECS } from "./tools.js";
 import { findPoolEntry, loadSettings, type ModelPoolEntry } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
+import {
+  DEFAULT_RUN_BUDGET,
+  checkBudget,
+  checkpointPathFor,
+  createCheckpoint,
+  findRecordedResult,
+  markStatus,
+  readCheckpoint,
+  recordToolCall,
+  toolCallKey,
+  writeCheckpoint,
+  type RunBudget,
+} from "./run-checkpoint.js";
 import { normalizeUsage } from "./context-stats.js";
 import type { ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall } from "./types.js";
 
@@ -168,6 +181,8 @@ interface OpenAICompatibleModelClientOptions {
   fetch?: FetchLike;
   /** 工具调用轮数上限 */
   maxToolRounds?: number;
+  /** 运行预算（P6）：轮次 / 工具调用次数 / 墙钟时长；缺省用 DEFAULT_RUN_BUDGET */
+  budget?: Partial<RunBudget>;
   /** 模型调用是否使用 SSE 流式 */
   stream?: boolean;
   /** 单轮模型请求超时（毫秒） */
@@ -234,7 +249,7 @@ const QUESTION_PATTERN = /pending question/i;
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const tier = options.tier ?? "high";
   const fetchImpl = options.fetch ?? fetch;
-  const maxToolRounds = options.maxToolRounds ?? Infinity;
+  const maxToolRounds = options.maxToolRounds ?? DEFAULT_RUN_BUDGET.maxRounds;
   const stream = options.stream ?? false;
   const enableTools = options.tools !== false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
@@ -266,7 +281,23 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
       const signal = mergeSignals([context.signal, AbortSignal.timeout(requestTimeoutMs)]);
       let usagePeak: ModelUsage | undefined;
 
-      for (let round = 0; round <= maxToolRounds; round += 1) {
+      // 耐用执行（P6）：checkpoint 与 trace 同目录；若磁盘上已有同一 runId 的断点，则续用（重试/恢复不重放）
+      const runId = context.runId ?? "run";
+      const checkpointFile = context.tracePath ? checkpointPathFor(context.tracePath) : null;
+      const budget: RunBudget = { ...DEFAULT_RUN_BUDGET, ...(options.budget ?? {}) };
+      let checkpoint = createCheckpoint({
+        runId,
+        ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+        budget,
+      });
+      if (checkpointFile) {
+        const restored = await readCheckpoint(checkpointFile).catch(() => null);
+        if (restored && restored.runId === runId) checkpoint = restored;
+        else await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
+      }
+
+      try {
+        for (let round = 0; round <= maxToolRounds; round += 1) {
         if (signal?.aborted) {
           throw new Error("请求已取消（客户端断开或超时）");
         }
@@ -301,6 +332,8 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           }
         }
         if (!enableTools || roundResult.toolCalls.length === 0) {
+          markStatus(checkpoint, "completed", { round });
+          if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
           return {
             output: roundResult.content,
             toolCalls,
@@ -328,24 +361,44 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           context.onEvent?.({ type: "tool_start", name: tool, args });
         }
 
+        // 预算闸门（P6）：轮次 / 工具调用次数 / 墙钟任一超限就立刻停，不再继续烧 token
+        checkpoint.round = round;
+        const overBudget = checkBudget(checkpoint);
+        if (overBudget.exceeded) {
+          markStatus(checkpoint, "budget_exceeded", { error: overBudget.reason, round });
+          if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
+          throw new Error(overBudget.reason ?? "超出运行预算");
+        }
+
         // 顺序执行需要审批/提问的工具，并行执行其余工具
         for (const requested of toolCallsToExecute) {
           const tool = requested.function.name;
           const args = requested.function.arguments || "{}";
           
-          const result = await executeToolCall(
-            tool,
-            args,
-            context.workDir,
-            context.tracePath,
-            {
-              sessionId: context.sessionId ?? undefined,
-              runId: context.runId,
-            },
-            context.sessionManager,
-            context.agentRegistry,
-          );
-          
+          const key = toolCallKey(runId, round, tool, args);
+          const replayed = findRecordedResult(checkpoint, key);
+          let result: string;
+          if (replayed !== undefined) {
+            // 断点复用（P6）：重试/恢复时命中已记录的调用，不重放副作用
+            result = replayed;
+            await appendTraceEvent(context.tracePath, "tool_replay", { name: tool, key });
+          } else {
+            result = await executeToolCall(
+              tool,
+              args,
+              context.workDir,
+              context.tracePath,
+              {
+                sessionId: context.sessionId ?? undefined,
+                runId: context.runId,
+              },
+              context.sessionManager,
+              context.agentRegistry,
+            );
+            recordToolCall(checkpoint, { key, name: tool, args, result });
+            if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
+          }
+
           await appendTraceEvent(context.tracePath, "tool_result", {
             name: tool,
             result,
@@ -368,9 +421,20 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             content: result,
           });
         }
-      }
+        }
 
-      throw new Error(`模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`);
+        // 循环走完仍未收敛：按轮次预算失败收尾，并落盘断点供恢复
+        markStatus(checkpoint, "budget_exceeded", { error: `模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`, round: maxToolRounds });
+        if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
+        throw new Error(`模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (checkpoint.status === "running") {
+          markStatus(checkpoint, /超出预算|超过最大轮数/u.test(message) ? "budget_exceeded" : "failed", { error: message });
+          if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
+        }
+        throw error;
+      }
     },
   };
 }

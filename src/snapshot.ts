@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { atomicWriteJson, withFileLock } from "./write-queue.js";
+import { findCheckpointByRunId } from "./run-checkpoint.js";
 
 export interface RunSnapshotInput {
   runId: string;
@@ -31,6 +32,18 @@ export interface ResumeSummary {
   restoredApprovals: number;
   workspaceFiles: string[];
   pendingApprovals: number;
+  /**
+   * P6：同一 runId 的执行断点（若存在）。
+   * 有它意味着可以工具调用位置续跑：`model-client` 会按 `runId+轮次+工具名+参数` 的 key 命中已记录结果，
+   * 直接复用而不重放副作用（写文件/跑命令不会再来一次）。
+   */
+  checkpoint?: {
+    file: string;
+    status: string;
+    round: number;
+    recordedToolCalls: number;
+    lastError?: string;
+  };
 }
 
 interface TraceLine {
@@ -200,12 +213,24 @@ export async function resumeRunFromSnapshot(workDir: string, runId: string): Pro
     restoredApprovals = 0;
   }
 
+  const found = await findCheckpointByRunId(workspace, runId).catch(() => null);
   return {
     snapshotDir,
     runId,
     restoredApprovals,
     workspaceFiles: [],
     pendingApprovals: restoredApprovals,
+    ...(found
+      ? {
+          checkpoint: {
+            file: found.file,
+            status: found.checkpoint.status,
+            round: found.checkpoint.round,
+            recordedToolCalls: found.checkpoint.toolCalls.length,
+            ...(found.checkpoint.lastError ? { lastError: found.checkpoint.lastError } : {}),
+          },
+        }
+      : {}),
   };
 }
 

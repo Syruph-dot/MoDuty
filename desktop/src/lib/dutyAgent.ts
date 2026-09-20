@@ -10,20 +10,35 @@ import { awaitApiBase } from "./api";
 export const DUTY_AGENT_NAME = "值日生";
 export const DUTY_AGENT_KEY = "momoka:duty:agentId";
 
-/** 创建锁：多个实例 / StrictMode 双挂载时只发一次创建请求 */
-let dutyCreateLock: Promise<string | null> | null = null;
-
 export function cachedDutyAgentId(): string | null {
   if (typeof localStorage === "undefined") return null;
   return localStorage.getItem(DUTY_AGENT_KEY);
 }
 
-/** 确保值日生 Agent 存在（已缓存直接返回；否则 POST /api/agents 创建并缓存） */
-export function ensureDutyAgentId(): Promise<string | null> {
+/**
+ * 从 Agent 列表里解析值日生 id：kind 标记优先（后端下发）→ localStorage 缓存（需在列表里）→ 名字兜底（旧数据）。
+ * 返回 null 表示还没有值日生（首次运行，或缓存已失效需重建）。
+ *
+ * 注意：缓存必须拿列表校验。否则缓存里存的是已删/旧库的 id 时，界面会“以为有值日生”，
+ * 点了打开却打不开任何卡片（打开的是一个不存在的 agent）。
+ */
+export function resolveDutyAgentId(agents: Array<{ id: string; name: string; kind?: string }>): string | null {
+  const byKind = agents.find((agent) => agent.kind === "dispatcher");
+  if (byKind) return byKind.id;
   const cached = cachedDutyAgentId();
-  if (cached) return Promise.resolve(cached);
-  if (dutyCreateLock) return dutyCreateLock;
-  dutyCreateLock = (async () => {
+  if (cached && agents.some((agent) => agent.id === cached)) return cached;
+  const byName = agents.find((agent) => agent.name === DUTY_AGENT_NAME);
+  return byName?.id ?? null;
+}
+
+/**
+ * 强制重建值日生（缓存失效或列表里没有 dispatcher 时用）：
+ * 总是 POST 一个新 dispatcher 并覆写缓存。模块级锁避免并发/StrictMode 重复创建。
+ */
+let dutyRecreateLock: Promise<string | null> | null = null;
+export function createDutyAgent(): Promise<string | null> {
+  if (dutyRecreateLock) return dutyRecreateLock;
+  dutyRecreateLock = (async () => {
     try {
       const base = await awaitApiBase();
       const res = await fetch(`${base}/api/agents`, {
@@ -38,21 +53,8 @@ export function ensureDutyAgentId(): Promise<string | null> {
     } catch {
       return null;
     } finally {
-      dutyCreateLock = null;
+      dutyRecreateLock = null;
     }
   })();
-  return dutyCreateLock;
-}
-
-/**
- * 从 Agent 列表里解析值日生 id：kind 标记优先（后端下发）→ localStorage 缓存 → 名字兜底（旧数据）。
- * 返回 null 表示还没有值日生（首次运行且未创建）。
- */
-export function resolveDutyAgentId(agents: Array<{ id: string; name: string; kind?: string }>): string | null {
-  const byKind = agents.find((agent) => agent.kind === "dispatcher");
-  if (byKind) return byKind.id;
-  const cached = cachedDutyAgentId();
-  if (cached && agents.some((agent) => agent.id === cached)) return cached;
-  const byName = agents.find((agent) => agent.name === DUTY_AGENT_NAME);
-  return byName?.id ?? null;
+  return dutyRecreateLock;
 }

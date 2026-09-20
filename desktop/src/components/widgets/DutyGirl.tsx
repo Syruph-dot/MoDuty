@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { cachedDutyAgentId, ensureDutyAgentId } from "../../lib/dutyAgent";
+import { createDutyAgent, resolveDutyAgentId } from "../../lib/dutyAgent";
 import { useAgentsStore } from "../../state/agentsStore";
 import { DutyChatPanel, useDutyChat } from "./DutyChat";
 import DutyPortrait from "./DutyPortrait";
@@ -18,25 +18,35 @@ import DutyPortrait from "./DutyPortrait";
  */
 
 export default function DutyGirl() {
-  const [agentId, setAgentId] = useState<string | null>(() => cachedDutyAgentId());
+  const [agentId, setAgentId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [dialogPos, setDialogPos] = useState<{ left: number; top: number } | null>(null);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const chat = useDutyChat(agentId);
+  const agents = useAgentsStore((state) => state.agents);
   const openAgentById = useAgentsStore((state) => state.openAgent);
+  const chat = useDutyChat(agentId);
 
-  /* 首次挂载：确保调度者 Agent 存在（幂等——localStorage 缓存 + 模块级锁防 StrictMode 双创建） */
+  /*
+   * 值日生 id 以“当前 agent 列表”为权威（kind=dispatcher），localStorage 只做辅助：
+   * 缓存里的 id 必须能在列表里找到才用它。否则（旧库/已删除）走重建，
+   * 避免出现“以为有值日生、点了却打不开任何卡片”。
+   */
+  const resolvedId = useMemo(() => resolveDutyAgentId(agents), [agents]);
   useEffect(() => {
-    if (agentId) return;
+    if (resolvedId) {
+      setAgentId(resolvedId);
+      return;
+    }
+    if (agents.length === 0) return; // 列表未就绪：先不创建，避免多开
     let alive = true;
-    void ensureDutyAgentId().then((id) => {
+    void createDutyAgent().then((id) => {
       if (alive && id) setAgentId(id);
     });
     return () => {
       alive = false;
     };
-  }, [agentId]);
+  }, [resolvedId, agents.length]);
 
   /* 对话框定位：贴磁贴右缘；视口放不下则放左缘。滚动/缩放时跟随。 */
   useEffect(() => {

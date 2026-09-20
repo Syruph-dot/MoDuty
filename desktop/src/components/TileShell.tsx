@@ -539,7 +539,11 @@ export default function TileShell({
     registerTile(id, geometry, false);
   }, [id, geometry, registerTile]);
 
-  const animStyle = getTileAnimationStyle?.(id) ?? null;
+  // 墙的入场/退场动画只服务“磁贴墙上的磁贴”：
+  // 展开态窗口（mode="expanded"）是“已经打开”的卡片，它靠翻转 + 几何过渡出现，
+  // 不能等墙的扫描线扫到（否则首次挂载就恰好是展开态时会被卡在 scale(0)/opacity:0 的入场起点 →
+  // 看起来“点了没反应”）。值日生窗口就是这种情况：它在空闲态被墙治理过滤、不挂载。
+  const animStyle = mode === "expanded" ? null : getTileAnimationStyle?.(id) ?? null;
 
   const onTileContextMenu = (event: React.MouseEvent) => {
     // 展开态（打开的对话窗口）不弹卡片菜单，避免与窗口内交互冲突

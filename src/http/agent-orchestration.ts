@@ -123,6 +123,7 @@ async function persistAgentState(deps: OrchestrationDeps, event: AgentStateEvent
   const updated = await deps.registry.updateAgentState(event.agent_id, event.state, event.phase);
   const payload: AgentStateEvent = {
     ...event,
+    ...(updated?.name ? { name: updated.name } : {}),
     ...(updated?.contextStats ? { context_stats: contextStatsToSnake(updated.contextStats) } : {}),
   };
   deps.broadcaster.broadcast(`data: ${JSON.stringify(payload)}\n\n`);

@@ -85,6 +85,7 @@ export function agentToSnake(record: AgentRecord, session: SessionRecord | null)
   return {
     id: record.id,
     name: record.name,
+    ...(record.autoName ? { auto_name: true } : {}),
     role: record.role,
     ...(record.kind ? { kind: record.kind } : {}),
     ...(record.model ? { model: record.model } : {}),

@@ -13,6 +13,8 @@ export interface AgentStateEvent {
   agent_id: string;
   state: AgentState;
   phase?: AgentPhase;
+  /** 状态广播附带的最新名字（空名字创建的 Agent 首条对话后自动命名时用） */
+  name?: string;
   /** 状态广播附带的最新上下文占用指标（snake 化，磁贴第二页用） */
   context_stats?: ContextStatsSnake;
 }

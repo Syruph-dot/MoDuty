@@ -54,13 +54,11 @@ export async function handleAgentRoutes(
   if (request.method === "POST" && url.pathname === "/api/agents") {
     const runtime = ensureAgents(ctx);
     const body = await readJsonBody(request);
+    // name 可选：留空表示“自动生成”（首条对话后按标题回填）；role 与 workspace_dir 允许空，
+    // 由 registry 补默认 system prompt / 默认 workspace。
     const name = String(body.name ?? "").trim();
     const role = String(body.system ?? body.role ?? "").trim();
     const workspaceDir = String(body.workspace_dir ?? "").trim();
-    // name 必填；role 与 workspace_dir 允许空，由 registry 补默认 system prompt / 默认 workspace。
-    if (!name) {
-      throw new MomokaHttpError(400, "name is required");
-    }
     const kind = body.kind === "dispatcher" || body.kind === "worker" ? (body.kind as "dispatcher" | "worker") : undefined;
     // 值日生唯一化：dispatcher（或重名"值日生"）已存在时复用现有记录，不创建第二个
     if (kind === "dispatcher") {

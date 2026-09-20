@@ -60,6 +60,8 @@ export type AgentPhase = "planning" | "searching" | "reading" | "executing" | "v
 export interface AgentRecord {
   id: string; // agt_xxx
   name: string; // persona 名
+  /** 名字仍为“自动生成”占位（创建时未填写）：首条对话生成标题后回填，用户重命名后清除 */
+  autoName?: boolean;
   role: string; // 系统提示词 / 角色定位
   kind?: AgentKind; // 角色类别：dispatcher（值日生）| worker / 缺省
   model?: string; // 可选，缺省用全局 model client

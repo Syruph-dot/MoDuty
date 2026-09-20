@@ -94,6 +94,8 @@ export interface ContextStats {
 export interface Agent {
   id: string;
   name: string;
+  /** 后端占位标记：名字待首条对话自动生成（空名字创建） */
+  auto_name?: boolean;
   role: string;
   model?: string;
   workspace_dir: string;
@@ -112,6 +114,8 @@ export interface AgentStateEvent {
   agent_id: string;
   state: AgentState;
   phase?: AgentPhase;
+  /** 自动命名后的最新名字（空名字创建的 Agent 首条对话回填时携带） */
+  name?: string;
   context_stats?: ContextStats | null;
 }
 

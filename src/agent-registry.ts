@@ -11,13 +11,17 @@ import type { AgentKind, AgentPhase, AgentRecord, AgentState, ContextStats } fro
 import { resolveWorkspacesRoot } from "./config.js";
 
 export interface CreateAgentInput {
-  name: string;
+  /** Agent 名字；留空表示“自动生成”——先用占位名创建，首条对话后按标题回填 */
+  name?: string;
   role: string;
   workspaceDir: string;
   model?: string;
   /** 角色类别：dispatcher=值日生（调度者）；缺省 worker */
   kind?: AgentKind;
 }
+
+/** 创建 Agent 未填名字时的占位名；对应 autoName=true，首条对话后按标题回填 */
+export const AUTO_AGENT_NAME = "新建Agent";
 
 /** 新建 Agent 未提供系统提示词时使用的默认 system prompt（前端不再暴露该字段）。
  * 这也是“未自定义”判定的基准：role 恰好等于它时视为用户没自定义，运行时用 Settings 默认人格。 */
@@ -250,8 +254,10 @@ export class AgentRegistry {
   }
 
   async createAgent(input: CreateAgentInput): Promise<AgentRecord> {
-    const name = input.name.trim();
-    if (!name) throw new Error("Agent name cannot be empty");
+    // 名字可选：留空 → 占位名 + autoName，首条对话生成标题后由 applyAutoName 回填
+    const providedName = input.name?.trim() ?? "";
+    const autoName = !providedName;
+    const name = providedName || AUTO_AGENT_NAME;
     const id = shortId("agt");
     // role（系统提示词）与 workspace 不再由调用方强制提供：空则补默认。
     const role = input.role.trim() || DEFAULT_SYSTEM_PROMPT;
@@ -264,6 +270,7 @@ export class AgentRegistry {
     const record: AgentRecord = {
       id,
       name,
+      ...(autoName ? { autoName: true } : {}),
       role,
       ...(input.kind ? { kind: input.kind } : {}),
       ...(input.model?.trim() ? { model: input.model.trim() } : {}),
@@ -376,6 +383,30 @@ export class AgentRegistry {
       const updated: AgentRecord = {
         ...agents[index],
         name: trimmed,
+        autoName: undefined,
+        lastActiveAt: new Date().toISOString(),
+      };
+      agents[index] = updated;
+      await this.writeAgents(agents);
+      return updated;
+    });
+  }
+
+  /**
+   * 首条对话后的自动命名：仅当该 Agent 名字仍是“自动生成”占位（autoName）时回填。
+   * 用 autoName 门控是为了不与用户并发重命名互相覆盖；不满足条件返回 null。
+   */
+  async applyAutoName(id: string, name: string): Promise<AgentRecord | null> {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    return await withFileLock(this.registryFile, async () => {
+      const agents = await this.listAgents();
+      const index = agents.findIndex((candidate) => candidate.id === id);
+      if (index === -1 || !agents[index].autoName) return null;
+      const updated: AgentRecord = {
+        ...agents[index],
+        name: trimmed,
+        autoName: undefined,
         lastActiveAt: new Date().toISOString(),
       };
       agents[index] = updated;
@@ -471,6 +502,7 @@ function agentToDisk(agent: AgentRecord): Record<string, unknown> {
   return {
     id: agent.id,
     name: agent.name,
+    ...(agent.autoName ? { autoName: true } : {}),
     role: agent.role,
     ...(agent.kind ? { kind: agent.kind } : {}),
     ...(agent.model ? { model: agent.model } : {}),
@@ -493,6 +525,7 @@ function agentFromDisk(value: unknown): AgentRecord {
   return {
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
+    ...(raw.autoName === true ? { autoName: true } : {}),
     role: String(raw.role ?? ""),
     ...(kind ? { kind } : {}),
     ...(raw.model ? { model: String(raw.model) } : {}),

@@ -9,7 +9,7 @@ interface FormState {
   model: string;
 }
 
-const EMPTY_FORM: FormState = { name: "新建Agent", workspace_dir: "", model: "" };
+const EMPTY_FORM: FormState = { name: "", workspace_dir: "", model: "" };
 
 /**
  * 新建 Agent 弹窗（由 dialogStore.newAgentOpen 控制）。
@@ -42,10 +42,6 @@ export default function NewAgentDialog() {
     event.preventDefault();
     const name = form.name.trim();
     const workspaceDir = form.workspace_dir.trim();
-    if (!name) {
-      setError("name 为必填");
-      return;
-    }
     setSubmitting(true);
     setError(null);
     const { newAgentSpawn: spawn, newAgentGroupId: groupId } = useDialogStore.getState();
@@ -84,13 +80,13 @@ export default function NewAgentDialog() {
         <h2 className="dialog__title">Create Agent</h2>
 
         <label className="dialog__field">
-          <span className="dialog__label">Name</span>
+          <span className="dialog__label">Name（可选，留空自动生成）</span>
           <input
             ref={firstInputRef}
             className="dialog__input"
             value={form.name}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
-            placeholder="Research Agent"
+            placeholder="自动生成"
           />
         </label>
 

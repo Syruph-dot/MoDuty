@@ -174,6 +174,11 @@ interface OpenAICompatibleModelClientOptions {
   requestTimeoutMs?: number;
   /** 模型轨道：high | low | exact */
   tier?: ModelTier;
+  /**
+   * 是否向模型暴露工具（默认 true）。
+   * 标题生成等无需工具的调用置 false：省去整份工具规格的 token，且避免模型误触发工具执行。
+   */
+  tools?: boolean;
 }
 
 /** 拉取 OpenAI 兼容上游的 /models 列表（供 /api/models） */
@@ -231,6 +236,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   const fetchImpl = options.fetch ?? fetch;
   const maxToolRounds = options.maxToolRounds ?? Infinity;
   const stream = options.stream ?? false;
+  const enableTools = options.tools !== false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
 
   return {
@@ -284,6 +290,8 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           messages,
           signal,
           stream,
+          enableTools,
+          toolSpecs: context.tools,
           onDelta: (text) => context.onEvent?.({ type: "token", text }),
           onReasoning: (text) => context.onEvent?.({ type: "reasoning", text }),
         });
@@ -292,7 +300,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
             usagePeak = roundResult.usage;
           }
         }
-        if (roundResult.toolCalls.length === 0) {
+        if (!enableTools || roundResult.toolCalls.length === 0) {
           return {
             output: roundResult.content,
             toolCalls,
@@ -375,16 +383,21 @@ async function callModelRound(options: {
   messages: ChatMessage[];
   signal?: AbortSignal;
   stream: boolean;
+  enableTools: boolean;
+  /** 本轮允许模型调用的工具表（context.tools；缺省用全量 TOOL_SPECS） */
+  toolSpecs?: readonly unknown[];
   onDelta: (text: string) => void;
   onReasoning: (text: string) => void;
 }): Promise<ModelRoundResult> {
-  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, onDelta, onReasoning } = options;
+  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, enableTools, toolSpecs, onDelta, onReasoning } = options;
   const payload: Record<string, unknown> = {
     model,
     messages,
-    tools: TOOL_SPECS,
-    tool_choice: "auto",
   };
+  if (enableTools) {
+    payload.tools = toolSpecs ?? TOOL_SPECS;
+    payload.tool_choice = "auto";
+  }
   if (stream) {
     payload.stream = true;
     // 必须显式要求 usage：OpenAI 兼容接口在流式模式下默认不返回 usage，

@@ -149,6 +149,7 @@ async function pollAgentStates(base: string, pollFetch?: AgentEventStreamOptions
     type: "agent_state" as const,
     agent_id: agent.id,
     state: agent.state,
+    ...(agent.name ? { name: agent.name } : {}),
     ...(agent.phase ? { phase: agent.phase } : {}),
   }));
 }

@@ -18,9 +18,19 @@ import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
 import { loadSettings } from "./settings-store.js";
-import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
+import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunContext, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
-interface MomokaAgentOptions { projectRoot?: string; modelClient: ModelClient; agentRegistry?: AgentRegistry; workspaceManager?: WorkspaceManager; }
+interface MomokaAgentOptions {
+  projectRoot?: string;
+  modelClient: ModelClient;
+  /**
+   * 标题预生成专用模型（设置页“低消费/廉价档” low tier）。
+   * 未配置或调用失败时回落到 modelClient，不阻断首轮对话。
+   */
+  titleModelClient?: ModelClient;
+  agentRegistry?: AgentRegistry;
+  workspaceManager?: WorkspaceManager;
+}
 const accept = { action: "accept" as const, reasons: [], revisionPrompt: "" };
 const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
@@ -256,6 +266,8 @@ ${ref.message.content}`;
         if (updatedSession && updatedSession.messageCount === 1) {
           const title = await this.generateTitle(message);
           await this.sessionManager.updateSession(sessionId, { name: title });
+          // 名字留空的 Agent（autoName）：首条对话生成标题后回填其名字
+          await this.applyAutoAgentName(sessionId, title);
         }
       }
       // transient（系统注入）不落历史：历史取全量；普通消息：历史排除刚写入的这条
@@ -461,26 +473,54 @@ ${ref.message.content}`;
   }
 
   /**
-   * 根据首条用户消息自动生成会话标题（2-8 字）。
-   * 使用模型生成简短标题，失败时回落到内容截取。
+   * 名字留空创建的 Agent（autoName）：首条对话生成标题后回填注册表名字。
+   * 失败不影响本轮对话；回填后名字经 SSE 状态广播回显到磁贴。
+   */
+  private async applyAutoAgentName(sessionId: string, title: string): Promise<void> {
+    const registry = this.agentRegistry ?? this.options.agentRegistry;
+    if (!registry) return;
+    try {
+      const agent = (await registry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
+      if (!agent?.autoName) return;
+      await registry.applyAutoName(agent.id, title);
+    } catch {
+      // 自动命名是锦上添花：失败不影响首轮对话
+    }
+  }
+
+  /**
+   * 根据首条用户消息自动生成会话标题（2-8 字），供会话名与 autoName Agent 名字复用。
+   * 优先使用设置页“低消费/廉价档”（low tier）模型；未配置或失败时回落主模型；
+   * 再失败则回落到首条消息截取。
    */
   private async generateTitle(message: string): Promise<string> {
-    try {
-      const prompt = `请为以下用户消息生成一个 2-8 字的简短标题，只输出标题本身，不要任何解释或标点：
+    const prompt = `请为以下用户消息生成一个 2-8 字的简短标题，只输出标题本身，不要任何解释或标点：
 
 ${message}`;
-      const { output } = await this.options.modelClient.run(prompt, {
-        systemPrompt: "你是一个标题生成助手，只输出 2-8 字的简短标题。",
-        topic: "title_generation",
-        workDir: this.projectRoot,
-        tracePath: "",
-        sessionId: null,
-        runId: "title_gen",
-        matchedSkills: [],
-        requestKind: "chat",
-        onEvent: undefined,
-        signal: undefined,
-      });
+    const context: ModelRunContext = {
+      systemPrompt: "你是一个标题生成助手，只输出 2-8 字的简短标题。",
+      topic: "title_generation",
+      workDir: this.projectRoot,
+      tracePath: "",
+      sessionId: null,
+      runId: "title_gen",
+      matchedSkills: [],
+      requestKind: "chat",
+      onEvent: undefined,
+      signal: undefined,
+    };
+    const cheapClient = this.options.titleModelClient;
+    if (cheapClient && cheapClient !== this.options.modelClient) {
+      try {
+        const { output } = await cheapClient.run(prompt, context);
+        const title = output.trim().slice(0, 12);
+        if (title) return title;
+      } catch {
+        // 廉价档未配置 / 调用失败：回落主模型
+      }
+    }
+    try {
+      const { output } = await this.options.modelClient.run(prompt, context);
       const title = output.trim().slice(0, 12);
       return title || message.slice(0, 8);
     } catch {

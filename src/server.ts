@@ -36,6 +36,10 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
   const agent = createMomokaAgent({
     projectRoot,
     modelClient: createOpenAICompatibleModelClient({ stream: true }),
+    // 标题预生成专用：设置页“低消费/廉价档”（tier=low）。构造阶段不解析配置，
+    // 未配置低消费默认时仅该次调用失败并回落主模型，不影响服务启动。
+    // tools:false → 标题调用不携带工具规格（省 token，且不会误触发工具执行）。
+    titleModelClient: createOpenAICompatibleModelClient({ tier: "low", tools: false }),
     workspaceManager: workspaces,
   });
   // Agent Desktop：多 Agent 注册表（1:1 绑定 session）+ 生命周期状态机

@@ -278,17 +278,26 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
         target.state === event.state &&
         (target.phase ?? null) === (event.phase ?? null) &&
         statsUnchanged;
-      if (stateUnchanged) return {};
+      // 空名字创建的 Agent：首条对话后后端自动命名，经状态广播回填到磁贴
+      const nameChanged = typeof event.name === "string" && event.name.length > 0 && target.name !== event.name;
+      if (stateUnchanged && !nameChanged) return {};
       // 关键修复：completed 态不自动回 idle —— 只有用户打开该磁贴（openAgentIds 包含）时才允许 completed→idle 迁移
       const isOpened = state.openAgentIds.includes(event.agent_id);
       if (target.state === "completed" && event.state === "idle" && !isOpened) {
-        return {}; // 丢弃该事件，保持绿色完成态
+        // 丢弃该事件，保持绿色完成态；但首条对话的自动命名仍需回填
+        if (!nameChanged) return {};
+        return {
+          agents: state.agents.map((agent) =>
+            agent.id === event.agent_id ? { ...agent, name: event.name as string, auto_name: false } : agent,
+          ),
+        };
       }
       return {
         agents: state.agents.map((agent) =>
           agent.id === event.agent_id
             ? {
                 ...agent,
+                ...(nameChanged ? { name: event.name as string, auto_name: false } : {}),
                 state: event.state,
                 phase: event.phase ?? null,
                 ...(event.context_stats ? { context_stats: event.context_stats } : {}),

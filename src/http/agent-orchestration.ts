@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, readFile } from "node:fs/promises";
 
 import type { MomokaAgentCore } from "../agent.js";
 import type { AgentRegistry } from "../agent-registry.js";
@@ -15,6 +15,7 @@ import { isFullyAutomatic } from "../permission-mode.js";
 import { contextStatsToSnake } from "./serialization.js";
 import { PROJECT_SCOPE } from "../memory.js";
 import { extractFromVerdict } from "../memory-extract.js";
+import { applyVerdictPolicy, verifyStep, type VerificationReport, type VerifyIo } from "../verifier.js";
 import type { AgentEventBroadcaster } from "./sse.js";
 
 /**
@@ -297,6 +298,79 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
 }
 
 /**
+ * 对一个派发绑定的计划步做客观验收（P5）。
+ * 没有绑定计划步时返回 report: null —— 此时策略会放行（没有依据就不拦）。
+ */
+async function verifyDispatchStep(
+  deps: OrchestrationDeps,
+  entry: DispatchRecord,
+): Promise<{ report: VerificationReport | null; planId?: string; stepId?: string }> {
+  try {
+    const bound = await deps.agent.plans.findByDispatch(entry.id);
+    if (!bound) return { report: null };
+    const target = await deps.registry.getAgent(entry.targetAgentId);
+    const workDir = target?.workspaceDir ?? deps.agent.projectRoot;
+    const step = bound.step;
+
+    const io: VerifyIo = {
+      fileSize: async (candidate) => {
+        const abs = path.isAbsolute(candidate) ? candidate : path.join(workDir, candidate);
+        const info = await stat(abs).catch(() => null);
+        return info && info.isFile() ? info.size : null;
+      },
+      readText: async (candidate) => {
+        const abs = path.isAbsolute(candidate) ? candidate : path.join(workDir, candidate);
+        return await readFile(abs, "utf8").catch(() => null);
+      },
+    };
+
+    const [hasPendingApproval, hasPendingQuestion] = target
+      ? await Promise.all([
+          checkHasPendingApproval(deps.workspaces, target),
+          checkHasPendingQuestion(deps.registry, target),
+        ])
+      : [false, false];
+
+    const testOutput = target ? await latestTestOutput(deps, target.sessionId) : undefined;
+    const requireCitations = step.acceptanceCriteria.some((line) => /(引用|来源|出处|标注)/u.test(line));
+
+    const report = await verifyStep({
+      stepId: step.id,
+      artifacts: step.artifacts,
+      acceptanceCriteria: step.acceptanceCriteria,
+      ...(testOutput ? { testOutput } : {}),
+      requireCitations,
+      hasPendingApproval,
+      hasPendingQuestion,
+      io,
+    });
+    return { report, planId: bound.plan.id, stepId: step.id };
+  } catch (error) {
+    console.error("[verify] 客观验收失败（按无报告处理，不阻断判定）:", error);
+    return { report: null };
+  }
+}
+
+/** 从执行者会话里找最近一次测试输出（含 # pass/# fail 或 not ok 的工具结果） */
+async function latestTestOutput(deps: OrchestrationDeps, sessionId: string): Promise<string | undefined> {
+  try {
+    const messages = (await deps.agent.sessionManager.getMessages(sessionId)) as Array<{
+      content?: string;
+      tool_calls?: Array<{ result?: string }>;
+      toolCalls?: Array<{ result?: string }>;
+    }>;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      const results = [...(message.tool_calls ?? []), ...(message.toolCalls ?? [])].map((call) => String(call.result ?? ""));
+      for (const text of results) {
+        if (/#\s*(pass|fail)\s+\d+/u.test(text) || /\bnot ok\b/u.test(text)) return text.slice(0, 4000);
+      }
+    }
+  } catch { /* 取不到就不做测试检查 */ }
+  return undefined;
+}
+
+/**
  * 判定的下游回写（P1/P3 接线）：把结论写回计划步与项目级记忆。
  * 任何失败都不影响判定本身——判定已经生效，回写只是让计划与记忆跟上事实。
  */
@@ -421,15 +495,45 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
   }
 
   if (choice === "deliver") {
+    // 客观验收（P5）：在「agent 说完成」与「系统标记完成」之间加一道可检查的关卡
+    const verification = await verifyDispatchStep(deps, entry);
+    const policy = applyVerdictPolicy({
+      report: verification.report,
+      requested: "deliver",
+      continueCount: entry.continueCount ?? 0,
+      maxContinue: DISPATCH_MAX_CONTINUE,
+    });
+    if (!policy.allow) {
+      if (verification.planId && verification.stepId) {
+        await deps.agent.plans.updateStep(verification.planId, verification.stepId, {
+          evidence: { kind: "verification", summary: `验收未通过：${(verification.report?.failures ?? []).join("；").slice(0, 800)}`, sourceRefs: [`dispatch:${entry.id}`] },
+        }).catch(() => null);
+      }
+      return [
+        "【已拦截】客观验收未通过，不能直接判交付：",
+        ...(verification.report?.failures ?? ["（验收报告缺失，但策略判定不允许交付）"]).map((line) => `- ${line}`),
+        "",
+        "处理方式：先 continue 让执行者补齐；或修正该计划步的 acceptance_criteria（PATCH /api/plans/:id/steps/:stepId）后再交付。",
+      ].join("\n");
+    }
+    // 验收证据落回计划步（通过也留痕，便于回溯当时凭什么判交付）
+    if (verification.report && verification.planId && verification.stepId) {
+      await deps.agent.plans.updateStep(verification.planId, verification.stepId, {
+        evidence: { kind: "verification", summary: verification.report.evidence.slice(0, 1500), sourceRefs: [`dispatch:${entry.id}`] },
+      }).catch(() => null);
+    }
+
     await deps.registry.dispatches.markDone(entry.id, "deliver");
     await deps.agent.sessionManager.addMessage(
       entry.dispatcherSessionId,
       "system",
-      `【判读留痕】${entry.id}：判定可交付，已上报老师。${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
+      `【判读留痕】${entry.id}：判定可交付，已上报老师。${policy.verdict === "delivered_with_warnings" ? `（${policy.reason}）` : ""}${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
     );
     broadcastDispatchVerdict(deps, { entry, verdict: "deliver", note: input.note });
     await reflectVerdict(deps, entry, "deliver", input.note);
-    return "判定已提交：交付。系统已上报老师（桌面通知）。";
+    return policy.verdict === "delivered_with_warnings"
+      ? `判定已提交：带警告交付。${policy.reason}；已上报老师。`
+      : "判定已提交：交付。系统已上报老师（桌面通知）。";
   }
 
   if ((entry.continueCount ?? 0) >= DISPATCH_MAX_CONTINUE) {

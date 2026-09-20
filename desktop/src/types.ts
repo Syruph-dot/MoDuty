@@ -96,7 +96,7 @@ export interface DispatchView {
   last_status: "completed" | "error" | "stalled" | null;
   last_status_at: string | null;
   continue_count: number;
-  last_verdict: "deliver" | "continue" | "deliver_forced" | null;
+  last_verdict: "deliver" | "continue" | "deliver_forced" | "cancelled" | null;
   stalled_at: string | null;
   dispatched_at: string;
   /** 任务书预览（超长时截断，完整内容在会话里） */

@@ -283,8 +283,12 @@ const MOMOKA_CLI_PATH = fileURLToPath(new URL("../bin/momoka.mjs", import.meta.u
 const MOMOKA_CLI_COMMANDS: Record<string, Set<string>> = {
   agent: new Set(["list", "create", "chat", "dispatch", "reset", "stop"]),
   session: new Set(["list", "inspect"]),
-  // dispatch verdict <dsp_id> deliver|continue [备注]：值日生收尾判读结论提交（进程内处理，见 interceptDispatchCli）
-  dispatch: new Set(["verdict"]),
+  // dispatch 子命令（全部进程内处理，见 interceptDispatchCli）：
+  //   verdict <dsp_id> deliver|continue [备注]  收尾判读结论
+  //   list [--state active|all]                 台账概览（只读）
+  //   show <dsp_id>                             单条台账详情（只读，含完整任务书）
+  //   cancel <dsp_id> [备注]                     放弃条目：结单但不交付
+  dispatch: new Set(["verdict", "list", "show", "cancel"]),
 };
 
 export function validateMomokaCliArgs(args: string[]): string | null {
@@ -301,6 +305,7 @@ export function validateMomokaCliArgs(args: string[]): string | null {
     return `${sub} 需要 agentId`;
   }
   if (cmd === "dispatch" && sub === "verdict" && rest.length < 2) return "dispatch verdict 需要 <dsp_id> 与 deliver|continue";
+  if (cmd === "dispatch" && (sub === "show" || sub === "cancel") && rest.length === 0) return `dispatch ${sub} 需要 <dsp_id>`;
   if (cmd === "session" && sub === "inspect" && rest.length === 0) return "inspect 需要会话句柄（ses_<id>）";
   for (const a of args) {
     if (typeof a !== "string" || a.includes("\0")) return "包含非法控制字符";
@@ -334,6 +339,29 @@ async function interceptDispatchCli(
       entryId,
       choice,
       note: noteWords.join(" ").trim(),
+      callerSessionId: approvalOrigin.sessionId,
+    });
+    return result.output;
+  }
+
+  // dispatch list [--state active|all] / show <dsp_id> / cancel <dsp_id> [备注...]
+  // 值日生的“眼睛”：台账原本没有读接口，模型只能靠会话历史猜在途状态。
+  if (cliArgs[0] === "dispatch" && ["list", "show", "cancel"].includes(cliArgs[1] ?? "")) {
+    const sub = cliArgs[1];
+    if (sub === "list") {
+      const stateIdx = cliArgs.indexOf("--state");
+      const rawState = stateIdx >= 0 ? cliArgs[stateIdx + 1] : undefined;
+      const state = rawState === "all" ? "all" : "active";
+      const result = await handler({ kind: "ledger", op: "list", state, callerSessionId: approvalOrigin.sessionId });
+      return result.output;
+    }
+    const entryId = cliArgs[2];
+    if (!entryId) return `错误：dispatch ${sub} 需要 <dsp_id>。`;
+    const result = await handler({
+      kind: "ledger",
+      op: sub === "show" ? "show" : "cancel",
+      entryId,
+      note: cliArgs.slice(3).join(" ").trim(),
       callerSessionId: approvalOrigin.sessionId,
     });
     return result.output;
@@ -627,7 +655,8 @@ export const TOOL_SPECS = [
         "参数 args 是参数数组，首个元素为命令族（agent | session | dispatch），第二个为子命令：" +
         "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄链接相关会话）/ agent dispatch <agentId> <消息…>（异步派发，发起后立即返回，适合“派发完即回 idle”的懒调度）/ agent reset <agentId> / agent stop <agentId>；" +
         "session list / session inspect <ses_<id>>；" +
-        "dispatch verdict <dsp_id> deliver|continue [备注]（收尾判读结论：交付上报 / 返工继续，仅用于响应台账判读请求）。" +
+        "dispatch verdict <dsp_id> deliver|continue [备注]（收尾判读结论：交付上报 / 返工继续，仅用于响应台账判读请求）；" +
+        "dispatch list [--state active|all]（台账概览：未结单+最近交付，只读）/ dispatch show <dsp_id>（单条详情，含完整任务书）/ dispatch cancel <dsp_id> [备注]（放弃条目：结单但不交付，用于派错人或任务作废）。" +
         "只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",
       parameters: {
         type: "object",

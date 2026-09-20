@@ -24,6 +24,9 @@ export type DispatchTrigger = "completed" | "error" | "stalled";
 /** 值日生判读出口：交付（上报用户）/ 继续（返工） */
 export type DispatchVerdict = "deliver" | "continue";
 
+/** 台账条目的终态判定（含系统强制交付与人工放弃） */
+export type DispatchOutcome = DispatchVerdict | "deliver_forced" | "cancelled";
+
 /** 「继续」轮次上限（2026-09-10 拍板决策 2） */
 export const DISPATCH_MAX_CONTINUE = 3;
 
@@ -56,7 +59,7 @@ export interface DispatchRecord {
   /** 已执行「继续」的轮次数 */
   continueCount?: number;
   /** 最近一次判读的结论（deliver | continue | deliver_forced …） */
-  lastVerdict?: DispatchVerdict | "deliver_forced";
+  lastVerdict?: DispatchOutcome;
   /** 停转标记（写明检出时间；「继续」后清除） */
   stalledAt?: string;
 }
@@ -176,7 +179,7 @@ export class DispatchLedger {
   }
 
   /** awaiting_verdict → done：值日生判「交付」（或达上限强制上报），停止跟踪 */
-  async markDone(dispatchId: string, verdict: DispatchVerdict | "deliver_forced"): Promise<DispatchRecord | null> {
+  async markDone(dispatchId: string, verdict: DispatchOutcome): Promise<DispatchRecord | null> {
     return await withFileLock(this.file, async () => {
       const all = await this.listAll();
       let updated: DispatchRecord | null = null;

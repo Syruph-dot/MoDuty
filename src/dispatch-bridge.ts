@@ -9,7 +9,7 @@
  */
 
 export interface DispatchBridgeInput {
-  kind: "chat" | "dispatch" | "verdict";
+  kind: "chat" | "dispatch" | "verdict" | "ledger";
   /** chat/dispatch：执行者 Agent id（agt_…） */
   executorId?: string;
   /** chat/dispatch：任务书（调用者已拼好；这里不再改写） */
@@ -22,6 +22,10 @@ export interface DispatchBridgeInput {
   choice?: "deliver" | "continue";
   /** verdict：可选备注（判读依据/交付说明） */
   note?: string;
+  /** ledger：操作类型（list 概览 / show 单条 / cancel 放弃条目） */
+  op?: "list" | "show" | "cancel";
+  /** ledger list：状态过滤，缺省 active（未结单） */
+  state?: "active" | "all";
   /** 调用者会话（用于 dispatcher 判定与判读权校验） */
   callerSessionId: string;
 }

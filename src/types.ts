@@ -306,9 +306,20 @@ export interface ChatRequest {
    * 用于值日生唤醒等系统驱动轮次——避免驱动话术永久污染历史与缓存前缀。
    */
   transient?: boolean;
+  /**
+   * 轮次模式（决定尾部模式块与是否注入历史）：
+   * - chat    老师直接说话（缺省）
+   * - verdict 系统唤醒的台账判读轮
+   * - stalled 停转复查唤醒
+   * 未传时由 transient 推导（transient → verdict）。
+   */
+  turnMode?: TurnMode;
   onEvent?: (event: StreamEvent) => void;
   signal?: AbortSignal;
 }
+
+/** 轮次模式：见 src/turn-mode.ts */
+export type TurnMode = "chat" | "verdict" | "stalled";
 
 export interface ChatResponse {
   runId: string;

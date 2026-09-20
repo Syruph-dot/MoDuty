@@ -16,9 +16,11 @@ import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } fr
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall, toolSpecsForKind } from "./tools.js";
-import { buildBoundedHistoryMessages } from "./context.js";
+import { buildBoundedHistoryMessages, foldLedgerTraces } from "./context.js";
 import { buildContextStats } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
+import { buildTurnModeBlock, resolveTurnMode } from "./turn-mode.js";
+import { buildDispatchSnapshot } from "./dispatch-snapshot.js";
 import { appendTraceEvent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
@@ -227,6 +229,9 @@ export class MomokaAgentCore implements MomokaAgent {
    */
   private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string }): Promise<string> {
     const sections: string[] = [];
+    // 值日生：台账快照放最前（在途状态的唯一事实源，不靠历史回忆）
+    const snapshot = await this.buildDispatcherSnapshot(input.sessionId);
+    if (snapshot) sections.push(snapshot);
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
     // 渐进披露：任务命中技能关键词时，注入相关技能内容（保持提示词精简）
@@ -257,6 +262,33 @@ export class MomokaAgentCore implements MomokaAgent {
     }
 
     return sections.join("\n\n");
+  }
+
+  /**
+   * 值日生的台账快照（非 dispatcher 会话返回 null）：未结单 + 最近交付 + 待拍板计数。
+   * 台账是调度状态的唯一事实源，但原本不在模型上下文里——快照把它每轮带进来，
+   * 模型就不必（也不该）从会话历史里推断在途任务。
+   */
+  private async buildDispatcherSnapshot(sessionId?: string | null): Promise<string | null> {
+    if (!sessionId || !this.agentRegistry) return null;
+    try {
+      const record = await this.agentRegistry.agentBySessionId(sessionId);
+      if (!record || !isDispatcherAgent(record)) return null;
+      const [all, agents, pending] = await Promise.all([
+        this.agentRegistry.dispatches.listAll(),
+        this.agentRegistry.listAgents(),
+        this.agentRegistry.pendingQuestionsForAgent(record.id),
+      ]);
+      const targetNames: Record<string, string> = {};
+      for (const agent of agents) targetNames[agent.id] = agent.name;
+      return buildDispatchSnapshot({
+        records: all.filter((entry) => entry.dispatcherId === record.id),
+        targetNames,
+        pendingQuestions: pending.length,
+      });
+    } catch {
+      return null; // 快照失败不影响本轮
+    }
   }
 
   /** 本轮记忆检索的作用域链：本 Agent 分区 → 项目级 → user 全局 */
@@ -324,9 +356,16 @@ ${ref.message.content}`;
       }
       // transient（系统注入）不落历史：历史取全量；普通消息：历史排除刚写入的这条
       const stored = await this.sessionManager.getMessages(sessionId, null);
-      historyMessages = buildBoundedHistoryMessages(
-        request.transient ? stored : stored.slice(0, -1),
-      ).messages as Array<{ role: "system" | "user" | "assistant"; content: string }>;
+      // 系统唤醒轮（判读/停转）不注历史：唤醒消息自包含 + 台账快照已给状态，
+      // 历史在这里只有噪声与 token 成本（实测判读轮由此省下 ≤4k tokens）。
+      const forHistory = request.transient ? stored : stored.slice(0, -1);
+      historyMessages =
+        resolveTurnMode(request) === "chat"
+          ? (buildBoundedHistoryMessages(foldLedgerTraces(forHistory)).messages as Array<{
+              role: "system" | "user" | "assistant";
+              content: string;
+            }>)
+          : [];
     }
     // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
     const expandedMessage = await this.expandMessageRefs(message);
@@ -397,7 +436,11 @@ ${ref.message.content}`;
     let retryAttempts = 0;
     try {
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
-      const prompt = [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n");
+      // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
+      // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
+      const prompt = [buildTurnModeBlock(resolveTurnMode(request)), turnContext, "## Current User Request", expandedMessage]
+        .filter(Boolean)
+        .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
       const tools = await this.toolsForSession(sessionId);
       // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；

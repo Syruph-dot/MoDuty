@@ -1,4 +1,4 @@
-import type { DispatchEntryState, DispatchRecord, DispatchTrigger, DispatchVerdict } from "./dispatch-ledger.js";
+import type { DispatchEntryState, DispatchOutcome, DispatchRecord, DispatchTrigger } from "./dispatch-ledger.js";
 
 /**
  * 调度台账的对外视图（GET /api/dispatches）。
@@ -38,7 +38,7 @@ export interface DispatchView {
   last_status_at: string | null;
   /** 已执行「继续」的轮次（0 表示还没返工过） */
   continue_count: number;
-  last_verdict: DispatchVerdict | "deliver_forced" | null;
+  last_verdict: DispatchOutcome | null;
   stalled_at: string | null;
   dispatched_at: string;
   /** 任务书（完整；仅在超过安全上限时置 task_truncated） */

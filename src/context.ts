@@ -6,6 +6,76 @@
  * 不引入 tokenizer 依赖，用混合估算：CJK ≈ 1 token/字，其他 ≈ 1 token/3.5 字符。
  */
 
+/**
+ * 台账留痕标记：这些 system 消息随派发次数线性累积（每次派发/返工/交付都写一条），
+ * 占的是同一个历史预算，会把真实对话挤出窗口。
+ */
+const LEDGER_TRACE_MARKERS = ["【判读留痕】", "【自动派发】", "【自动派发失败】", "【台账判读请求】", "【已拦截】"];
+
+/** 是否台账留痕（system 角色的派发/判读记账消息） */
+export function isLedgerTraceMessage(message: { role: string; content: string }): boolean {
+  return message.role === "system" && LEDGER_TRACE_MARKERS.some((marker) => message.content.startsWith(marker));
+}
+
+/**
+ * 台账留痕折叠（只影响送模型的历史，不改落盘）：
+ * - 最近的 keepLatest 条留痕保留原文（判读上下文需要）；
+ * - 更早的按 dsp_* 归并成一行（首见摘要 + 条数），插在第一条被折叠留痕的位置；
+ * - 留痕总数不过多时原样返回（不值得为两三条改动历史形状）。
+ *
+ * 动机：值日生会话里留痕与真实对话共用 4000 token 预算，不折叠就会出现
+ * “模型记得昨天派给谁、却忘了刚才老师说啥”。在途状态另有台账快照/dispatch list，不靠留痕。
+ */
+export function foldLedgerTraces<T extends { role: string; content: string }>(
+  messages: T[],
+  keepLatest = 2,
+): Array<T | { role: "system"; content: string }> {
+  const traceIndexes = messages
+    .map((message, index) => (isLedgerTraceMessage(message) ? index : -1))
+    .filter((index) => index >= 0);
+  if (traceIndexes.length <= keepLatest + 1) return messages;
+
+  const foldSet = new Set(traceIndexes.slice(0, traceIndexes.length - keepLatest));
+  const firstFoldIndex = Math.min(...foldSet);
+
+  const order: string[] = [];
+  const gistById = new Map<string, string>();
+  const countById = new Map<string, number>();
+  for (const index of [...foldSet].sort((a, b) => a - b)) {
+    const content = messages[index].content;
+    const id = content.match(/dsp_[A-Za-z0-9]+/)?.[0] ?? "(无台账 id)";
+    countById.set(id, (countById.get(id) ?? 0) + 1);
+    if (gistById.has(id)) continue;
+    order.push(id);
+    const gist = content
+      .replace(/^【[^】]*】/, "")
+      .replace(/^\s*dsp_[A-Za-z0-9]+\s*[：:]?\s*/, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    gistById.set(id, gist);
+  }
+
+  const lines = order.map((id) => {
+    const count = countById.get(id) ?? 1;
+    const suffix = count > 1 ? `（${count} 条）` : "";
+    return `- ${id}${suffix}：${gistById.get(id) || "（无摘要）"}`;
+  });
+  const summary = [
+    `【台账留痕·历史已折叠 ${foldSet.size} 条】`,
+    ...lines,
+    "（完整留痕仍在会话里可查；在途状态请看台账快照或 dispatch list，不要靠留痕推断）",
+  ].join("\n");
+
+  const out: Array<T | { role: "system"; content: string }> = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    if (index === firstFoldIndex) out.push({ role: "system", content: summary });
+    if (foldSet.has(index)) continue;
+    out.push(messages[index]);
+  }
+  return out;
+}
+
 export interface BoundedHistoryOptions {
   /** 预算（估算 token 数），默认 4000 */
   budgetTokens?: number;

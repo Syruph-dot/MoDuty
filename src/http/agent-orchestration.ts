@@ -6,12 +6,13 @@ import type { AgentRegistry } from "../agent-registry.js";
 import { isDispatcherAgent } from "../agent-registry.js";
 import type { AgentStateMachine, AgentStateEvent, ContextStatsSnake } from "../agent-state.js";
 import type { WorkspaceManager } from "../workspace-manager.js";
-import type { AgentRecord, ChatResponse, StreamEvent } from "../types.js";
+import type { AgentRecord, ChatResponse, StreamEvent, TurnMode } from "../types.js";
 import { DISPATCH_MAX_CONTINUE, LEDGER_TASK_MAX_CHARS, type DispatchRecord, type DispatchTrigger, type DispatchVerdict } from "../dispatch-ledger.js";
 import type { DispatchBridgeInput } from "../dispatch-bridge.js";
 import type { RouteContext } from "./route-context.js";
 import { ensureAgents } from "./route-context.js";
 import { isFullyAutomatic } from "../permission-mode.js";
+import { sortDispatchViews, toDispatchView } from "../dispatch-view.js";
 import { contextStatsToSnake } from "./serialization.js";
 import { PROJECT_SCOPE } from "../memory.js";
 import { extractFromVerdict } from "../memory-extract.js";
@@ -59,6 +60,8 @@ export interface DriveTurnOptions {
   message: string;
   /** 系统注入（判读请求等）：只进本轮模型输入，不写会话历史 */
   transient?: boolean;
+  /** 轮次模式（决定尾部模式块与是否注入历史）；缺省由 transient 推导 */
+  turnMode?: TurnMode;
   /** 额外事件监听（SSE 转发等）；状态机喂食由驱动器内部完成 */
   onEvent?: (event: StreamEvent) => void;
   signal?: AbortSignal;
@@ -80,6 +83,7 @@ export async function driveAgentTurn(
       message: opts.message,
       sessionId: record.sessionId,
       transient: opts.transient,
+      turnMode: opts.turnMode,
       onEvent: (event) => {
         deps.machine.consumeEvent(record.id, event);
         opts.onEvent?.(event);
@@ -220,9 +224,107 @@ async function wakeDispatcher(deps: OrchestrationDeps, entry: DispatchRecord, tr
   ]
     .filter(Boolean)
     .join("\n");
-  void driveAgentTurn(deps, dispatcher, { message, transient: true }).catch((error: unknown) => {
+  void driveAgentTurn(deps, dispatcher, {
+    message,
+    transient: true,
+    // 停转复查与普通判读分开：前者先核对快照是否已被结单，避免对已交付条目重复提交判定
+    turnMode: trigger === "stalled" ? "stalled" : "verdict",
+  }).catch((error: unknown) => {
     console.error("[waker] 唤醒值日生判读失败:", error);
   });
+}
+
+/* ============================================================
+ * 台账查询（只读 + 放弃条目）：值日生的“眼睛”
+ * ============================================================ */
+
+/** 名字解析：agentId → 展示名（取不到回退 id） */
+async function dispatchTargetNames(deps: OrchestrationDeps): Promise<Record<string, string>> {
+  try {
+    const agents = await deps.registry.listAgents();
+    const map: Record<string, string> = {};
+    for (const agent of agents) map[agent.id] = agent.name;
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * dispatch list / show / cancel 的进程内实现。
+ * - 权限：只能看/动自己（callerSessionId 反查的 dispatcher）名下的条目；
+ * - list：未结单在前，只给概览（id / 执行者 / 状态 / 轮次 / 上次判读），细节走 show；
+ * - cancel：结单但不交付（派错人/任务作废），**不打断执行者**——要停下它另用 agent stop。
+ */
+export async function handleLedgerQuery(
+  deps: OrchestrationDeps,
+  input: DispatchBridgeInput,
+): Promise<{ ok: boolean; output: string }> {
+  const caller = await deps.registry.agentBySessionId(input.callerSessionId);
+  if (!caller) return { ok: false, output: "错误：无法定位调用者会话。" };
+  if (!isDispatcherAgent(caller)) {
+    return { ok: false, output: "错误：只有值日生（dispatcher）可以查询台账。" };
+  }
+  const op = input.op ?? "list";
+  const all = (await deps.registry.dispatches.listAll()).filter((record) => record.dispatcherId === caller.id);
+  const names = await dispatchTargetNames(deps);
+  const label = (id: string) => names[id] ?? id;
+
+  if (op === "list") {
+    const filtered = input.state === "all" ? all : all.filter((record) => record.state !== "done");
+    if (filtered.length === 0) {
+      return { ok: true, output: input.state === "all" ? "台账为空：还没有派发记录。" : "没有未结单的派发。" };
+    }
+    const views = sortDispatchViews(
+      filtered.map((record) => toDispatchView(record, null, { taskChars: 60 })),
+    );
+    const lines = views.map((view) => {
+      const state = view.state === "awaiting_verdict" ? "等判读" : view.state === "tracking" ? "进行中" : "已交付";
+      const bits = [
+        view.stalled_at ? "停转" : view.last_status ?? "",
+        view.continue_count ? `返工 ${view.continue_count}/3` : "",
+        view.last_verdict ? `上次 ${view.last_verdict}` : "",
+      ].filter(Boolean);
+      return `- ${view.id} [${state}] 「${label(view.target.agent_id)}」 ${bits.join(" · ")}\n  任务：${view.task}${view.task_truncated ? "…" : ""}`;
+    });
+    return { ok: true, output: `台账（${views.length} 条${input.state === "all" ? "，含已结单" : "，仅未结单"}）：\n${lines.join("\n")}` };
+  }
+
+  const entryId = input.entryId ?? "";
+  const entry = all.find((record) => record.id === entryId);
+  if (!entry) return { ok: false, output: `错误：台账里没有 ${entryId}（或不属于本值日生）。` };
+
+  if (op === "show") {
+    const view = toDispatchView(entry, null);
+    const lines = [
+      `台账 ${entry.id}：${entry.state === "awaiting_verdict" ? "等判读" : entry.state === "tracking" ? "进行中" : "已结单"}`,
+      `执行者：${label(entry.targetAgentId)}（${entry.targetAgentId}） 会话 ${entry.targetSessionId}`,
+      `派发时间：${entry.dispatchedAt}`,
+      entry.lastStatus ? `最近状态：${entry.lastStatus} ${entry.lastStatusAt ?? ""}` : "",
+      entry.stalledAt ? `停转于：${entry.stalledAt}` : "",
+      `返工轮次：${entry.continueCount ?? 0}/${DISPATCH_MAX_CONTINUE}`,
+      entry.lastVerdict ? `上次判读：${entry.lastVerdict}` : "",
+      entry.linkedSessions.length ? `携带会话：${entry.linkedSessions.join(" ")}` : "",
+      `任务书：\n${view.task}`,
+    ].filter(Boolean);
+    return { ok: true, output: lines.join("\n") };
+  }
+
+  // cancel
+  if (entry.state === "done") {
+    return { ok: false, output: `错误：${entryId} 已结单（${entry.lastVerdict ?? "未知结论"}），无需取消。` };
+  }
+  const updated = await deps.registry.dispatches.markDone(entryId, "cancelled");
+  if (!updated) return { ok: false, output: `错误：取消 ${entryId} 失败（状态可能已被其他轮次改变）。` };
+  await deps.agent.sessionManager.addMessage(
+    caller.sessionId,
+    "system",
+    `【判读留痕】${entryId}：已取消（不再判读/上报）。${input.note ? `原因：${input.note.slice(0, 120)}` : ""}`,
+  );
+  return {
+    ok: true,
+    output: `已取消 ${entryId}（执行者 ${label(entry.targetAgentId)} 不会被中断，若需停止它请用 agent stop）。${input.note ? `原因：${input.note}` : ""}`,
+  };
 }
 
 /* ============================================================
@@ -233,6 +335,9 @@ async function wakeDispatcher(deps: OrchestrationDeps, entry: DispatchRecord, tr
 export async function handleDispatchBridge(deps: OrchestrationDeps, input: DispatchBridgeInput): Promise<{ ok: boolean; output: string; dispatchId?: string }> {
   if (input.kind === "verdict") {
     return { ok: true, output: await handleDispatchVerdict(deps, input) };
+  }
+  if (input.kind === "ledger") {
+    return handleLedgerQuery(deps, input);
   }
 
   const executorId = input.executorId ?? "";

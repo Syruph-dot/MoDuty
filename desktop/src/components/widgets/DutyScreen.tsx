@@ -22,6 +22,14 @@ import DutyPortrait from "./DutyPortrait";
  *   右：调度台账（进行中 / 等判读 / 已交付 / 停转，点击跳执行者窗口）
  */
 
+/** 判读结论 → 中文标签（含系统强制交付与人工取消） */
+const VERDICT_LABEL: Record<NonNullable<DispatchView["last_verdict"]>, string> = {
+  deliver: "已交付",
+  continue: "返工",
+  deliver_forced: "强制交付",
+  cancelled: "已取消",
+};
+
 /** 相对时间（分钟粒度） */
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
@@ -92,7 +100,7 @@ function LedgerCard({
       </p>
       <div className="duty-ledger__meta">
         {view.continue_count > 0 ? <span className="duty-ledger__chip">返工 {view.continue_count}/3</span> : null}
-        {view.last_verdict ? <span className="duty-ledger__chip">判读 {view.last_verdict}</span> : null}
+        {view.last_verdict ? <span className="duty-ledger__chip">判读 {VERDICT_LABEL[view.last_verdict]}</span> : null}
         {view.linked_sessions.length > 0 ? (
           <span className="duty-ledger__chip">引用 {view.linked_sessions.length}</span>
         ) : null}
@@ -108,7 +116,7 @@ function LedgerCard({
             <span>
               返工 {view.continue_count}/{DISPATCH_MAX_CONTINUE}
             </span>
-            {view.last_verdict ? <span>上次判读 {view.last_verdict}</span> : null}
+            {view.last_verdict ? <span>上次判读 {VERDICT_LABEL[view.last_verdict]}</span> : null}
           </div>
           <div className="duty-ledger__facts">
             <span>执行者会话 {view.target.session_id}</span>

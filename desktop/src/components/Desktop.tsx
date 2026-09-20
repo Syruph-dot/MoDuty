@@ -162,6 +162,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 墙可见集合（A 筛选 + D 活跃/归档派生）；grouped 与 free 共享同一口径
   const wallIds = useMemo(() => new Set(wallAgents.map((agent) => agent.id)), [wallAgents]);
 
+  /**
+   * 最近访问时间（epoch ms）：agent 用后端 last_active_at，browser 用 lastActiveAt。
+   * 未分组带的自动排位用它（时间越大越近）；查不到的一律 0（排到最后）。
+   */
+  const visitTimes = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const agent of agents) map[agent.id] = Date.parse(agent.last_active_at) || 0;
+    for (const browser of browsers) map[browser.id] = Date.parse(browser.lastActiveAt) || 0;
+    return map;
+  }, [agents, browsers]);
+  const visitTimeOf = useCallback((id: string) => visitTimes[id] ?? 0, [visitTimes]);
+
   // 稳定回调（配合 AgentTile memo）：提交时从 dialogStore 读取当前重命名目标，避免 per-tile 闭包
   const handleRenameCommit = useCallback(
     (name: string) => {
@@ -382,6 +394,15 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   );
 
   // ---- Band（组带）布局：打破全局网格 —— 组带序列（x 累加，组间 120px）+ 组内局部网格 ----
+  // 用户组用存储的手动网格；未分组带由最近访问时间自动排位（widget 为障碍），见 bandLayout。
+  /** 墙治理可见性：agent 受筛选集约束，widget/browser 恒可见（band 与拖动落点共用同一判定） */
+  const isTileVisible = useCallback(
+    (id: string) => {
+      const tile = tiles[id];
+      return tile ? tile.kind !== "agent" || wallIds.has(id) : true;
+    },
+    [tiles, wallIds],
+  );
   // 所有 tile（agent/widget/browser）几何与组属统一来自 tileStore；bandLayout 纯派生。
   // 可见性：agent 受墙治理筛选（wallIds），widget/browser 恒可见
   // 额外做一次坐标平移：内容左右各留 1/5 屏宽“停靠留白”（stopMargin），使磁贴阵列首/尾
@@ -392,10 +413,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       tiles,
       groups,
       metrics,
-      isVisible: (id) => {
-        const tile = tiles[id];
-        return tile ? tile.kind !== "agent" || wallIds.has(id) : true;
-      },
+      isVisible: isTileVisible,
+      visitTimeOf,
     });
     const m = Math.round(bounds.width * EDGE_RATIO);
     if (m <= 0) return raw;
@@ -404,7 +423,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       contentWidth: raw.contentWidth + m * 2,
       bands: raw.bands.map((b) => ({ ...b, x: b.x + m })),
     };
-  }, [metrics, tiles, groups, wallIds, bounds.width]);
+  }, [metrics, tiles, groups, isTileVisible, visitTimeOf, bounds.width]);
   const bands = bandLayout?.bands ?? [];
   const bandOf = bandLayout?.bandOf ?? {};
   const bandById = useMemo(() => {
@@ -491,7 +510,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   /** 「磁贴中心（内容区坐标）」→ 落点：目标带 + 带内格 + 含义 */
   const resolveIntent = useCallback(
     (id: string, centerX: number, centerY: number): DropIntent | null => {
-      const tile = useTileStore.getState().tiles[id];
+      const store = useTileStore.getState();
+      const tile = store.tiles[id];
       if (!metrics || !tile) return null;
       return resolveDropIntent({
         bands,
@@ -502,9 +522,16 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         centerY,
         w: tile.grid.w,
         h: tile.grid.h,
+        // 未分组带：位置由最近访问时间自动排位决定（widget 仍按指针格 = 手动位）
+        ungrouped: {
+          tiles: store.tiles,
+          visitTimeOf,
+          isVisible: isTileVisible,
+          sourceKind: tile.kind,
+        },
       });
     },
-    [bandOf, bands, metrics],
+    [bandOf, bands, isTileVisible, metrics, visitTimeOf],
   );
 
   /** 拖动中：解译落点 + 写预览（灰框像素 / 目标带让位 / 高亮） */
@@ -520,7 +547,22 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       }
       setGhost(intent.pixels);
       const band = bandById[intent.bandId] ?? null;
-      setDisplacedPreview(band ? displaceTiles(band.gridMap, intent.grid, id) : {});
+      if (intent.ungroupedLayout) {
+        // 未分组是自动排位：预览不是“推开别人”，而是“插入后的整带重排”，
+        // 所以直接把假想布局与当前布局的差异当作让位预览（预览即落点）。
+        const current = band?.gridMap ?? {};
+        const diff: Record<string, TileGrid> = {};
+        for (const [tid, g] of Object.entries(intent.ungroupedLayout)) {
+          if (tid === id) continue;
+          const cur = current[tid];
+          if (!cur || cur.col !== g.col || cur.row !== g.row || cur.w !== g.w || cur.h !== g.h) {
+            diff[tid] = g;
+          }
+        }
+        setDisplacedPreview(diff);
+      } else {
+        setDisplacedPreview(band ? displaceTiles(band.gridMap, intent.grid, id) : {});
+      }
       setDropHint((prev) =>
         prev && prev.bandId === intent.bandId && prev.tileId === intent.targetTileId
           ? prev

@@ -244,6 +244,10 @@ function enforceInvariant(tiles: Record<string, Tile>, groupId: string): Record<
  * 所有会落盘的写操作都必须过这里；`moveTile` 这种每帧的瞬态写例外。
  */
 function normalizeBand(tiles: Record<string, Tile>, bandId: string): Record<string, Tile> {
+  // 未分组带的布局由最近访问时间自动派生（bandLayout.layoutUngroupedBand）：
+  // agent/browser 的 col/row 由排序决定、widget 是保留手动位置的“障碍”，
+  // 所以这里不参与规范化（否则会把 widget 的手动位置改掉）。
+  if (bandId === UNGROUPED_BAND_ID) return tiles;
   let next: Record<string, Tile> = { ...tiles };
   for (const tile of Object.values(next)) {
     if (tile.groupId !== bandId) continue;

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
-import { MemoryStore } from "./memory.js";
+import { MemoryStore, USER_SCOPE, type MemoryScopeRef } from "./memory.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -218,7 +218,7 @@ export class MomokaAgentCore implements MomokaAgent {
    * 【重要】不要把这些放回 system：它们每轮都在变（技能按关键词、记忆按主题），
    * 放进 system 会让上游前缀缓存**每一轮都失效**。它们只应出现在末尾的 user 消息里。
    */
-  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string }): Promise<string> {
+  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null }): Promise<string> {
     const sections: string[] = [];
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
@@ -233,15 +233,27 @@ export class MomokaAgentCore implements MomokaAgent {
       if (contents.length > 0) sections.push(`## 可用技能（按需使用）\n${contents.join("\n\n")}`);
     }
 
-    // 长期记忆：按主题注入相关跨会话记忆
+    // 长期记忆：按主题注入（先看本 Agent 自己的作用域，再看 user 全局）
     if (input.topic) {
-      const memories = await this.memoryStore.searchLongTerm(input.topic);
+      const refs = await this.memoryRefsForSession(input.sessionId);
+      const memories = await this.memoryStore.searchScopes(input.topic, refs);
       if (memories.length > 0) {
-        sections.push(`## 相关长期记忆\n${memories.map((memory) => `- ${memory.content}`).join("\n")}`);
+        sections.push(`## 相关长期记忆\n${memories.map((memory) => `- [${memory.ownerScope}/${memory.scopeId}] ${memory.content}`).join("\n")}`);
       }
     }
 
     return sections.join("\n\n");
+  }
+
+  /** 本轮记忆检索的作用域链：本 Agent 自己的分区优先，再回落 user 全局 */
+  private async memoryRefsForSession(sessionId?: string | null): Promise<MemoryScopeRef[]> {
+    const refs: MemoryScopeRef[] = [USER_SCOPE];
+    if (!sessionId || !this.agentRegistry) return refs;
+    try {
+      const record = await this.agentRegistry.agentBySessionId(sessionId);
+      if (record) refs.unshift({ scope: "agent", scopeId: record.id });
+    } catch { /* 反查不到就只用 user 作用域 */ }
+    return refs;
   }
 
   /** 展开消息引用句柄 &msg_<messageId>（去掉 msg_ 前缀的短 id）：替换为源消息全文，供模型精确回溯 */
@@ -369,7 +381,7 @@ ${ref.message.content}`;
     };
     let result: ModelRunResult;
     try {
-      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage });
+      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId });
       result = await this.options.modelClient.run(
         [turnContext, "## Current User Request", expandedMessage].filter(Boolean).join("\n\n"),
         {
@@ -433,7 +445,9 @@ ${ref.message.content}`;
     const output = await this.memoryStore.getOutput(request.outputId);
     if (!output) throw new MomokaHttpError(404, `Unknown output_id: ${request.outputId}`);
     const judgment = await this.memoryStore.recordJudgment(request);
-    await this.memoryStore.promoteToLongTerm(judgment);
+    // 落进产生这条输出的 Agent 自己的作用域（反查不到就进 user 全局）
+    const promoteScope = (await this.memoryRefsForSession(output.sessionId ?? null))[0] ?? USER_SCOPE;
+    await this.memoryStore.promoteToLongTerm(judgment, promoteScope);
     const label = LIKERT_LABELS[request.score] ?? "";
     const reflection = analyzeJudgment({ score: request.score, label, annotatedText: judgment.context, topic: judgment.topic, userComment: judgment.comment });
     const base: JudgeResponse = { runId: makeId("run"), outputId: request.outputId, score: request.score, label, analysis: reflection.summary, reflection, annotatedText: judgment.context, comment: judgment.comment, preferenceUpdate: { updated: false, promoted: [] }, evolutionProposals: [] };

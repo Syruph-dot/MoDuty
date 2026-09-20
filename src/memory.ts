@@ -1,9 +1,10 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { judgmentFromDisk, judgmentToDisk, outputFromDisk, outputToDisk } from "./casing.js";
 import { readJsonList, writeJsonList } from "./json-file.js";
+import { atomicWriteJson } from "./write-queue.js";
 import type { JudgmentRecord, OutputRecord } from "./types.js";
 
 const CONTEXT_WINDOW_CHARS = 20;
@@ -12,7 +13,11 @@ export interface LongTermMemoryEntry {
   id: string;
   content: string;
   topic: string;
-  source: "judgment" | "explicit";
+  /** 归属层：用户全局 / 项目 / 某个 Agent / 某个会话 */
+  ownerScope: MemoryScope;
+  /** 该层内的具体 id（user 与 project 用固定值） */
+  scopeId: string;
+  source: "judgment" | "explicit" | "legacy";
   outputId?: string;
   createdAt: string;
   lastAccessedAt?: string;
@@ -20,15 +25,49 @@ export interface LongTermMemoryEntry {
   [key: string]: unknown;
 }
 
-const LONG_TERM_MAX_ENTRIES = 500;
+/** 记忆作用域：P2 的分区维度 */
+export type MemoryScope = "user" | "project" | "agent" | "session";
+
+export interface MemoryScopeRef {
+  scope: MemoryScope;
+  scopeId: string;
+}
+
+export const USER_SCOPE: MemoryScopeRef = { scope: "user", scopeId: "user" };
+export const PROJECT_SCOPE: MemoryScopeRef = { scope: "project", scopeId: "project" };
+
+export interface SearchOptions {
+  limit?: number;
+  /** 只在某个作用域内检索；缺省 USER_SCOPE */
+  ref?: MemoryScopeRef;
+}
+
+const LONG_TERM_MAX_ENTRIES_PER_SCOPE = 500;
 const PROMOTE_SCORE = 6;
 const PROMOTE_MAX_CHARS = 300;
+const MIGRATION_MARKER = ".lt-migrated.json";
 
+/**
+ * 长期记忆存储。
+ *
+ * P2 起按作用域分区落盘：`<memoryDir>/memory/lt/<scope>/<scopeId>.json`
+ * （user / project 用固定 scopeId；agent / session 各自一份）。
+ * 旧的全局 `<memoryDir>/.long-term.json` 会在首次访问时**幂等迁移**到 user 作用域，
+ * 原文件保留不动（可回滚），迁移完成后写 `<memoryDir>/memory/lt/.lt-migrated.json` 标记。
+ */
 export class MemoryStore {
   constructor(readonly memoryDir: string) { this.memoryDir = path.resolve(memoryDir); }
+  private migrationChecked = false;
+
   outputsPath() { return path.join(this.memoryDir, ".outputs", "outputs.json"); }
   annotationLedgerPath() { return path.join(this.memoryDir, ".annotations", "ledger.json"); }
-  longTermPath() { return path.join(this.memoryDir, ".long-term.json"); }
+  /** 长期记忆根目录（分区父目录） */
+  longTermRoot() { return path.join(this.memoryDir, "memory", "lt"); }
+  /** 某个作用域的分区文件 */
+  longTermPath(ref: MemoryScopeRef = USER_SCOPE) { return path.join(this.longTermRoot(), ref.scope, `${ref.scopeId}.json`); }
+  /** 旧版全局长期记忆文件（迁移来源） */
+  legacyLongTermPath() { return path.join(this.memoryDir, ".long-term.json"); }
+  private migrationMarkerPath() { return path.join(this.longTermRoot(), MIGRATION_MARKER); }
 
   async recordOutput(input: Omit<OutputRecord, "timestamp"> & { timestamp?: string }): Promise<OutputRecord> {
     await mkdir(path.dirname(this.outputsPath()), { recursive: true });
@@ -65,39 +104,152 @@ export class MemoryStore {
 
   /**
    * 长期记忆：批注晋升。高分（≥6）或带用户批注的判断自动沉淀为跨会话记忆。
-   * 返回 null 表示没有值得记忆的内容或已存在相同记忆（去重）。
+   * 返回 null 表示没有值得记忆的内容或该作用域内已存在相同记忆（去重）。
    */
-  async promoteToLongTerm(judgment: JudgmentRecord): Promise<LongTermMemoryEntry | null> {
+  async promoteToLongTerm(judgment: JudgmentRecord, ref: MemoryScopeRef = USER_SCOPE): Promise<LongTermMemoryEntry | null> {
     const content = (judgment.comment || judgment.quote || "").trim().slice(0, PROMOTE_MAX_CHARS);
     if (!content) return null;
     const worthy = judgment.score >= PROMOTE_SCORE || judgment.commentSource === "user_comment";
     if (!worthy) return null;
-    const records = await this.readLongTerm();
+    const records = await this.readScope(ref);
     if (records.some((record) => record.content === content)) return null;
     const entry: LongTermMemoryEntry = {
       id: `mem_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
       content,
       topic: judgment.topic ?? "",
+      ownerScope: ref.scope,
+      scopeId: ref.scopeId,
       source: "judgment",
       outputId: judgment.outputId,
       createdAt: new Date().toISOString(),
       accessCount: 0,
     };
     records.push(entry);
-    await writeJsonList(this.longTermPath(), records.slice(-LONG_TERM_MAX_ENTRIES));
+    await this.writeScope(ref, records.slice(-LONG_TERM_MAX_ENTRIES_PER_SCOPE));
     return entry;
   }
 
-  /** 按 topic 关键词检索长期记忆（命中更新访问统计），返回最多 limit 条 */
-  async searchLongTerm(topic: string, limit = 3): Promise<LongTermMemoryEntry[]> {
-    const records = await this.readLongTerm();
-    if (records.length === 0 || !topic) return [];
-    const topicLower = topic.toLowerCase();
-    const keywords = topicLower
-      .split(/[\s,，。;；:：/\\]+/u)
-      .map((word) => word.trim())
-      .filter((word) => word.length >= 2);
-    const scored = records.map((record) => {
+  /**
+   * 按 topic 关键词在单个作用域内检索（命中更新访问统计）。
+   * 兼容旧签名：第二个参数既可传 limit 数字，也可传 { limit, ref }。
+   */
+  async searchLongTerm(topic: string, limitOrOptions: number | SearchOptions = 3): Promise<LongTermMemoryEntry[]> {
+    const options: SearchOptions = typeof limitOrOptions === "number" ? { limit: limitOrOptions } : limitOrOptions;
+    const ref = options.ref ?? USER_SCOPE;
+    const limit = options.limit ?? 3;
+    const records = await this.readScope(ref);
+    const hits = rankEntries(records, topic).slice(0, Math.max(0, limit));
+    if (hits.length > 0) {
+      const now = new Date().toISOString();
+      for (const hit of hits) {
+        hit.record.lastAccessedAt = now;
+        hit.record.accessCount = (hit.record.accessCount ?? 0) + 1;
+      }
+      await this.writeScope(ref, records);
+    }
+    return hits.map((hit) => hit.record);
+  }
+
+  /**
+   * 跨作用域检索：按 refs 顺序各自打分后合并（同 id 去重），取全局前 limit。
+   * 值日生/执行者注入用「自己的 agent 作用域 + user 全局」这条链。
+   */
+  async searchScopes(topic: string, refs: MemoryScopeRef[], limit = 3): Promise<LongTermMemoryEntry[]> {
+    if (refs.length === 0) return [];
+    const scored: Array<{ record: LongTermMemoryEntry; score: number }> = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const records = await this.readScope(ref);
+      for (const item of rankEntries(records, topic)) {
+        if (seen.has(item.record.id)) continue;
+        seen.add(item.record.id);
+        scored.push(item);
+      }
+    }
+    const hits = scored.sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit));
+    // 访问统计按作用域回写
+    const touched = new Set<string>();
+    const byScope = new Map<string, { ref: MemoryScopeRef; ids: Set<string> }>();
+    for (const hit of hits) {
+      const key = `${hit.record.ownerScope}/${hit.record.scopeId}`;
+      if (!byScope.has(key)) byScope.set(key, { ref: { scope: hit.record.ownerScope, scopeId: hit.record.scopeId }, ids: new Set() });
+      byScope.get(key)!.ids.add(hit.record.id);
+      touched.add(hit.record.id);
+    }
+    const now = new Date().toISOString();
+    for (const { ref, ids } of byScope.values()) {
+      const records = await this.readScope(ref);
+      let changed = false;
+      for (const record of records) {
+        if (!ids.has(record.id)) continue;
+        record.lastAccessedAt = now;
+        record.accessCount = (record.accessCount ?? 0) + 1;
+        changed = true;
+      }
+      if (changed) await this.writeScope(ref, records);
+    }
+    return hits.map((hit) => hit.record);
+  }
+
+  /** 读取某个作用域的全部条目（P10 的列表/编辑接口会用） */
+  async listScope(ref: MemoryScopeRef): Promise<LongTermMemoryEntry[]> {
+    return await this.readScope(ref);
+  }
+
+  /** 幂等迁移旧版全局长期记忆到 user 作用域；返回迁移条数 */
+  async migrateLegacy(): Promise<number> {
+    if (this.migrationChecked) return 0;
+    this.migrationChecked = true;
+    try {
+      await readFile(this.migrationMarkerPath(), "utf8");
+      return 0;
+    } catch { /* 尚未迁移 */ }
+
+    const legacy = (await readJsonList(this.legacyLongTermPath())).filter(isLongTermEntry);
+    let imported = 0;
+    if (legacy.length > 0) {
+      const current = await this.readScope(USER_SCOPE, { skipMigration: true });
+      const known = new Set(current.map((entry) => entry.content));
+      for (const entry of legacy) {
+        if (known.has(entry.content)) continue;
+        known.add(entry.content);
+        current.push({ ...entry, ownerScope: "user", scopeId: "user", source: entry.source === "explicit" ? "explicit" : "legacy" });
+        imported += 1;
+      }
+      await this.writeScope(USER_SCOPE, current);
+    }
+    await atomicWriteJson(this.migrationMarkerPath(), { migratedAt: new Date().toISOString(), imported });
+    return imported;
+  }
+
+  // ---------------------------------------------------------------- 内部
+
+  private async readScope(ref: MemoryScopeRef, options: { skipMigration?: boolean } = {}): Promise<LongTermMemoryEntry[]> {
+    if (!options.skipMigration && ref.scope === "user" && ref.scopeId === "user") await this.migrateLegacy();
+    const parsed = await readJsonList(this.longTermPath(ref));
+    return parsed.filter(isLongTermEntry).map((entry) => ({
+      ...entry,
+      ownerScope: ref.scope,
+      scopeId: ref.scopeId,
+      source: entry.source ?? "judgment",
+    }));
+  }
+
+  private async writeScope(ref: MemoryScopeRef, records: LongTermMemoryEntry[]): Promise<void> {
+    await atomicWriteJson(this.longTermPath(ref), records);
+  }
+}
+
+/** 词面打分：整串命中权重高于分词命中（P4 会在此基础上加类型权重/新颖度/置信度） */
+function rankEntries(records: LongTermMemoryEntry[], topic: string): Array<{ record: LongTermMemoryEntry; score: number }> {
+  if (records.length === 0 || !topic) return [];
+  const topicLower = topic.toLowerCase();
+  const keywords = topicLower
+    .split(/[\s,，。;；:：/\\]+/u)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 2);
+  return records
+    .map((record) => {
       const contentLower = record.content.toLowerCase();
       const topicOfRecord = (record.topic ?? "").toLowerCase();
       let score = 0;
@@ -106,23 +258,9 @@ export class MemoryStore {
         if (contentLower.includes(keyword) || topicOfRecord.includes(keyword)) score += 1;
       }
       return { record, score };
-    });
-    const hits = scored.filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);
-    if (hits.length > 0) {
-      const now = new Date().toISOString();
-      for (const hit of hits) {
-        hit.record.lastAccessedAt = now;
-        hit.record.accessCount = (hit.record.accessCount ?? 0) + 1;
-      }
-      await writeJsonList(this.longTermPath(), records);
-    }
-    return hits.map((hit) => hit.record);
-  }
-
-  private async readLongTerm(): Promise<LongTermMemoryEntry[]> {
-    const parsed = await readJsonList(this.longTermPath());
-    return Array.isArray(parsed) ? parsed.filter(isLongTermEntry) : [];
-  }
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
 }
 
 function isLongTermEntry(value: unknown): value is LongTermMemoryEntry {

@@ -19,7 +19,11 @@ declare global {
  *
  * 视线：资源里的 `Look_*` 只是「眼球朝某个固定方向」的单帧姿势（把 R_Eye / L_Eye 骨平移几单位），
  * 不会跟随鼠标。要跟随鼠标只能自己驱动这两根眼骨：每帧在 `state.apply` 之后、`updateWorldTransform`
- * 之前按指针位置叠加位移（见 applyGaze）。
+ * 之前按指针位置叠加位移。
+ *
+ * 摸头：资源里的 `Pat_*` 是**纯表情**（腮红/眉毛/眼睑，0 根骨骼），本身不跟随任何东西；
+ * “跟随鼠标”是叠加实现的——保持期内把 Neck / Head 朝鼠标方向偏一点（同视线那套换基），
+ * 并额外叠一层 `Dev_Hair`（73 根头发/光环骨）让反应更生动。
  */
 const SPINE_URL = "/spines/momoka_weekdungeon/Momoka_weekdungeon.skel";
 const PIXI_URL = "/lib/pixi.js";
@@ -39,9 +43,18 @@ const PAT_ZONE_RATIO = 0.4;
 const PAT_HOLD_MS = 2200;
 /** overlay 轨道的进出混入时长（秒）：姿势层是单帧，直接切会跳，混合一下更自然 */
 const OVERLAY_MIX = 0.18;
-/** 0 轨 = 常驻站姿；1 轨 = 附件姿势层(A)；2 轨 = 骨骼动作层(M) */
+/** 0 轨 = 常驻站姿；1 轨 = 附件姿势层(A)；2 轨 = 骨骼动作层(M)；3 轨 = 摸头期间的头发/光环摆动 */
 const TRACK_ATTACH = 1;
 const TRACK_MOTION = 2;
+const TRACK_HAIR = 3;
+/** 摸头期间头/颈朝鼠标方向偏转：最大约 9°，颈只跟一部分 */
+const PAT_TILT_MAX = 0.16;
+const PAT_TILT_BONES: Array<{ name: string; weight: number }> = [
+  { name: "Neck", weight: 0.45 },
+  { name: "Head", weight: 1 },
+];
+/** 摸头偏转的进出平滑系数（松手后也靠它缓回去，不硬跳） */
+const PAT_TILT_SMOOTH = 0.18;
 /** 视线最大偏转（spine 世界单位，y 向下）；资源自带的 Look 姿势约 7 单位 */
 const GAZE_MAX_X = 10;
 const GAZE_MAX_Y = 6;
@@ -51,12 +64,30 @@ const GAZE_SMOOTH = 0.22;
 /** 立绘情绪状态：站姿 / 摸头（点击上方 2/5） */
 type DutyMood = "idle" | "pat";
 
-/** 一组反应动画：A=附件层，M=动作层，End*=收尾层 */
+/** 一组反应动画：A=附件层，M=动作层，hair=附加的头发层，End*=收尾层 */
 interface Reaction {
   a?: string;
   m?: string;
+  hair?: string;
   endA?: string;
   endM?: string;
+}
+
+/** 某动画键了哪些骨骼（rotate/translate/scale/shear 四类 timeline 的低 24 位是骨骼下标） */
+function keyedBoneIndices(animation: any): Set<number> {
+  const indices = new Set<number>();
+  for (const timeline of animation?.timelines ?? []) {
+    let id: unknown;
+    try {
+      id = timeline.getPropertyId?.();
+    } catch {
+      continue;
+    }
+    if (typeof id !== "number" || !Number.isFinite(id)) continue;
+    const type = id >>> 24;
+    if (type <= 3) indices.add(id - (type << 24));
+  }
+  return indices;
 }
 
 let runtimePromise: Promise<void> | null = null;
@@ -145,8 +176,10 @@ function visibleBounds(
  *
  * - 运行时与资源都在 public/ 下按需加载，主包不引入 pixi；
  * - 隐藏週間ダンジョン场景自带的 UI 分支，只保留角色，并按「上一半」取景；
- * - 动画分层：Idle 常驻 0 轨；摸头的 A（附件）与 M（动作）分别叠到 1 / 2 轨，收尾用 End* 播一遍再清轨；
+ * - 动画分层：Idle 常驻 0 轨；摸头的 A（附件）与 M（动作）分别叠到 1 / 2 轨，头发叠到 3 轨，
+ *   收尾用 End* 播一遍再清轨；
  * - 视线：每帧驱动 R_Eye / L_Eye 两根眼骨跟随鼠标（资源自带的 Look 只是固定方向的单帧姿势）；
+ * - 摸头跟随：保持期内 Neck / Head 朝鼠标方向偏转（进出都平滑），并叠头发摆动；
  * - 交互：摸头只在卡片上方 2/5 生效，且该区域内不让事件冒泡到磁贴壳（不拖动、不打开面板）；
  *   下方 3/5 留给磁贴壳的拖动/打开；
  * - 容器变化（磁贴开合/缩放）用 ResizeObserver 跟随；
@@ -194,6 +227,12 @@ export default function DutyPortrait() {
     /** 视线目标 / 当前（spine 世界单位，y 向下）；离开立绘时回中 */
     const gazeTarget = { x: 0, y: 0 };
     const gazeCurrent = { x: 0, y: 0 };
+    /** 指针横向归一化位置（-1..1），摸头跟随时用 */
+    let pointerNx = 0;
+    /** 摸头跟随的强度（0..1）：进入/退出都插值，避免切状态时头硬跳 */
+    let followAmount = 0;
+    /** 摸头时朝鼠标偏转的骨骼（只收 Idle 自己也键了的，保证叠加不累积） */
+    let tiltBones: Array<{ bone: any; weight: number }> = [];
 
     /** 量取画布实际占据的盒子：优先立绘舞台自身（绝对定位后尺寸确定）；退化时回退到外层立绘区 */
     const measure = () => {
@@ -230,14 +269,15 @@ export default function DutyPortrait() {
     };
 
     /**
-     * 视线：把「世界方向」的偏移换算到眼骨的父骨局部坐标系后写回骨骼。
-     * 眼骨父级是 Head_Rot（头部带旋转），所以不能直接把鼠标方向当局部方向用，
-     * 必须用父骨世界矩阵的逆来换基；否则头一歪视线方向就不对了。
+     * 每帧覆盖层（在 state.apply 之后、updateWorldTransform 之前跑）：
+     * 1) 视线：把「世界方向」的偏移换算到眼骨的父骨局部坐标系后写回骨骼。
+     *    眼骨父级是 Head_Rot（带旋转），不能把鼠标方向直接当局部方向用，必须用父骨世界矩阵的逆换基。
+     * 2) 摸头跟随：保持期内让 Neck / Head 朝鼠标方向偏转。旋转是世界量，只有父级线性部分手性为负时
+     *    才需要反号；且只对「Idle 也键了的骨骼」叠加，否则 Idle 不写回时会逐帧累积。
      */
-    const applyGaze = () => {
+    const applyOverrides = () => {
       gazeCurrent.x += (gazeTarget.x - gazeCurrent.x) * GAZE_SMOOTH;
       gazeCurrent.y += (gazeTarget.y - gazeCurrent.y) * GAZE_SMOOTH;
-      if (eyeBones.length === 0) return;
       for (const bone of eyeBones) {
         const parent = bone.parent;
         if (!parent) continue;
@@ -248,6 +288,17 @@ export default function DutyPortrait() {
         bone.x = bone.data.x + (m.d * gazeCurrent.x - m.c * gazeCurrent.y) / det;
         bone.y = bone.data.y + (-m.b * gazeCurrent.x + m.a * gazeCurrent.y) / det;
       }
+
+      followAmount += ((mood === "pat" ? 1 : 0) - followAmount) * PAT_TILT_SMOOTH;
+      if (followAmount < 0.002) followAmount = 0;
+      if (followAmount === 0) return;
+      const worldTilt = pointerNx * PAT_TILT_MAX * followAmount;
+      for (const item of tiltBones) {
+        const m = item.bone.parent?.matrix;
+        const det = m ? m.a * m.d - m.b * m.c : 1;
+        if (!Number.isFinite(det) || Math.abs(det) < 1e-6) continue;
+        item.bone.rotation += worldTilt * item.weight * (det < 0 ? -1 : 1);
+      }
     };
 
     /** 指针移动 → 归一化到 -1..1 → 换算成最大偏转内的世界偏移 */
@@ -256,6 +307,7 @@ export default function DutyPortrait() {
       if (rect.width < 2 || rect.height < 2) return;
       const nx = Math.max(-1, Math.min(1, ((event.clientX - rect.left) / rect.width) * 2 - 1));
       const ny = Math.max(-1, Math.min(1, ((event.clientY - rect.top) / rect.height) * 2 - 1));
+      pointerNx = nx;
       gazeTarget.x = nx * GAZE_MAX_X;
       gazeTarget.y = ny * GAZE_MAX_Y;
     };
@@ -274,16 +326,18 @@ export default function DutyPortrait() {
       spine.state.setAnimation(track, name, true);
     };
 
-    /** 进入摸头：A（附件：腮红/眉毛/眼睑）与 M（动作）分层叠加，Idle 继续在 0 轨跑 */
+    /** 进入摸头：A（附件：腮红/眉毛/眼睑）与 M（动作）分层叠加，另外叠一层头发摆动 */
     const applyPat = () => {
       if (!spine) return;
       setOverlay(TRACK_ATTACH, pat.a);
       setOverlay(TRACK_MOTION, pat.m);
+      setOverlay(TRACK_HAIR, pat.hair);
     };
 
     /** 摸头收尾：先播 PatEnd_*（若资源提供），播完由状态机监听清轨；没有就淡出 */
     const releasePat = () => {
       if (!spine) return;
+      setOverlay(TRACK_HAIR, undefined);
       if (!pat.endA && !pat.endM) {
         setOverlay(TRACK_ATTACH, undefined);
         setOverlay(TRACK_MOTION, undefined);
@@ -365,20 +419,29 @@ export default function DutyPortrait() {
           const has = new Set(names);
           const pick = (...candidates: string[]): string | undefined => candidates.find((name) => has.has(name));
           const idle = pick("Idle_01", "Start01_Idle_01", names[0]);
+          const idleAnimation = data.animations.find((animation: { name: string }) => animation.name === idle);
           pat = {
             a: pick("Pat_01_A", "Dev_Pat_01_M"),
             m: pick("Pat_01_M"),
+            hair: pick("Dev_Hair"),
             endA: pick("PatEnd_01_A"),
             endM: pick("PatEnd_01_M"),
           };
           eyeBones = spine.skeleton.bones.filter((bone: any) => EYE_BONE_NAMES.includes(bone.data?.name));
+          // 头/颈只对「Idle 自己也键了的骨骼」做叠加，否则 Idle 不写回时会逐帧累积
+          const idleKeyed = keyedBoneIndices(idleAnimation);
+          tiltBones = PAT_TILT_BONES.map((item) => {
+            const index = spine.skeleton.bones.findIndex((bone: any) => bone.data?.name === item.name);
+            if (index < 0 || !idleKeyed.has(index)) return null;
+            return { bone: spine.skeleton.bones[index], weight: item.weight };
+          }).filter(Boolean) as Array<{ bone: any; weight: number }>;
 
           // 视线注入点：Spine.update 的顺序是 state.update → state.apply → skeleton.updateWorldTransform
           // → slot 同步。包一层 updateWorldTransform，就能在「动画写回骨骼之后、算世界矩阵之前」改眼骨。
           const skeleton = spine.skeleton;
           const originalUpdateWorldTransform = skeleton.updateWorldTransform.bind(skeleton);
           skeleton.updateWorldTransform = () => {
-            applyGaze();
+            applyOverrides();
             originalUpdateWorldTransform();
           };
 

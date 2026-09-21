@@ -79,37 +79,46 @@ export function checkDispatchFidelity(originalAsk: string, task: string): Dispat
   };
 }
 
-/** 腔节时的拒绝文案：把两边原样摆出来，让派发者自己看出写错了哪一段 */
-export function buildDispatchMismatchRefusal(input: { ask: string; task: string; missing: string[] }): string {
-  const clip = (text: string, max: number): string => {
-    const flat = (text ?? "").replace(/\s+/gu, " ").trim();
-    return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-  };
-  return [
-    "错误：任务书与老师的最新消息对不上，已拒绝派发（避免执行者拿错任务白跑）。",
-    "",
-    `老师最新消息（节选）：${clip(input.ask, 300)}`,
-    `你这次的任务书（节选）：${clip(input.task, 300)}`,
-    "",
-    `老师消息里给了这些输入：${input.missing.join("、")}；任务书里一条都没有。`,
-    "请重新调用 agent dispatch：",
-    "- 任务书必须基于老师**这条最新消息**来写，不要沿用历史里的旧任务书或台账里的旧条目文本；",
-    "- 如果只需要其中一部分输入，也至少把需要的那几条写进任务书；",
-    "- 如果老师只是顺带提到而任务确实用不到这些输入，请在任务书里写明这一点再重新派发。",
-  ].join("\n");
+/**
+ * 原话随行的信封（不做拒绝、不改写任务书）。
+ *
+ * 为什么不做硬拒绝（2026-09-21 复盘）：拒绝会把**模型的笔误升级成对老师的阻塞**——
+ * 老师发一句话，因为模型写错参数，任务根本没发出去；也会误伤「老师顺带提了个链接、
+ * 任务确实用不到」这种正常派发。而系统手里本来就有老师的原话：正确做法是**带上它**，
+ * 让执行者永远拿得到真话，老师的任务永远发得出去，笔误不再有致命后果。
+ *
+ * 什么时候附：任务书与老师原话出现任何分歧迹象（句柄缺失，或完全脱节）时才附，
+ * 两边一致时不附，避免每单都塞一段冗余长文。
+ */
+export interface DispatchEnvelope {
+  /** 任务书尾巴要追加的文本（可能为空串） */
+  note: string;
+  /** 分歧留痕描述（不阻断派发，只用于会话留痕与工具返回，让派发者看见） */
+  mismatch: string | null;
+}
+
+/** 附在任务书尾部的老师原话块（截断上限见 ASK_BLOCK_MAX_CHARS） */
+const ASK_BLOCK_MAX_CHARS = 1200;
+
+export function buildDispatchEnvelope(originalAsk: string, task: string): DispatchEnvelope {
+  const ask = (originalAsk ?? '').trim();
+  if (!ask) return { note: '', mismatch: null };
+  const check = checkDispatchFidelity(ask, task);
+  if (check.missing.length === 0) return { note: '', mismatch: null };
+
+  const lines = ['', '（老师原话·任务书以此为准）', ask.slice(0, ASK_BLOCK_MAX_CHARS)];
+  if (check.missing.length > 0) {
+    lines.push('', '其中这些输入务必用上：', ...check.missing.map((token) => `- ${token}`));
+  }
+  const mismatch = check.disconnected
+    ? `任务书与老师原话完全脱节（老师原话里的 ${check.missing.length} 个输入任务书一条都没带）——系统已把老师原话附在任务书尾部，任务书本身未改写`
+    : null;
+  return { note: lines.join("\n"), mismatch };
 }
 
 /**
- * 生成补全说明：只补「原话里有、任务书里没有」的句柄，不改写任务书本身。
- * 没有缺失（或原话里本来就没有句柄）时返回空串，调用方拼接即可。
+ * 兼容入口：只要「要追加的文本」，不关心留痕。
  */
 export function buildDispatchFidelityNote(originalAsk: string, task: string): string {
-  const handles = extractDispatchHandles(originalAsk ?? "");
-  const missing = handles.filter((token) => !task.includes(token));
-  if (missing.length === 0) return "";
-  return [
-    "",
-    "（派发保真补全：老师原话里给了下面这些，任务书里没带上 → 一并按此处理）",
-    ...missing.map((token) => `- ${token}`),
-  ].join("\n");
+  return buildDispatchEnvelope(originalAsk, task).note;
 }

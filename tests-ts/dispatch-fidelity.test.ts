@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildDispatchEnvelope,
   buildDispatchFidelityNote,
-  buildDispatchMismatchRefusal,
   checkDispatchFidelity,
   extractDispatchHandles,
 } from "../src/dispatch-fidelity.js";
@@ -26,7 +26,7 @@ test("派发保真：抽出原话里的链接，并补进丢失它的任务书",
     "https://github.com/lMakiNishikinol/MDG-BlogWebsite/tree/my-local-work",
   ]);
   const note = buildDispatchFidelityNote(REAL_ASK, REAL_TASK);
-  assert.match(note, /派发保真补全/);
+  assert.match(note, /（老师原话·任务书以此为准）/);
   assert.match(note, /https:\/\/github\.com\/lMakiNishikinol\/MDG-BlogWebsite/);
   // 只补缺失项：任务书已经带上链接时不应再补
   assert.equal(buildDispatchFidelityNote(REAL_ASK, `看下这个仓库 ${REAL_ASK}`), "");
@@ -66,33 +66,44 @@ test("自我身份块：给出可用 id，缺 id/sessionId 时不注入半截信
   );
 });
 
-test("一致性体检：老师原话有句柄、任务书一个没沾 → 判定为脱节（实测 2026-09-21 的错派）", () => {
+test("原话随行：任务书与老师原话完全脱节时，附上老师原话而不是拒绝派发", () => {
   const ask = [
     "P1 横屏（适合电脑）  P2 竖屏（适合手机）  【博客信息】",
     "标题：Jev 官方博客解读：把“快思考”做成软件原语",
     "来源：https://typesafe.ai/blog/introducing-system-one-models-and-jev",
-    "文档：https://docs.typesafe.ai/introduction  评测：https://evals.typesafe.ai/",
+    "评测：https://evals.typesafe.ai/",
   ].join("\n");
   const wrongTask = "研究一下别人给我的资产，他们的网站的服务器要到期，准备挂到我们这边。给出方案让我看看";
-  const check = checkDispatchFidelity(ask, wrongTask);
-  assert.equal(check.disconnected, true);
-  assert.equal(check.missing.length, 3);
-  const refusal = buildDispatchMismatchRefusal({ ask, task: wrongTask, missing: check.missing });
-  assert.match(refusal, /任务书与老师的最新消息对不上，已拒绝派发/);
-  assert.match(refusal, /不要沿用历史里的旧任务书/);
-  assert.match(refusal, /typesafe\.ai\/blog\/introducing-system-one-models-and-jev/);
+  const envelope = buildDispatchEnvelope(ask, wrongTask);
+  // 不拒绝：note 里带上了老师原话全文与缺失输入清单
+  assert.match(envelope.note, /（老师原话·任务书以此为准）/);
+  assert.match(envelope.note, /Jev 官方博客解读/);
+  assert.match(envelope.note, /typesafe\.ai\/blog\/introducing-system-one-models-and-jev/);
+  assert.match(envelope.note, /其中这些输入务必用上：/);
+  // 留痕描述：说清发生了什么，且明确任务书本身没被改写
+  assert.equal(typeof envelope.mismatch, "string");
+  assert.match(String(envelope.mismatch), /任务书与老师原话完全脱节/);
+  assert.match(String(envelope.mismatch), /任务书本身未改写/);
 });
 
-test("一致性体检：任务书带上其中任意一条句柄就不算脱节（只是漏了其它几条，走补全）", () => {
+test("原话随行：只是漏了其中几条输入时也附原话，但不留脱节留痕", () => {
   const ask = "看 https://a.example/x 和 https://b.example/y";
   const partial = "研究 https://a.example/x 这篇";
-  const check = checkDispatchFidelity(ask, partial);
-  assert.equal(check.disconnected, false);
-  assert.deepEqual(check.missing, ["https://b.example/y"]);
+  const envelope = buildDispatchEnvelope(ask, partial);
+  assert.match(envelope.note, /（老师原话·任务书以此为准）/);
+  assert.match(envelope.note, /- https:\/\/b\.example\/y/);
+  assert.equal(envelope.mismatch, null);
 });
 
-test("一致性体检：老师原话本来就没有句柄时不判定为脱节（纯文字任务照常派发）", () => {
-  const check = checkDispatchFidelity("帮我写一篇短文", "写一篇 500 字短文");
-  assert.equal(check.disconnected, false);
-  assert.equal(check.askHandles.length, 0);
+test("原话随行：两边一致时不附加任何文本（不塞冗余长文）", () => {
+  const ask = "研究 https://a.example/x";
+  const envelope = buildDispatchEnvelope(ask, "研究 https://a.example/x 并给出结论");
+  assert.equal(envelope.note, "");
+  assert.equal(envelope.mismatch, null);
+});
+
+test("原话随行：老师原话本来就没有句柄时不附加", () => {
+  const envelope = buildDispatchEnvelope("帮我写一篇短文", "写一篇 500 字短文");
+  assert.equal(envelope.note, "");
+  assert.equal(envelope.mismatch, null);
 });

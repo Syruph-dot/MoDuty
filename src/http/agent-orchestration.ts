@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildDispatchFidelityNote, buildDispatchMismatchRefusal, checkDispatchFidelity } from "../dispatch-fidelity.js";
+import { buildDispatchEnvelope } from "../dispatch-fidelity.js";
 import { buildReworkMessage, buildVerdictWakeMessage } from "../verdict-prompt.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
@@ -395,26 +395,24 @@ export async function handleLedgerQuery(
  * 取调用者会话最后一条老师消息（跳过 contextOnly 的注入消息），
  * 抽出里面出现、而任务书里没带上的链接/路径 → 返回补全说明（没有缺失则返回空串）。
  */
+/**
+ * 老师原话随行：任务书与老师原话有分歧迹象时，把原话整段附在任务书尾部。
+ * 不做拒绝、不改写任务书——系统手里有原话，就该把它带上，而不是把模型的笔误变成对老师的阻塞。
+ */
 async function dispatchFidelityNote(
   deps: OrchestrationDeps,
   callerSessionId: string,
   task: string,
-): Promise<{ note: string; refusal: string | null }> {
+): Promise<{ note: string; mismatch: string | null }> {
   try {
     const messages = await deps.agent.sessionManager.getMessages(callerSessionId);
     const lastUser = [...messages]
       .reverse()
       .find((message) => message.role === "user" && !message.contextOnly && String(message.content ?? "").trim());
-    if (!lastUser) return { note: "", refusal: null };
-    const ask = String(lastUser.content ?? "");
-    // 完全脱节（老师原话有句柄、任务书一个没沾）→ 拒绝派发，别用补全掩盖写错的任务书
-    const check = checkDispatchFidelity(ask, task);
-    if (check.disconnected) {
-      return { note: "", refusal: buildDispatchMismatchRefusal({ ask, task, missing: check.missing }) };
-    }
-    return { note: buildDispatchFidelityNote(ask, task), refusal: null };
+    if (!lastUser) return { note: "", mismatch: null };
+    return buildDispatchEnvelope(String(lastUser.content ?? ""), task);
   } catch {
-    return { note: "", refusal: null }; // 拿不到原话不阻断派发，只是少一层兜底
+    return { note: "", mismatch: null }; // 拿不到原话不阻断派发，只是少一层兜底
   }
 }
 
@@ -444,7 +442,6 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
 
   // 派发保真：老师原话里的链接/路径若没进任务书，自动补在尾部（执行者才有输入可用）
   const fidelity = await dispatchFidelityNote(deps, caller.sessionId, task);
-  if (fidelity.refusal) return { ok: false, output: fidelity.refusal };
   const taskWithFidelity = (task + fidelity.note).slice(0, LEDGER_TASK_MAX_CHARS);
 
   const entry = await deps.registry.recordDispatch({
@@ -456,6 +453,17 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     linkedSessions: extractSessionRefs(taskWithFidelity),
   });
 
+  // 任务书与老师原话明显对不上：不拦，但留痕（会话可见）+ 在工具返回里说清楚，
+  // 让派发者自己发现「任务书不是这次请求」，需要时她可以重派一条。
+  if (fidelity.mismatch) {
+    console.warn(`[dispatch] ${entry.id} 任务书与老师原话不一致：${fidelity.mismatch}`);
+    await deps.agent.sessionManager
+      .addMessage(caller.sessionId, "system", `【派发保真】${entry.id}：${fidelity.mismatch}`)
+      .catch(() => undefined);
+  }
+  const fidelityWarn = fidelity.mismatch ? `
+⚠ 注意：${fidelity.mismatch}。若任务书本身写错了，请用老师这条最新消息重派一条并取消本条。` : "";
+
   if (input.kind === "chat") {
     // 同步派发：等执行者本轮结束（结果给调用者）；台账照常进入判读队列
     const result = await driveAgentTurn(deps, target, { message: taskWithFidelity });
@@ -463,7 +471,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     return {
       ok: true,
       dispatchId: entry.id,
-      output: output.slice(0, 4000) || `（执行者无文本输出；台账 ${entry.id} 已进入判读队列）`,
+      output: (output.slice(0, 4000) || `（执行者无文本输出；台账 ${entry.id} 已进入判读队列）`) + fidelityWarn,
     };
   }
 
@@ -490,7 +498,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
   return {
     ok: true,
     dispatchId: entry.id,
-    output: `已派发 ${target.id}「${target.name}」（台账 ${entry.id}）。执行者完成/出错/停转后系统会唤醒你判读，届时用 dispatch verdict 提交判定。`,
+    output: `已派发 ${target.id}「${target.name}」（台账 ${entry.id}）。执行者完成/出错/停转后系统会唤醒你判读，届时用 dispatch verdict 提交判定。${fidelityWarn}`,
   };
 }
 

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { buildDispatchFidelityNote } from "../dispatch-fidelity.js";
-import { buildVerdictWakeMessage } from "../verdict-prompt.js";
+import { buildReworkMessage, buildVerdictWakeMessage } from "../verdict-prompt.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
 import type { MomokaAgentCore } from "../agent.js";
@@ -208,6 +208,25 @@ export async function driveQuestionAnswered(deps: OrchestrationDeps, record: Age
 /* ============================================================
  * 唤醒器：台账条目 → 值日生判读请求（transient 注入，不落历史）
  * ============================================================ */
+
+/** 执行者上一轮实际动作：最后一条 agent 消息的工具序列 + 有没有写下正文 */
+async function lastExecutorAttempt(
+  deps: OrchestrationDeps,
+  target: AgentRecord,
+): Promise<{ tools: string[]; hadText: boolean } | undefined> {
+  try {
+    const messages = await deps.agent.sessionManager.getMessages(target.sessionId);
+    const lastAgent = [...messages].reverse().find((message) => message.role === "agent");
+    if (!lastAgent) return undefined;
+    const calls = (lastAgent as { toolCalls?: Array<{ tool?: string }> }).toolCalls ?? [];
+    return {
+      tools: calls.map((call) => String(call?.tool ?? "")).filter(Boolean),
+      hadText: String(lastAgent.content ?? "").trim().length > 0,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /** 上一轮判读做了什么：取调度者会话里最后一条「有工具调用」的 agent 消息 */
 async function lastJudgeAttemptTools(deps: OrchestrationDeps, dispatcher: AgentRecord): Promise<string[]> {
@@ -718,9 +737,15 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
   if (!target) return "错误：执行者已不存在，无法返工。请改判 deliver。";
   await reflectVerdict(deps, { ...entry, continueCount: updated?.continueCount ?? (entry.continueCount ?? 0) + 1 }, "continue", input.note);
   const note = input.note?.trim();
-  const message = note
-    ? `值日生判读：上一轮产出未通过（${note.slice(0, 150)}）。请继续完成任务。`
-    : "值日生判读：上一轮产出无效或未正常收尾。请继续完成任务。";
+  // 返工不能只发「点评 + 请继续」：带上原任务书、上一轮实际做了什么、以及这一轮必须交到什么程度
+  const previousAttempt = await lastExecutorAttempt(deps, target);
+  const message = buildReworkMessage({
+    entry: { id: entry.id, task: entry.task },
+    ...(note ? { note } : {}),
+    round: updated?.continueCount ?? (entry.continueCount ?? 0) + 1,
+    maxRounds: DISPATCH_MAX_CONTINUE,
+    ...(previousAttempt ? { previousAttempt } : {}),
+  });
   void driveAgentTurn(deps, target, { message }).catch((error: unknown) => {
     console.error("[verdict] 驱动执行者返工失败:", error);
   });

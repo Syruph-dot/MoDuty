@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildReworkMessage,
   buildVerdictWakeMessage,
   describePreviousAttempt,
   verdictTriggerLabel,
@@ -63,4 +64,41 @@ test("补唤醒：上一轮完全没动作 / 第二次补唤醒都能说清楚",
   assert.match(second, /已返工轮次：2\/3/);
   assert.match(verdictTriggerLabel("stalled"), /停转/);
   assert.match(verdictTriggerLabel("error"), /出错/);
+});
+
+test("返工指令：不是重发催促，而是带原任务书 + 上一轮实际动作 + 交付要求", () => {
+  const message = buildReworkMessage({
+    entry: {
+      id: "dsp_1b2c9b2d3560",
+      task: "https://github.com/lMakiNishikinol/MDG-BlogWebsite/tree/my-local-work 研究一下别人给我的资产，给出迁移方案",
+    },
+    note: "未针对具体 GitHub 资产给出分析方案，仅进行了浏览器操作未产出实质内容",
+    round: 2,
+    maxRounds: 3,
+    previousAttempt: { tools: ["browse_create", "browse_navigate", "browse_observe"], hadText: false },
+  });
+  assert.match(message, /【返工指令】台账 dsp_1b2c9b2d3560：第 2\/3 轮/);
+  assert.match(message, /值日生的点评：未针对具体 GitHub 资产/);
+  // 原任务书（含关键输入）必须原样带上
+  assert.match(message, /https:\/\/github\.com\/lMakiNishikinol\/MDG-BlogWebsite/);
+  // 上一轮实际做了什么
+  assert.match(message, /调用了 3 次工具（browse_create → browse_navigate → browse_observe）/);
+  assert.match(message, /\*\*正文 0 字\*\*/);
+  // 交付要求
+  assert.match(message, /必须\*\*写下产出\*\*/);
+  assert.match(message, /不要重复上一轮那些无效动作/);
+  // 不出现旧版那句空催
+  assert.doesNotMatch(message, /请继续完成任务/);
+});
+
+test("返工指令：没点评 / 没上一轮信息 / 有正文时也能说清楚", () => {
+  const bare = buildReworkMessage({ entry: { id: "dsp_x", task: "把表整理好" } });
+  assert.match(bare, /【返工指令】台账 dsp_x/);
+  assert.doesNotMatch(bare, /值日生的点评/);
+  assert.match(bare, /原任务书/);
+  const withText = buildReworkMessage({
+    entry: { id: "dsp_x", task: "把表整理好" },
+    previousAttempt: { tools: ["write_file"], hadText: true },
+  });
+  assert.match(withText, /虽然有正文但没有通过验收/);
 });

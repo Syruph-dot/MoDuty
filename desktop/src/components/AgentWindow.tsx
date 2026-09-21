@@ -9,6 +9,10 @@ import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
 import { IconClose, IconDownload, IconGear, IconSearch } from "./ui/icons";
+import AgentWindowTabs, { type TabItem, type TabSubject } from "./AgentWindowTabs";
+import BrowserView from "./BrowserView";
+import { useAgentRelations } from "../hooks/useAgentRelations";
+import { useBrowserStore } from "../state/browserStore";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -271,7 +275,24 @@ function pendingQuestionSetId(result?: string): string | undefined {
 }
 
 /** 嵌入分屏窗口：作为展开磁贴内容（由 TileShell 定位），header 可拖拽，× 或拖到左坞收起 */
-export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+/**
+ * 嵌入分屏窗口：作为展开磁贴内容（由 TileShell 定位），header 可拖拽，× 收起。
+ *
+ * 头部标签页条（AgentWindowTabs）替代了旧的「左坞列下属磁贴」：
+ *   - 点击下属标签 = 在这个窗口里换内容（同窗口导航，不新开窗）；
+ *   - 拖离标签条松手 = 为它另开一个窗口，本窗口内容不变；
+ *   - 内容为浏览器时渲染 BrowserView；为别的 Agent 时嵌一个无外壳的自身实例（embedded）。
+ */
+export default function AgentWindow({
+  agent,
+  onClose,
+  embedded = false,
+}: {
+  agent: Agent;
+  onClose: () => void;
+  /** 作为下钻内容嵌入别的窗口时：不画窗口外壳与标签条（由外层提供），仅保留操作按钮 */
+  embedded?: boolean;
+}) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -292,6 +313,20 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
   const load = useAgentsStore((state) => state.load);
   const openAgent = useAgentsStore((state) => state.openAgent);
   const agents = useAgentsStore((state) => state.agents);
+  const browsers = useBrowserStore((state) => state.browsers);
+  const openBrowser = useBrowserStore((state) => state.openBrowser);
+  /**
+   * 当前显示对象栈。栈首恒为磁贴自己的 Agent：
+   * 点下属标签 = 入栈（同窗口换内容）；首标签 = 出栈（返回上一级）；拖出标签 = 另开窗口（不动栈）。
+   */
+  const [subjectStack, setSubjectStack] = useState<Array<{ kind: "agent" | "browser"; id: string }>>([
+    { kind: "agent", id: agent.id },
+  ]);
+  const subject = subjectStack[subjectStack.length - 1];
+  const subjectAgent = subject.kind === "agent" ? agents.find((item) => item.id === subject.id) ?? null : null;
+  const subjectBrowser = subject.kind === "browser" ? browsers.find((item) => item.id === subject.id) ?? null : null;
+  // 嵌入实例不再自己拉关系（标签条由外层画），也避免下钻链上重复请求
+  const { relations } = useAgentRelations(embedded || subject.kind !== "agent" ? null : subject.id, agents.length);
   /** 会话导出菜单开关（JSON/MD/TXT） */
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -1062,13 +1097,94 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
     return { dividerIndex, headCount, tailCount, omittedCount: omitted };
   };
 
+  /* ---------------- 标签页条：首标签（返回/自身）+ 当前对象 + 出边子项 ---------------- */
+
+  const labelOf = (kind: "agent" | "browser", id: string): string =>
+    kind === "browser" ? browsers.find((item) => item.id === id)?.name ?? id : agents.find((item) => item.id === id)?.name ?? id;
+  const stateOf = (kind: "agent" | "browser", id: string): string | null =>
+    kind === "browser" ? browsers.find((item) => item.id === id)?.state ?? null : agents.find((item) => item.id === id)?.state ?? null;
+
+  /** 首标签：出栈（更深）> 返回上级（最上层且有上级）> 锁定的自身标签 */
+  const parentInStack = subjectStack.length > 1 ? subjectStack[subjectStack.length - 2] : null;
+  const selfName = labelOf(subject.kind, subject.id) || agent.name;
+  const leadTab: TabItem = parentInStack
+    ? { key: "lead", label: labelOf(parentInStack.kind, parentInStack.id), icon: "back", title: "返回上一级", selectable: true }
+    : relations?.parent
+      ? { key: "lead", label: "返回上一级", icon: "back", title: `返回上级：${relations.parent.name}`, selectable: true }
+      : {
+          key: "lead",
+          label: selfName,
+          icon: subject.kind === "browser" ? "browser" : "self",
+          state: stateOf(subject.kind, subject.id),
+          title: `${selfName}（当前窗口）`,
+          selectable: false,
+        };
+  /** 下钻后当前对象自己也算一个锁定标签，否则「我在看谁」只能靠内容猜 */
+  const currentTab: TabItem | null = parentInStack
+    ? {
+        key: "current",
+        label: selfName,
+        icon: subject.kind === "browser" ? "browser" : "agent",
+        state: stateOf(subject.kind, subject.id),
+        title: `${selfName}（当前显示）`,
+        selectable: false,
+      }
+    : null;
+  const tabItems: TabItem[] = [
+    leadTab,
+    ...(currentTab ? [currentTab] : []),
+    ...(relations?.children ?? []).map((child) => ({
+      key: child.id,
+      label: child.name,
+      icon: (child.kind === "browser" ? "browser" : "agent") as TabItem["icon"],
+      state: child.state,
+      title: `${child.name} · 关系来源 ${child.via.join("/")}`,
+      selectable: true,
+      subject: { kind: child.kind, id: child.id, name: child.name, state: child.state },
+    })),
+  ];
+
+  /** 点标签：同窗口内换内容（入栈 / 出栈 / 跳到上级） */
+  const selectTab = (item: TabItem): void => {
+    if (item.key === "lead") {
+      if (parentInStack) {
+        setSubjectStack((stack) => stack.slice(0, -1));
+        return;
+      }
+      const parent = relations?.parent;
+      if (parent) setSubjectStack((stack) => [...stack, { kind: "agent", id: parent.id }]);
+      return;
+    }
+    if (!item.subject) return;
+    setSubjectStack((stack) => [...stack, { kind: item.subject!.kind, id: item.subject!.id }]);
+  };
+
+  /** 拖出标签条松手：为它另开一个窗口（本窗口内容不变） */
+  const detachTab = (target: TabSubject): void => {
+    if (target.kind === "browser") openBrowser(target.id);
+    else openAgent(target.id);
+  };
+
+  /** 内容替换：浏览器 → BrowserView；别的 Agent → 嵌一个无外壳的自身实例；自己的 Agent → 原有内容 */
+  const overrideContent =
+    subject.kind === "browser" ? (
+      subjectBrowser ? (
+        <BrowserView browser={subjectBrowser} />
+      ) : (
+        <p className="agent-window__empty">这个浏览器已经不存在了（可点首标签返回）。</p>
+      )
+    ) : subject.id !== agent.id ? (
+      subjectAgent ? (
+        <AgentWindow key={subjectAgent.id} agent={subjectAgent} onClose={onClose} embedded />
+      ) : (
+        <p className="agent-window__empty">找不到这个 Agent（可能已被删除，可点首标签返回）。</p>
+      )
+    ) : null;
+
   return (
-    <div className="agent-window" role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
+    <div className={`agent-window${embedded ? " agent-window--embedded" : ""}`} role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
       <header className="agent-window__header" title="拖动标题栏到左栏可收起">
-        <div className="agent-window__identity">
-          <span className={`state-dot state-dot--${agent.state}`} aria-hidden="true" />
-          <h2 className="agent-window__title">{agent.name}</h2>
-        </div>
+        {embedded ? null : <AgentWindowTabs items={tabItems} activeKey={currentTab ? "current" : "lead"} onSelect={selectTab} onDetach={detachTab} />}
         <div className="agent-window__header-actions">
           <button
             type="button"
@@ -1130,6 +1246,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         </div>
       </header>
 
+      {overrideContent ?? (
+        <>
       {roleOpen ? (
         <div className="agent-window__role">
           <div className="agent-window__role-head">
@@ -1362,6 +1480,8 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
           {streaming ? "■ 停止" : "发送"}
         </button>
       </footer>
+        </>
+      )}
     </div>
   );
 }

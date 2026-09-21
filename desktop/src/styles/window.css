@@ -28,20 +28,120 @@
   background: rgba(255, 255, 255, 0.045);
 }
 
-.agent-window__identity {
+.agent-window__tabs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 4px;
+  flex: 1 1 auto;
   min-width: 0;
+  padding: 2px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  user-select: none;
 }
 
-.agent-window__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+.agent-window__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 104px;
+  max-width: 190px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #cdd6e6;
+  font-size: 12.5px;
+  cursor: pointer;
+  /* 指针拖动不触发容器滚动 */
+  touch-action: none;
+}
+
+.agent-window__tab:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-window__tab--active {
+  background: rgba(96, 200, 255, 0.16);
+  border-color: rgba(96, 200, 255, 0.5);
+  color: #eaf4ff;
+}
+
+.agent-window__tab--locked {
+  cursor: default;
+}
+
+.agent-window__tab--dragging {
+  opacity: 0.5;
+}
+
+.agent-window__tab-icon {
+  display: inline-flex;
+  opacity: 0.78;
+}
+
+.agent-window__tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 拖出标签条时的半透明框（portal 到 body，跟随指针） */
+.agent-window__tab-ghost {
+  position: fixed;
+  z-index: 400;
+  transform: translate(12px, 12px);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+  min-height: 96px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(150, 220, 255, 0.75);
+  border-radius: 10px;
+  background: rgba(20, 32, 52, 0.55);
+  color: #e6f2ff;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.agent-window__tab-ghost-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agent-window__tab-ghost-hint {
+  font-size: 11.5px;
+  color: rgba(200, 225, 255, 0.75);
+}
+
+/* 下钻嵌入实例：不画窗口外壳（头栏只留操作按钮），内容铺满外层 */
+.agent-window--embedded {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.agent-window--embedded > .agent-window__header {
+  justify-content: flex-end;
+  padding: 6px 10px 4px;
+}
+
+/* 浏览器视图（BrowserView）：独立窗口与标签页内容共用的壳内部分 */
+.browser-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .agent-window__close {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { submitQuestionAnswers } from "../../lib/api";
 
@@ -8,8 +8,31 @@ export interface QuestionCardDraft {
 }
 
 /**
+ * 逐题判定「是否已作答」。
+ *
+ * 规则：选了具体选项 → 算答（下标必须落在选项范围内）；
+ *     选「自定义」（choiceIndex=-1）→ 必须真的输入了文字才算答。
+ *
+ * 注意：不能要求 choiceIndex >= 0——「自定义」正是 -1，
+ * 早前这里写成 `choiceIndex >= 0 && (...)`，导致只要有一题选了自定义就永远判为未作答，
+ * 提交按钮一直停在「还有题目未作答」，用例见 tests-ts/questionCard.test.ts。
+ */
+export function questionAnswersComplete(
+  questions: Array<{ prompt: string; options: string[] }>,
+  answers: Array<{ choiceIndex: number; customText: string }>,
+): boolean {
+  if (questions.length === 0) return false;
+  return questions.every((question, index) => {
+    const answer = answers[index];
+    if (!answer) return false;
+    if (answer.choiceIndex < 0) return answer.customText.trim().length > 0;
+    return answer.choiceIndex < question.options.length;
+  });
+}
+
+/**
  * 工具卡片内的桌面问答（ask_question）：
- * - 单选选项 + 末尾固定“自定义”输入项；
+ * - 单选选项 + 末尾固定“自定义”输入项（输入框常驻：在自定义里打字即实时成为该题答案，不需要先点单选再输入）；
  * - ◀ ▶ 切换上一题 / 下一题；
  * - 全部答完才可提交；提交成功后回调 onAnswered 让外层折叠卡片。
  */
@@ -31,21 +54,12 @@ export default function QuestionCard({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const customInputRef = useRef<HTMLInputElement | null>(null);
 
   const total = questions.length;
   const current = questions[index];
   const currentAnswer = answers[index] ?? { choiceIndex: -1, customText: "" };
-  const allAnswered = useMemo(
-    () =>
-      answers.every((answer, i) => {
-        const q = questions[i];
-        return (
-          answer.choiceIndex >= 0 &&
-          (answer.choiceIndex < q.options.length || answer.customText.trim().length > 0)
-        );
-      }),
-    [answers, questions],
-  );
+  const allAnswered = useMemo(() => questionAnswersComplete(questions, answers), [answers, questions]);
 
   const setChoice = (choiceIndex: number) => {
     if (done) return;
@@ -54,12 +68,17 @@ export default function QuestionCard({
       next[index] = { choiceIndex, customText: next[index]?.customText ?? "" };
       return next;
     });
+    // 点“自定义”这一项时直接把光标送进输入框：下一步就是打字
+    if (choiceIndex === -1) {
+      requestAnimationFrame(() => customInputRef.current?.focus());
+    }
   };
 
   const setCustomText = (text: string) => {
     if (done) return;
     setAnswers((prev) => {
       const next = [...prev];
+      // choiceIndex 固定 -1：在自定义框里打字 = 这题选自定义，实时生效
       next[index] = { choiceIndex: -1, customText: text };
       return next;
     });
@@ -132,8 +151,12 @@ export default function QuestionCard({
                 </label>
               );
             })}
-            {/* 末位固定“自定义”输入项 */}
-            <label className={`question-card__option${currentAnswer.choiceIndex === -1 ? " question-card__option--checked" : ""}`}>
+            {/* 末位固定“自定义”输入项：单选 + 常驻输入框（打字即选它） */}
+            <label
+              className={`question-card__option${
+                currentAnswer.choiceIndex === -1 ? " question-card__option--checked" : ""
+              }`}
+            >
               <input
                 type="radio"
                 name={`question-${index}`}
@@ -142,16 +165,17 @@ export default function QuestionCard({
               />
               <span className="question-card__custom-label">自定义…</span>
             </label>
-            {currentAnswer.choiceIndex === -1 ? (
-              <input
-                className="question-card__custom-input"
-                type="text"
-                value={currentAnswer.customText}
-                onChange={(e) => setCustomText(e.target.value)}
-                placeholder="输入你的回答…"
-                autoFocus
-              />
-            ) : null}
+            <input
+              ref={customInputRef}
+              className="question-card__custom-input"
+              type="text"
+              value={currentAnswer.customText}
+              onFocus={() => {
+                if (currentAnswer.choiceIndex !== -1) setChoice(-1);
+              }}
+              onChange={(e) => setCustomText(e.target.value)}
+              placeholder="输入你的回答…"
+            />
           </div>
 
           <div className="question-card__nav">

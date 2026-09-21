@@ -8,6 +8,7 @@ import { buildMessageSequence } from "../lib/sessionMessages";
 import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
+import QuestionRecap from "./ui/QuestionRecap";
 import { IconClose, IconDownload, IconGear, IconSearch } from "./ui/icons";
 import AgentWindowTabs, { type TabItem, type TabSubject } from "./AgentWindowTabs";
 import BrowserView from "./BrowserView";
@@ -95,6 +96,7 @@ const MessageItem = memo(function MessageItem({
   jump = false,
   agentId,
   pendingQuestionSets,
+  answeredQuestionSets,
   onQuestionAnswered,
 }: {
   message: DisplayMessage;
@@ -112,6 +114,8 @@ const MessageItem = memo(function MessageItem({
   agentId: string;
   /** 仍在等待作答的问题集：setId → 题目。命中时工具卡内渲染可交互问答 */
   pendingQuestionSets: Map<string, Array<{ prompt: string; options: string[] }>>;
+  /** 已作答的问题集：setId → 题目 + 我的作答。命中时工具卡内渲染只读回看 */
+  answeredQuestionSets: Map<string, { prompt: string; options: string[]; answers?: Array<{ questionIndex: number; choiceIndex: number; customText?: string }> }[]>;
   /** 作答成功后的收尾（折叠卡片 + 刷新问题集） */
   onQuestionAnswered: (key: string) => void;
 }) {
@@ -137,7 +141,12 @@ const MessageItem = memo(function MessageItem({
     // 只有问题集仍在 pending 时才渲染可交互卡片（答过/已失效的退回普通工具卡）
     const questionSetId = isAskQuestion ? pendingQuestionSetId(tc.result) : undefined;
     const pendingQuestions = questionSetId ? pendingQuestionSets.get(questionSetId) : undefined;
+    const answeredQuestions = questionSetId && !pendingQuestions ? answeredQuestionSets.get(questionSetId) : undefined;
+    // 作答后仍按题目/作答原样回看：优先用服务端返回的已答集合，取不到才退回工具结果文本
+    const recapQuestions = !pendingQuestions && answeredQuestions ? answeredQuestions : undefined;
     const statusLabel = isAskQuestion && !pendingQuestions && questionSetId ? " · 已作答" : "";
+    // 交互/回看卡都要按内容自适应高度，不能被工具结果的 200px 折叠上限裁掉
+    const interactiveBody = Boolean(pendingQuestions || recapQuestions);
     return (
       <div
         className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}${jump ? " tool-card--jump" : ""}`}
@@ -154,13 +163,21 @@ const MessageItem = memo(function MessageItem({
           <span className="tool-card__toggle" aria-hidden="true">{tc.collapsed ? "▶" : "▼"}</span>
         </div>
         {/* 卡体内点击不能冒泡到卡头，否则会在作答时把卡片折叠掉 */}
-        <div className="tool-card__body" onClick={pendingQuestions ? (event) => event.stopPropagation() : undefined}>
+        <div
+          className={`tool-card__body${interactiveBody ? " tool-card__body--interactive" : ""}`}
+          onClick={pendingQuestions ? (event) => event.stopPropagation() : undefined}
+        >
           {pendingQuestions ? (
             <QuestionCard
               agentId={agentId}
               setId={questionSetId}
               questions={pendingQuestions}
               onAnswered={() => onQuestionAnswered(message.key)}
+            />
+          ) : recapQuestions ? (
+            <QuestionRecap
+              questions={recapQuestions.map((item) => ({ prompt: item.prompt, options: item.options }))}
+              answers={recapQuestions.flatMap((item) => item.answers ?? [])}
             />
           ) : tc.result ? (
             <pre className="tool-card__result">{tc.result.length > 500 ? `${tc.result.slice(0, 500)}…` : tc.result}</pre>
@@ -830,7 +847,10 @@ export default function AgentWindow({
   }, []);
 
   // 待答桌面提问：以服务端问题集为准（已作答的不再可答），SSE 变化即刷新
-  const { sets: questionSets, refresh: refreshQuestions } = usePendingQuestions(agent.id);
+  // includeAnswered：已作答的集合也要带回来，工具卡才能原样回看题目与作答
+  const { sets: questionSets, refresh: refreshQuestions } = usePendingQuestions(agent.id, {
+    includeAnswered: true,
+  });
   // 依赖内容签名而非数组引用：20s 轮询返回同样内容时保持 Map 引用稳定，避免 MessageItem 全量重渲染
   const pendingQuestionSignature = useMemo(
     () =>
@@ -847,6 +867,34 @@ export default function AgentWindow({
     }
     return map;
   }, [pendingQuestionSignature]);
+
+  // 已作答集合：setId → 题目（questions 与 answers 一一对应）
+  const answeredQuestionSignature = useMemo(
+    () =>
+      questionSets
+        .filter((set) => set.status === "answered")
+        .map((set) => `${set.id}:${set.answers?.map((a) => `${a.questionIndex}=${a.choiceIndex}:${a.customText ?? ""}`).join(",") ?? ""}`)
+        .join("||"),
+    [questionSets],
+  );
+  const answeredQuestionSets = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ prompt: string; options: string[]; answers?: Array<{ questionIndex: number; choiceIndex: number; customText?: string }> }>
+    >();
+    for (const set of questionSets) {
+      if (set.status !== "answered") continue;
+      map.set(
+        set.id,
+        set.questions.map((question, index) => ({
+          prompt: question.prompt,
+          options: question.options,
+          answers: set.answers?.filter((answer) => answer.questionIndex === index),
+        })),
+      );
+    }
+    return map;
+  }, [answeredQuestionSignature]);
 
   // 作答完成：收起该工具卡并重拉问题集（已答的集合随之退出 pending）
   const onQuestionAnswered = useCallback((key: string) => {
@@ -1374,6 +1422,7 @@ export default function AgentWindow({
                   jump={jumpKeys.has(message.key)}
                   agentId={agent.id}
                   pendingQuestionSets={pendingQuestionSets}
+                  answeredQuestionSets={answeredQuestionSets}
                   onQuestionAnswered={onQuestionAnswered}
                 />,
               );

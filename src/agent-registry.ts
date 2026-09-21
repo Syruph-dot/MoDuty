@@ -237,6 +237,11 @@ export class AgentRegistry {
     return this.questions.pendingForAgent(agentId);
   }
 
+  /** 待答 + 最近已答（前端问答卡回看用；只读） */
+  questionsForAgent(agentId: string, answeredLimit?: number): Promise<QuestionSet[]> {
+    return this.questions.recentForAgent(agentId, answeredLimit);
+  }
+
   answerQuestionSet(setId: string, answers: QuestionAnswer[]): Promise<QuestionSet | null> {
     return this.questions.answer(setId, answers);
   }

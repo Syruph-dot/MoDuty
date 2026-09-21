@@ -76,6 +76,21 @@ export class QuestionStore {
     return all.filter((set) => set.agentId === agentId && set.status === "pending");
   }
 
+  /**
+   * 待答 + 最近已答（给「作答后仍能原样回看题目与我的作答」用）。
+   * 已答只取最近 answeredLimit 条：老会话里的问答卡不需要全量回看，避免把整个 question 文件推给前端。
+   */
+  async recentForAgent(agentId: string, answeredLimit = 20): Promise<QuestionSet[]> {
+    const all = await this.listAll();
+    const mine = all.filter((set) => set.agentId === agentId);
+    const pending = mine.filter((set) => set.status === "pending");
+    const answered = mine
+      .filter((set) => set.status === "answered")
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+      .slice(0, Math.max(0, answeredLimit));
+    return [...pending, ...answered];
+  }
+
   /** 记录一次提问（同一 Agent 已有 pending set 时复用同一组，追加新题不适用——直接报已存在由调用方处理） */
   async create(input: {
     agentId: string;

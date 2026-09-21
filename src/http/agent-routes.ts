@@ -101,7 +101,15 @@ export async function handleAgentRoutes(
   if (agentQuestionsMatch && request.method === "GET") {
     const runtime = ensureAgents(ctx);
     const record = await requireAgent(runtime.registry, decodeURIComponent(agentQuestionsMatch[1] ?? ""));
-    json(response, 200, { questions: await runtime.registry.pendingQuestionsForAgent(record.id) });
+    // 缺省只回待答（值日生页只关心“待老师拍板”）；?include=answered 额外回最近已答，供会话里的问答卡回看
+    const includeAnswered = url.searchParams.get("include") === "answered";
+    const rawLimit = Number(url.searchParams.get("answeredLimit") ?? "");
+    const answeredLimit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : undefined;
+    json(response, 200, {
+      questions: includeAnswered
+        ? await runtime.registry.questionsForAgent(record.id, answeredLimit)
+        : await runtime.registry.pendingQuestionsForAgent(record.id),
+    });
     return true;
   }
 

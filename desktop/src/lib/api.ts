@@ -96,11 +96,22 @@ export async function deleteAgent(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`${base}/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }), "DELETE /api/agents/:id");
 }
 
-/** 桌面问答：拉取某 Agent 的待答问题集 */
-export async function fetchAgentQuestions(agentId: string): Promise<QuestionSetView[]> {
+/**
+ * 桌面问答：拉取某 Agent 的问题集。
+ * - 缺省只回待答（值日生页「待老师拍板」用）；
+ * - includeAnswered=true 额外带回最近已答集合（含 answers），供会话里的问答卡回看题目与作答。
+ */
+export async function fetchAgentQuestions(
+  agentId: string,
+  options?: { includeAnswered?: boolean; answeredLimit?: number },
+): Promise<QuestionSetView[]> {
   const base = await awaitApiBase();
+  const params = new URLSearchParams();
+  if (options?.includeAnswered) params.set("include", "answered");
+  if (options?.answeredLimit) params.set("answeredLimit", String(options.answeredLimit));
+  const query = params.toString();
   const data = (await jsonOrThrow(
-    await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/questions`),
+    await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/questions${query ? `?${query}` : ""}`),
     "GET /api/agents/:id/questions",
   )) as { questions: QuestionSetView[] };
   return data.questions ?? [];

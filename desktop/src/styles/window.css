@@ -750,6 +750,7 @@
 
 .tool-card__body {
   overflow: hidden;
+  /* 200px 是给「工具结果 pre」用的折叠上限；交互卡（问答卡）另走 --interactive，见下 */
   max-height: 200px;
   transition: max-height 320ms ease, opacity 200ms ease;
   opacity: 1;
@@ -758,6 +759,29 @@
 .tool-card--collapsed .tool-card__body {
   max-height: 0;
   opacity: 0;
+}
+
+/*
+ * 交互卡（ask_question 的问答卡）：按内容自适应高度。
+ * 原来和工具结果共用 200px 上限 + overflow:hidden ⇒ 5 题的选择项 + 导航 + 提交按钮
+ * 有 160px 落在被裁区域里，既看不到也点不到（「卡片无法翻阅」的真因）。
+ * 这里放开上限（超高时卡体自己滚），并把选项区单独设上限——保证「上一题/下一题/提交」始终可见可点。
+ */
+.tool-card__body--interactive {
+  max-height: min(72vh, 760px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tool-card--collapsed .tool-card__body--interactive {
+  max-height: 0;
+  overflow: hidden;
+}
+
+.tool-card__body--interactive .question-card__options {
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* 桌面问答卡（ask_question 工具卡片） */
@@ -902,6 +926,80 @@
 .question-card--empty {
   font-size: 12px;
   color: rgba(232, 237, 247, 0.5);
+}
+
+/* 问答卡回看（ask_question 已作答）：题目 + 我选了什么，只读 */
+.question-recap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.question-recap__item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.question-recap__head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.question-recap__index {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ff8f4f;
+}
+
+.question-recap__prompt {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8edf7;
+}
+
+.question-recap__options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.question-recap__option {
+  display: flex;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: rgba(232, 237, 247, 0.6);
+}
+
+.question-recap__option--chosen {
+  color: #cfe3ff;
+  font-weight: 600;
+}
+
+.question-recap__mark {
+  width: 12px;
+  flex: none;
+  color: rgba(232, 237, 247, 0.3);
+}
+
+.question-recap__option--chosen .question-recap__mark {
+  color: #4f8cff;
+}
+
+.question-recap__option--custom {
+  color: #ffd9a8;
+}
+
+.question-recap__option--custom .question-recap__mark {
+  color: #ffb454;
+}
+
+.question-recap__unanswered {
+  font-size: 12px;
+  color: #ff8a8a;
 }
 
 .tool-card--collapsed,

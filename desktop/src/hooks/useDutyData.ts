@@ -76,7 +76,10 @@ export interface PendingQuestionsState {
   refresh: () => void;
 }
 
-export function usePendingQuestions(agentId: string | null): PendingQuestionsState {
+export function usePendingQuestions(
+  agentId: string | null,
+  options?: { includeAnswered?: boolean; answeredLimit?: number },
+): PendingQuestionsState {
   const [sets, setSets] = useState<QuestionSetView[]>([]);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((value) => value + 1), []);
@@ -88,7 +91,7 @@ export function usePendingQuestions(agentId: string | null): PendingQuestionsSta
     }
     let alive = true;
     const load = () => {
-      void fetchAgentQuestions(agentId)
+      void fetchAgentQuestions(agentId, options)
         .then((all) => {
           if (alive) setSets(all);
         })
@@ -106,7 +109,7 @@ export function usePendingQuestions(agentId: string | null): PendingQuestionsSta
       window.clearInterval(timer);
       unsubscribe();
     };
-  }, [agentId, tick]);
+  }, [agentId, tick, options?.includeAnswered, options?.answeredLimit]);
 
   return { sets, refresh };
 }

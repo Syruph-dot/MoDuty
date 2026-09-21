@@ -441,6 +441,9 @@ ${ref.message.content}`;
             timeline,
           });
         }
+      } else if (event.type === "reasoning") {
+        // 思考过程随流式消息落盘（重开窗口还能看；上限见 session-manager 的 REASONING_MAX_CHARS）
+        if (sm && sid) this.sessionManager.appendStreamingReasoning(sid, sm.id, event.text);
       } else if (event.type === "tool_result") {
         for (let i = streamingTools.length - 1; i >= 0; i -= 1) {
           if (streamingTools[i].tool === event.name && !streamingTools[i].result) {

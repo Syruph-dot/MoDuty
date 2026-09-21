@@ -21,6 +21,8 @@ export interface StoredMessage {
    * 例：ask_question 的答案摘要（用户看到的是问答卡里的回看 QuestionRecap）。
    */
   contextOnly?: boolean;
+  /** 模型思考过程（上游 delta.reasoning / reasoning_content 累积）。落盘是为了重开窗口还能看 */
+  reasoning?: string;
   /** 兼容旧字段：允许任意额外键 */
   [key: string]: unknown;
 }
@@ -107,6 +109,7 @@ export function messageFromDisk(raw: Record<string, unknown>): StoredMessage {
       : undefined,
     // 仅上下文注入（界面不渲染，模型仍看得到）：读盘必须保留，否则前端拿不到标记
     ...(raw.contextOnly === true || raw.context_only === true ? { contextOnly: true } : {}),
+    ...(typeof raw.reasoning === "string" && raw.reasoning ? { reasoning: raw.reasoning } : {}),
   };
 }
 

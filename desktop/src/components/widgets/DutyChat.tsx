@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { awaitApiBase, cancelAgentChat } from "../../lib/api";
+import { IconThought } from "../ui/icons";
 import { subscribeDutyEvents } from "../../lib/dutyEvents";
 import { useAgentsStore } from "../../state/agentsStore";
 
@@ -17,6 +18,8 @@ export interface DutyMessage {
   /** user=老师；agent=值日生；system=系统投递（如执行者完成/出错链接通知） */
   role: "user" | "agent" | "system";
   content: string;
+  /** 模型思考过程（流式累积；重开窗口从落盘消息还原） */
+  reasoning?: string;
 }
 
 interface SessionCandidate {
@@ -49,6 +52,7 @@ function parseSSEChunk(
   onTool: (n: string, s: string) => void,
   onDone: (d: unknown) => void,
   onError: (m: string) => void,
+  onReasoning?: (t: string) => void,
 ): void {
   const lines = chunk.split("\n");
   for (const line of lines) {
@@ -63,6 +67,7 @@ function parseSSEChunk(
     }
     const type = evt.type;
     if (type === "token" && typeof evt.text === "string") onToken(evt.text);
+    else if (type === "reasoning" && typeof evt.text === "string") onReasoning?.(evt.text);
     else if (type === "tool_start" && typeof evt.name === "string") onTool(evt.name, "running");
     else if (type === "tool_result" && typeof evt.name === "string") onTool(evt.name, "done");
     else if (type === "done") onDone(evt);
@@ -174,7 +179,9 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
         const base = await awaitApiBase();
         const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/messages`);
         if (!res.ok || !alive) return;
-        const data = (await res.json()) as { messages?: Array<{ role: string; content: string; status?: string }> };
+        const data = (await res.json()) as {
+          messages?: Array<{ role: string; content: string; status?: string; contextOnly?: boolean; reasoning?: string }>;
+        };
         if (!alive || !data.messages) return;
         const next = data.messages
           .filter((m) => {
@@ -187,6 +194,7 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
           .map((m) => ({
             role: (m.role === "user" || m.role === "agent" || m.role === "system" ? m.role : "agent") as DutyMessage["role"],
             content: m.content ?? "",
+            ...(typeof m.reasoning === "string" && m.reasoning ? { reasoning: m.reasoning } : {}),
           }));
         setMessages((prev) => {
           if (prev.some((m) => m.role === "agent" && m.content === "") && Date.now() - openedAtRef.current < 15000) {
@@ -285,6 +293,16 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
           () => undefined,
           (m) => {
             setError(m);
+          },
+          (reasoning) => {
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last?.role === "agent") {
+                next[next.length - 1] = { ...last, reasoning: (last.reasoning ?? "") + reasoning };
+              }
+              return next;
+            });
           },
         );
       }
@@ -437,9 +455,20 @@ export function DutyChatPanel({
         {messages.map((m, index) => {
           const isTrailingStream = m.role === "agent" && streaming && index === messages.length - 1;
           const text = m.content || (isTrailingStream ? "…" : "");
-          if (!text) return null;
+          if (!text && !m.reasoning) return null;
           return (
             <div key={index} className={`duty-dialog__msg duty-dialog__msg--${m.role}`}>
+              {m.reasoning ? (
+                // 与 Agent 窗口同一套样式与行为：流式中自动展开，流完收起可回看
+                <details className="msg__reasoning" {...(isTrailingStream ? { open: true } : {})}>
+                  <summary className="msg__reasoning-summary">
+                    <IconThought />
+                    <span>思考过程{isTrailingStream ? "（进行中…）" : ""}</span>
+                    <span className="msg__reasoning-toggle" aria-hidden="true" />
+                  </summary>
+                  <div className="msg__reasoning-content">{m.reasoning}</div>
+                </details>
+              ) : null}
               {tokenizeLinkRefs(text).map((part, partIndex) =>
                 part.ref ? (
                   <button

@@ -9,7 +9,7 @@ import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
 import QuestionRecap from "./ui/QuestionRecap";
-import { IconClose, IconDownload, IconGear, IconSearch } from "./ui/icons";
+import { IconClose, IconDownload, IconGear, IconSearch, IconThought } from "./ui/icons";
 import AgentWindowTabs, { type TabItem, type TabSubject } from "./AgentWindowTabs";
 import BrowserView from "./BrowserView";
 import { useAgentRelations } from "../hooks/useAgentRelations";
@@ -32,6 +32,8 @@ interface StoredMessage {
    * 例：ask_question 的答案摘要（用户看到的是问答卡里的回看，不是“自己发的消息”）。
    */
   contextOnly?: boolean;
+  /** 模型思考过程（上游 reasoning 累积，随消息落盘） */
+  reasoning?: string;
 }
 
 /** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
@@ -99,6 +101,8 @@ const MessageItem = memo(function MessageItem({
   onEditSave,
   onEditCancel,
   jump = false,
+  /** 该消息正在流式生成：思考过程自动展开 */
+  reasoningLive = false,
   agentId,
   pendingQuestionSets,
   answeredQuestionSets,
@@ -115,6 +119,8 @@ const MessageItem = memo(function MessageItem({
   onEditCancel: () => void;
   /** 检索命中闪动高亮 */
   jump?: boolean;
+  /** 该消息正在流式生成（思考过程块自动展开） */
+  reasoningLive?: boolean;
   /** 归属 Agent（提问卡提交答案需要） */
   agentId: string;
   /** 仍在等待作答的问题集：setId → 题目。命中时工具卡内渲染可交互问答 */
@@ -252,8 +258,13 @@ const MessageItem = memo(function MessageItem({
     <div className={`msg msg--${message.role}${jump ? " msg--jump" : ""}`} data-mk={message.key}>
       <div className="msg__bubble" dangerouslySetInnerHTML={{ __html: html }} />
       {message.reasoning ? (
-        <details className="msg__reasoning" open>
-          <summary className="msg__reasoning-summary">💭 思考过程</summary>
+        // 流式中自动展开（能看着它想），流完自动收起（点开可回看）
+        <details className="msg__reasoning" {...(reasoningLive ? { open: true } : {})}>
+          <summary className="msg__reasoning-summary">
+            <IconThought />
+            <span>思考过程{reasoningLive ? "（进行中…）" : ""}</span>
+            <span className="msg__reasoning-toggle" aria-hidden="true" />
+          </summary>
           <div className="msg__reasoning-content">{message.reasoning}</div>
         </details>
       ) : null}
@@ -653,7 +664,11 @@ export default function AgentWindow({
           return;
         }
         const seq = buildMessageSequence(message);
+        // 思考过程属于「这一条消息」，但消息会被拆成多个展示项（工具卡 / 文本段）：
+        // 挂在第一项上，避免重复渲染
+        const reasoningPatch = message.reasoning ? { reasoning: message.reasoning } : {};
         seq.forEach((item, seqIndex) => {
+          const attachReasoning = seqIndex === 0 ? reasoningPatch : {};
           if (item.kind === "tool") {
             restored.push({
               key: `tool-restored-${message.timestamp}-${index}-${seqIndex}`,
@@ -668,6 +683,7 @@ export default function AgentWindow({
                 collapsed: message.status === "streaming" ? false : !!item.result,
               },
               ...(message.id ? { messageId: message.id } : {}),
+              ...attachReasoning,
             });
           } else {
             restored.push({
@@ -676,6 +692,7 @@ export default function AgentWindow({
               content: item.content,
               status: message.status,
               ...(message.id ? { messageId: message.id } : {}),
+              ...attachReasoning,
             });
           }
         });
@@ -1012,7 +1029,7 @@ export default function AgentWindow({
             });
             // 开始新的 agent 消息（用于 tool call 后的 token）
             currentAgentKey = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`;
-            setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
+                    setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
           },
           onToolResult: (name, result) => {
             setMessages((prev) => {
@@ -1427,6 +1444,7 @@ export default function AgentWindow({
                   onEditSave={() => void saveEdit()}
                   onEditCancel={cancelEdit}
                   jump={jumpKeys.has(message.key)}
+                  reasoningLive={streaming && message.key === messages[messages.length - 1]?.key}
                   agentId={agent.id}
                   pendingQuestionSets={pendingQuestionSets}
                   answeredQuestionSets={answeredQuestionSets}

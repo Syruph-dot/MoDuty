@@ -75,6 +75,23 @@ export function IconClose(props: IconProps) {
 }
 
 /** 归档柜：归档库 */
+/** 思考过程：气泡里三个点（不用 emoji：字形大小/基线/颜色都不可控） */
+export function IconThought({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.2 2.8h9.6a1.4 1.4 0 0 1 1.4 1.4v5a1.4 1.4 0 0 1-1.4 1.4H8.2l-2.4 2.1V10.6H3.2a1.4 1.4 0 0 1-1.4-1.4v-5a1.4 1.4 0 0 1 1.4-1.4Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <circle cx="5.4" cy="6.7" r="0.85" fill="currentColor" />
+      <circle cx="8" cy="6.7" r="0.85" fill="currentColor" />
+      <circle cx="10.6" cy="6.7" r="0.85" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function IconArchive(props: IconProps) {
   return (
     <Icon {...props}>

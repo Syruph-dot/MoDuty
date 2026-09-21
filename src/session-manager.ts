@@ -17,6 +17,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+/** 思考过程落盘上限：够回溯，又不至于把会话文件撑爆 */
+const REASONING_MAX_CHARS = 12_000;
+
 /**
  * 内容检索引擎：优先 rg（ripgrep）子进程。
  * 用子进程的好处：不占 Node 主线程、多线程扫描、带命中计数；
@@ -215,7 +218,10 @@ export class SessionManager {
 
   // ===== 流式消息（agent 输出随 token 增量落盘；连接只是在线投影）=====
   private readonly streamTimers = new Map<string, NodeJS.Timeout>();
-  private readonly streamPending = new Map<string, { messageId: string; pending: string }>();
+  private readonly streamPending = new Map<
+    string,
+    { messageId: string; pending: string; reasoningPending: string }
+  >();
 
   /** 开始一条流式 agent 消息：先落盘空消息（status=streaming），返回消息 id */
   async beginStreamingMessage(sessionId: string): Promise<StoredMessage> {
@@ -236,8 +242,25 @@ export class SessionManager {
 
   /** 增量追加流式内容（防抖合并写；调用方按 token 回调即可，无需关心频率） */
   appendStreamingMessage(sessionId: string, messageId: string, delta: string): void {
-    const entry = this.streamPending.get(sessionId) ?? { messageId, pending: "" };
+    const entry = this.streamPending.get(sessionId) ?? { messageId, pending: "", reasoningPending: "" };
     entry.pending += delta;
+    this.streamPending.set(sessionId, entry);
+    if (this.streamTimers.has(sessionId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void this.flushStreamingBuffer(sessionId);
+    }, 200);
+    this.streamTimers.set(sessionId, timer);
+  }
+
+  /**
+   * 增量追加思考过程（与正文共用同一条防抖缓冲与同一条消息）。
+   * 上限 REASONING_MAX_CHARS：思考可能很长，落盘只保留前一段 + 一句截断说明。
+   */
+  appendStreamingReasoning(sessionId: string, messageId: string, delta: string): void {
+    const entry = this.streamPending.get(sessionId) ?? { messageId, pending: "", reasoningPending: "" };
+    entry.reasoningPending += delta;
     this.streamPending.set(sessionId, entry);
     if (this.streamTimers.has(sessionId)) {
       return;
@@ -257,18 +280,31 @@ export class SessionManager {
     const entry = this.streamPending.get(sessionId);
     if (!entry) return;
     this.streamPending.delete(sessionId);
-    if (!entry.pending) return;
+    if (!entry.pending && !entry.reasoningPending) return;
     await withFileLock(this.messagesPath(sessionId), () =>
-      this.flushStreamingBufferLocked(sessionId, entry.messageId, entry.pending),
+      this.flushStreamingBufferLocked(sessionId, entry.messageId, entry.pending, entry.reasoningPending),
     );
   }
 
   /** flush 的锁内实现（假定调用方已持有 messagesPath 锁） */
-  private async flushStreamingBufferLocked(sessionId: string, messageId: string, pending: string): Promise<void> {
+  private async flushStreamingBufferLocked(
+    sessionId: string,
+    messageId: string,
+    pending: string,
+    reasoningPending = "",
+  ): Promise<void> {
     const messages = await this.getStoredMessages(sessionId);
     const message = messages.find((m) => m.id === messageId);
     if (!message) return;
-    message.content += pending;
+    if (pending) message.content += pending;
+    if (reasoningPending) {
+      const current = typeof message.reasoning === "string" ? message.reasoning : "";
+      message.reasoning =
+        current.length >= REASONING_MAX_CHARS
+          ? current
+          : (current + reasoningPending).slice(0, REASONING_MAX_CHARS) +
+            (current.length + reasoningPending.length > REASONING_MAX_CHARS ? "\n…（思考过长已截断）" : "");
+    }
     await this.writeMessagesUpsert(sessionId, messages);
   }
 

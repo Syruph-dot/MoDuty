@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { awaitApiBase } from "../../lib/api";
+import { awaitApiBase, cancelAgentChat } from "../../lib/api";
 import { subscribeDutyEvents } from "../../lib/dutyEvents";
 import { useAgentsStore } from "../../state/agentsStore";
 
@@ -103,6 +103,8 @@ export interface DutyChatApi {
   send: (text?: string) => void;
   /** 中断当前流式回复（关闭对话框/窗口时调用） */
   abort: () => void;
+  /** 停止本次生成：本地释放 SSE + 通知后端停掉任务本体（与 AgentWindow 的「■ 停止」同语义） */
+  stop: () => void;
   /** 提及候选（输入 & 时） */
   mention: { candidates: SessionCandidate[]; index: number } | null;
   onInputChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -329,6 +331,17 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
     streamingRef.current = false;
   }, []);
 
+  /** 发送按钮在流式期间切换成的「停止」：本地断开 + 后端真停（否则任务还在跑，只是没人看） */
+  const stop = useCallback(() => {
+    liveRef.current?.abort();
+    liveRef.current = null;
+    setStreaming(false);
+    streamingRef.current = false;
+    // 流式占位气泡（空 agent 消息）去掉，等后端真停后由事件/轮询补齐最终内容
+    setMessages((prev) => prev.filter((m) => !(m.role === "agent" && m.content === "")));
+    if (agentId) void cancelAgentChat(agentId);
+  }, [agentId]);
+
   const onInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setInput(value);
@@ -389,6 +402,7 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
     ready: !!agentId,
     send,
     abort,
+    stop,
     mention: mentionAt ? { candidates, index: mentionAt.index } : null,
     onInputChange,
     onKeyDown,
@@ -486,13 +500,16 @@ export function DutyChatPanel({
             ))}
           </ul>
         ) : null}
+        {/* 运行时同一个按钮变「停止」：此前是禁用并显示一个点，用户既不能发也不能停 */}
         <button
           type="button"
-          className="duty-dialog__send"
-          disabled={!chat.ready || streaming || !chat.input.trim()}
-          onClick={() => chat.send()}
+          className={`duty-dialog__send${streaming ? " duty-dialog__send--stop" : ""}`}
+          disabled={!streaming && (!chat.ready || !chat.input.trim())}
+          onClick={() => (streaming ? chat.stop() : chat.send())}
+          aria-label={streaming ? "停止生成" : "发送"}
+          title={streaming ? "停止本次生成" : "发送"}
         >
-          {streaming ? "·" : "发送"}
+          {streaming ? "■ 停止" : "发送"}
         </button>
       </div>
     </div>

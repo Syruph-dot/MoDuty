@@ -1574,6 +1574,15 @@
   cursor: default;
 }
 
+/* 生成中：同一按钮变「停止」（与 AgentWindow 的 .btn--stop 同色系，危险动作视觉一致） */
+.duty-dialog__send--stop {
+  background: #e85a5a;
+}
+
+.duty-dialog__send--stop:hover {
+  background: #f06a6a;
+}
+
 .duty-dialog__mention {
   position: absolute;
   left: 12px;

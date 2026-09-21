@@ -28,6 +28,17 @@ export interface StoredMessageLike {
   segments?: string[];
   /** 新数据：事件时间线，"text"=一段文本，number=toolCalls 下标 */
   timeline?: Array<"text" | number>;
+  /**
+   * 仅作上下文注入：落盘给模型看，界面不渲染。
+   * 例：ask_question 的答案摘要——用户该看到的是问答卡里的回看（QuestionRecap），
+   * 而不是对话流里凭空出现一条"自己发的消息"。
+   */
+  contextOnly?: boolean;
+}
+
+/** 该条消息是否只用于上下文注入、界面应跳过 */
+export function isContextOnlyMessage(message: { contextOnly?: boolean }): boolean {
+  return message.contextOnly === true;
 }
 
 export type BuiltSequenceItem =

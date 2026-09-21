@@ -4,7 +4,7 @@ import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
 import { consumeJump, requestJump } from "../lib/sessionJump";
-import { buildMessageSequence } from "../lib/sessionMessages";
+import { buildMessageSequence, isContextOnlyMessage } from "../lib/sessionMessages";
 import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
@@ -27,6 +27,11 @@ interface StoredMessage {
   /** 落盘工具调用（snake: tool_calls；兼容 camel: toolCalls） */
   toolCalls?: Array<{ tool: string; args: string; result: string }>;
   tool_calls?: Array<{ tool: string; args: string; result: string }>;
+  /**
+   * 仅作上下文注入：落盘给模型看，对话视图跳过。
+   * 例：ask_question 的答案摘要（用户看到的是问答卡里的回看，不是“自己发的消息”）。
+   */
+  contextOnly?: boolean;
 }
 
 /** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
@@ -634,6 +639,8 @@ export default function AgentWindow({
       // （关闭重开 / onDone 全量重建时与实时 SSE 渲染保持一致；已完成工具默认折叠）
       const restored: DisplayMessage[] = [];
       data.messages.forEach((message, index) => {
+        // 仅上下文注入的消息（如 ask_question 的答案摘要）不进对话视图
+        if (isContextOnlyMessage(message)) return;
         if (message.role !== "agent") {
           const isUser = message.role === "user";
           restored.push({

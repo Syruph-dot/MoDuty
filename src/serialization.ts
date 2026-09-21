@@ -16,6 +16,11 @@ export interface StoredMessage {
   segments?: string[];
   /** 时间线：文本段用 "text"，工具调用用下标（对应 toolCalls 顺序） */
   timeline?: Array<"text" | number>;
+  /**
+   * 仅作上下文注入：落盘给模型看，界面不渲染。
+   * 例：ask_question 的答案摘要（用户看到的是问答卡里的回看 QuestionRecap）。
+   */
+  contextOnly?: boolean;
   /** 兼容旧字段：允许任意额外键 */
   [key: string]: unknown;
 }
@@ -100,6 +105,8 @@ export function messageFromDisk(raw: Record<string, unknown>): StoredMessage {
     timeline: Array.isArray(raw.timeline)
       ? raw.timeline.map((t: unknown) => (t === "text" ? "text" : Number(t)))
       : undefined,
+    // 仅上下文注入（界面不渲染，模型仍看得到）：读盘必须保留，否则前端拿不到标记
+    ...(raw.contextOnly === true || raw.context_only === true ? { contextOnly: true } : {}),
   };
 }
 

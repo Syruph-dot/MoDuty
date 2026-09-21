@@ -178,6 +178,8 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
           .filter((m) => {
             if (m.role === "agent" && m.content === "") return false;
             if (m.status === "streaming") return false;
+            // 仅上下文注入的消息（问答答案摘要等）不显示
+            if ((m as { contextOnly?: boolean }).contextOnly === true) return false;
             return true;
           })
           .map((m) => ({

@@ -136,7 +136,9 @@ export async function handleAgentRoutes(
         : answer?.customText?.trim() ?? "（未作答）";
       return `Q${index + 1}: ${question.prompt}\n  答案: ${chosen}`;
     });
-    await agent.sessionManager.addMessage(record.sessionId, "user", `用户对提问的回答：\n${lines.join("\n")}`);
+    await agent.sessionManager.addMessage(record.sessionId, "user", `用户对提问的回答：\n${lines.join("\n")}`, {
+      contextOnly: true,
+    });
     // Agent 联动：确认即执行（载荷流）或旧行为（续跑）
     const deps = orchestrationOf(ctx);
     const action = set.dispatch;

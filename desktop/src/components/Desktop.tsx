@@ -12,6 +12,7 @@ import TileShell from "./TileShell";
 import { AnimationProvider, useTileAnimation } from "./desktop/AnimationProvider";
 import { awaitApiBase } from "../lib/api";
 import { computeBands, resolveDropIntent, UNGROUPED_BAND_ID, type Band, type DropIntent } from "../lib/bandLayout";
+import { useOpenTileInteraction } from "../hooks/useOpenTileInteraction";
 import { computeOpenLayout, isBoundsReady } from "../lib/layoutEngine";
 import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
@@ -136,6 +137,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 父容器尺寸（用于度量网格）；ResizeObserver 驱动
   const wallRef = useRef<HTMLDivElement | null>(null);
 
+  /** 打开集合 = Agent + 浏览器（打开态交互两者同路，见 useOpenTileInteraction） */
+  const openIds = [...openAgentIds, ...openBrowserIds];
+
   /** T1：打开卡片的世界 X（右舞台自由草稿坐标；首次打开时回退到该磁贴自由网格 X 并在此记录） */
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
   /** Y 错位：默认锁 Y（top=stage.y）；拖拽突破阈值后写入，右键归位清空 */
@@ -148,7 +152,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const [wallScrollX, setWallScrollX] = useState(0);
   /** T4：打开卡片 z 层级序（后位 = 顶层；点击激活置顶） */
   const [openZOrder, setOpenZOrder] = useState<string[]>([]);
-  const raiseAgent = useCallback((id: string) => {
+  /** 点中即置顶（agent / browser 共用同一 z 序） */
+  const raiseTile = useCallback((id: string) => {
     setOpenZOrder((prev) => {
       const rest = prev.filter((x) => x !== id);
       if (rest.length === prev.length && prev[prev.length - 1] === id) return prev;
@@ -161,7 +166,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const zRankOf = (id: string): number => {
     const pos = openZOrder.indexOf(id);
     if (pos >= 0) return pos + 1;
-    const idx = openAgentIds.indexOf(id);
+    const idx = openIds.indexOf(id);
     return idx >= 0 ? idx + 1 : 0;
   };
 
@@ -335,7 +340,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   }, [load, applyAgentEvent, hydrateTiles, hydrateWidgets, hydrateBrowser, applyBrowserEvent]);
 
   // ---- 打开态布局：Agent + 浏览器磁贴统一进入 open 分屏；widget 永远自由摆放 ----
-  const openIds = [...openAgentIds, ...openBrowserIds];
   // 模态由右栏切换（on=打开态；off=磁贴墙）。打开/收起窗口仍驱动 openIds。
   const openMode = wmMode === "on";
 
@@ -402,12 +406,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return m;
   }, [bands]);
 
-  // T4：打开/关闭时维护 z 序（移除已关、追加新开）
+  // T4：打开/关闭时维护 z 序（移除已关、追加新开；agent 与 browser 同一序）
   useEffect(() => {
     setOpenZOrder((prev) => {
-      let next = prev.filter((id) => openAgentIds.includes(id));
+      let next = prev.filter((id) => openIds.includes(id));
       let changed = next.length !== prev.length;
-      for (const id of openAgentIds) {
+      for (const id of openIds) {
         if (!next.includes(id)) {
           next.push(id);
           changed = true;
@@ -415,18 +419,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       }
       return changed ? next : prev;
     });
-  }, [openAgentIds]);
+  }, [openIds]);
 
   // 关闭卡片后清理其世界 X：重开时重新回退到磁贴当前自由网格 X
   useEffect(() => {
     setOpenWorldX((prev) => {
       let changed = false;
       const next: Record<string, number> = {};
-      for (const id of openAgentIds) {
+      for (const id of openIds) {
         if (Number.isFinite(prev[id])) next[id] = prev[id];
       }
       for (const key of Object.keys(prev)) {
-        if (!openAgentIds.includes(key)) changed = true;
+        if (!openIds.includes(key)) changed = true;
       }
       return changed ? next : prev;
     });
@@ -434,20 +438,20 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     setOpenWorldY((prev) => {
       let changed = false;
       const next: Record<string, number> = {};
-      for (const id of openAgentIds) {
+      for (const id of openIds) {
         if (Number.isFinite(prev[id])) next[id] = prev[id];
       }
       for (const key of Object.keys(prev)) {
-        if (!openAgentIds.includes(key)) changed = true;
+        if (!openIds.includes(key)) changed = true;
       }
       return changed ? next : prev;
     });
-  }, [openAgentIds]);
+  }, [openIds]);
 
   // T1：打开卡片首次落位 → 世界 X 取该磁贴自由网格 X（gridToPixels）；此后由拖拽/打开列表驱动，不做田字格重排
   useEffect(() => {
-    if (!openMode || openAgentIds.length === 0) return;
-    const missing = openAgentIds.filter((id) => !Number.isFinite(openWorldX[id]));
+    if (!openMode || openIds.length === 0) return;
+    const missing = openIds.filter((id) => !Number.isFinite(openWorldX[id]));
     if (missing.length === 0) return;
     const next = { ...openWorldX };
     for (const id of missing) {
@@ -460,7 +464,38 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       }
     }
     setOpenWorldX(next);
-  }, [openMode, openAgentIds, openWorldX, metrics, bandById, bandOf]);
+  }, [openMode, openIds, openWorldX, metrics, bandById, bandOf]);
+
+  /**
+   * 边缘丢弃关闭：按「这个 id 属于浏览器还是 Agent」分派。
+   * 注意别按前缀猜——打开集合里存的是原始 id（brw_… / agt_…），没有 browser: 前缀
+   * （tileStore 的 browser: 前缀只用于几何 key，不在 openIds 里）。
+   */
+  const closeOpenTile = useCallback(
+    (id: string) => {
+      if (browsers.some((browser) => browser.id === id)) closeBrowser(id);
+      else closeAgent(id);
+    },
+    [browsers, closeBrowser, closeAgent],
+  );
+
+  /**
+   * 打开态交互（拖动落位 / Y 错位 / 置顶 / 边缘丢弃）统一由这里产出：
+   * Agent 与浏览器磁贴只是内容不同，交互完全同路。
+   */
+  const openTile = useOpenTileInteraction({
+    openMode,
+    viewportWidth: bounds.width,
+    scrollX: wallScrollX,
+    stage: layout?.stage ?? null,
+    worldX: openWorldX,
+    worldY: openWorldY,
+    commitWorldX: commitOpenWorldX,
+    commitWorldY: commitOpenWorldY,
+    raiseTile,
+    zRankOf,
+    closeTile: closeOpenTile,
+  });
 
   // ---- 打开卡片后平滑滚动，使被打开的卡片在屏幕上水平居中 ----
   // 以前进入 open 模式时内容层会变窄（band 宽度 → 舞台宽度），浏览器会把 scrollLeft 立刻夹到新的
@@ -523,10 +558,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   useLayoutEffect(() => {
     const id = centerPendingRef.current;
     if (!id || !openMode || !layout) return;
-    const geom = layout.geometryOf[id];
-    // 与渲染保持一致：agent 用 openWorldX；browser 用舞台几何 X
-    const worldX = Number.isFinite(openWorldX[id]) ? openWorldX[id] : id.startsWith("browser:") ? geom?.x : undefined;
-    if (worldX === undefined || !Number.isFinite(worldX)) return;
+    // 与渲染保持一致：打开卡的世界 X（agent / browser 同一口径；未落位则等落位那次 effect）
+    const worldX = openTile.worldXOf(id);
+    if (worldX === null) return;
     if (!wallRef.current) return;
     centerPendingRef.current = null;
     const raf = requestAnimationFrame(() => {
@@ -539,7 +573,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       animateWallScrollTo(target);
     });
     return () => cancelAnimationFrame(raf);
-  }, [openMode, layout, bounds.width, openWorldX, animateWallScrollTo]);
+  }, [openMode, layout, bounds.width, openWorldX, animateWallScrollTo, openTile]);
 
   useEffect(
     () => () => {
@@ -746,9 +780,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       const cardW = layout?.stage.w || bounds.width;
       let maxX = 0;
       for (const id of openIds) {
-        const geom = layout?.geometryOf[id];
-        const x = Number.isFinite(openWorldX[id]) ? openWorldX[id] : geom?.x;
-        if (x !== undefined && Number.isFinite(x)) maxX = Math.max(maxX, x + cardW);
+        const x = openTile.worldXOf(id);
+        if (x !== null) maxX = Math.max(maxX, x + cardW);
       }
       const stable = Math.ceil(Math.max(bounds.width, maxX + bounds.width / 2));
       // 不窄于自由布局：进入 open 模式时宽度收缩会让浏览器立刻夹掉当前滚动（表现为“瞬跳”）
@@ -757,7 +790,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     }
     const w = bandLayout?.contentWidth ?? 0;
     return `${Math.max(w, 1)}px`;
-  }, [openMode, groupedMode, metrics, bandLayout, layout, bounds.width, openIds, openWorldX]);
+  }, [openMode, groupedMode, metrics, bandLayout, layout, bounds.width, openIds, openWorldX, openTile]);
 
   // 把 overscrollRef 的 raw/side 画到内容层与左右弧上
   const paintOverscroll = useCallback(() => {
@@ -1281,17 +1314,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const band = bandById[bandOf[agent.id]] ?? null;
         const sourceGrid = band?.gridMap[agent.id] ?? null;
         const bandX = band?.x ?? 0;
-        const geometry =
-          openMode && layout && isOpen
-            ? {
-                x: Number.isFinite(openWorldX[agent.id]) ? openWorldX[agent.id] : 0,
-                y: Number.isFinite(openWorldY[agent.id]) ? openWorldY[agent.id] : layout.stage.y,
-                w: layout.stage.w,
-                h: layout.stage.h,
-              }
-            : metrics && sourceGrid
-              ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX)
-              : EMPTY_TILE;
+        const freeGeometry = metrics && sourceGrid ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX) : EMPTY_TILE;
+        const geometry = openTile.geometryOf(agent.id, isOpen, freeGeometry);
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : "free";
         // 广义 Tile 统一拖放（agent 与 widget 同路径，见 handleDragMove / handleTileCommit）
         return (
@@ -1304,8 +1328,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             gridMap={!openMode ? band?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
             mode={tileMode}
-            dragHandleSelector={isOpen ? ".agent-window__header" : undefined}
-            zIndex={isOpen ? 20 + zRankOf(agent.id) : openMode ? 0 : 1}
             displacedPreview={!!displacedGrid && tileMode === "free"}
             bandX={bandX}
             canvasGhost={canvasGhost}
@@ -1314,13 +1336,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
             onCommit={(next) => handleTileCommit(agent.id, next)}
             dropTarget={dropHint?.tileId === agent.id}
-            onDropToEdge={isOpen ? () => closeAgent(agent.id) : undefined}
-            onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
-            onWorldYCommit={isOpen ? (y) => commitOpenWorldY(agent.id, y) : undefined}
-            onActivate={isOpen ? () => raiseAgent(agent.id) : undefined}
-            edgeViewportWidth={openMode ? bounds.width : 0}
-            edgeScrollX={openMode ? wallScrollX : 0}
             contextMenuItems={!openMode ? buildAgentMenu(agent) : undefined}
+            {...openTile.shellPropsOf(agent.id, isOpen, ".agent-window__header")}
             onOpenTile={tileMode === "expanded" ? undefined : () => onOpen(agent)}
           >
             <AgentTile
@@ -1345,14 +1362,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const band = bandById[bandOf[browser.id]] ?? null;
         const bandX = band?.x ?? 0;
         const browserGrid = band?.gridMap[browser.id] ?? null;
-        const geometry =
-          openMode && layout
-            ? (() => {
-                return layout.geometryOf[browser.id] ?? EMPTY_TILE;
-              })()
-            : metrics && browserGrid
-              ? gridToPixels(displacedGrid ?? browserGrid, metrics, bandX)
-              : EMPTY_TILE;
+        const freeGeometry = metrics && browserGrid ? gridToPixels(displacedGrid ?? browserGrid, metrics, bandX) : EMPTY_TILE;
+        // 与 Agent 磁贴完全同路：打开态 = 世界坐标 + 整屏舞台（此前走旧的网格几何，拖完会弹回）
+        const geometry = openTile.geometryOf(browser.id, isOpen, freeGeometry);
         const tileMode = !openMode ? "free" : isOpen ? "expanded" : "free";
         const browserMenuItems: ContextMenuItem[] = [
           {
@@ -1376,17 +1388,15 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             gridMap={!openMode ? band?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
             mode={tileMode}
-            dragHandleSelector={isOpen ? ".browser-window__header" : undefined}
-            zIndex={isOpen ? 21 : 1}
-            displacedPreview={!!displacedGrid}
+            displacedPreview={!!displacedGrid && tileMode === "free"}
             bandX={bandX}
             flipped={isOpen}
             back={isOpen ? <BrowserWindow browser={browser} onClose={() => closeBrowser(browser.id)} /> : undefined}
             onDragMove={(cx, cy) => handleDragMove(browser.id, cx, cy)}
             onCommit={(next) => handleTileCommit(browser.id, next)}
             dropTarget={dropHint?.tileId === browser.id}
-            onDropToEdge={isOpen ? () => closeBrowser(browser.id) : undefined}
             contextMenuItems={browserMenuItems}
+            {...openTile.shellPropsOf(browser.id, isOpen, ".browser-window__header")}
             onOpenTile={tileMode === "expanded" ? undefined : () => openBrowser(browser.id)}
           >
             <BrowserTile browser={browser} />

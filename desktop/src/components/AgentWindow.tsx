@@ -1119,8 +1119,8 @@ export default function AgentWindow({
           title: `${selfName}（当前窗口）`,
           selectable: false,
         };
-  /** 下钻后当前对象自己也算一个锁定标签，否则「我在看谁」只能靠内容猜 */
-  const currentTab: TabItem | null = parentInStack
+  /** 下钻或首标签是「返回」时，当前对象自己也算一个锁定标签——否则「我在看谁」只能靠内容猜 */
+  const currentTab: TabItem | null = leadTab.selectable
     ? {
         key: "current",
         label: selfName,

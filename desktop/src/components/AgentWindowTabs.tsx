@@ -178,6 +178,7 @@ export default function AgentWindowTabs({
           onPointerUp={(event) => end(event, item)}
           onPointerCancel={(event) => end(event, item)}
           onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
         >
           <span className="agent-window__tab-icon">{iconOf(item)}</span>

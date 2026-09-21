@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { MomokaHttpError } from "../http-error.js";
 import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
+import { buildAgentRelations } from "../agent-relations.js";
 import { buildDispatchTaskMessage } from "../dispatch-message.js";
 import { matchStateFilter, sortDispatchViews, toDispatchView } from "../dispatch-view.js";
 import type { DispatchEntryState } from "../dispatch-ledger.js";
@@ -232,6 +233,18 @@ export async function handleAgentRoutes(
       }),
     );
     json(response, 200, { dispatches: views, total: views.length });
+    return true;
+  }
+
+  // 窗口标签页条的数据源：出边（下属 = 引用过的人 + 派发过的人 + 浏览器）与入边（上级）。
+  // 只读：不改任何状态；关系判定见 src/agent-relations.ts。
+  const agentRelationsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/relations$/);
+  if (agentRelationsMatch && request.method === "GET") {
+    const { registry } = ensureAgents(ctx);
+    const agentId = decodeURIComponent(agentRelationsMatch[1] ?? "");
+    const relations = await buildAgentRelations({ agentId, registry, sessionManager: ctx.agent.sessionManager });
+    if (!relations) throw new MomokaHttpError(404, `Unknown agent: ${agentId}`);
+    json(response, 200, { relations });
     return true;
   }
 

@@ -29,6 +29,53 @@ function getGraphFilePath(sessionsDir: string): string {
   return path.join(sessionsDir, "..", ".session-graph.json");
 }
 
+/** 图谱文件路径（导出给「出边/入边」查询用，与写入端同一处逻辑） */
+export function sessionGraphPath(sessionsDir: string): string {
+  return getGraphFilePath(sessionsDir);
+}
+
+/**
+ * 归一化会话 id。
+ *
+ * 图谱历史数据里 `target` 存的是剥掉 `ses_` 前缀的裸 hex（extractAmpersandRefs 的产物），
+ * 而节点 id 带前缀——两边对不上，边基本等于废数据（查 in/out 都命中不了）。
+ * 这里统一成带前缀的形式，并容忍旧数据。
+ */
+export function normalizeSessionId(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  return value.startsWith("ses_") ? value : `ses_${value}`;
+}
+
+/** 出边/入边（均已归一化 id；自环与指向不存在会话的边会被丢弃） */
+export interface SessionGraphEdges {
+  /** sessionId → 它引用的会话 ids（出边：它的下属） */
+  out: Map<string, string[]>;
+  /** sessionId → 引用它的会话 ids（入边：它的上级） */
+  in: Map<string, string[]>;
+}
+
+/** 读取持久化图谱的出边/入边。文件缺失/损坏时返回空表（不抛错） */
+export async function readSessionGraphEdges(sessionsDir: string): Promise<SessionGraphEdges> {
+  const out = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  const graph = await readExistingGraph(sessionsDir);
+  const known = new Set(graph.nodes.map((node) => normalizeSessionId(node.id)));
+  for (const link of graph.links) {
+    const source = normalizeSessionId(link.source);
+    const target = normalizeSessionId(link.target);
+    if (!source || !target || source === target) continue;
+    if (!known.has(target)) continue;
+    const outs = out.get(source) ?? [];
+    if (!outs.includes(target)) outs.push(target);
+    out.set(source, outs);
+    const ins = incoming.get(target) ?? [];
+    if (!ins.includes(source)) ins.push(source);
+    incoming.set(target, ins);
+  }
+  return { out, in: incoming };
+}
+
 /**
  * 读取现有图谱（不存在则返回空）
  */
@@ -118,10 +165,10 @@ export async function refreshSessionGraph(
   // 移除该会话作为 source 的旧边
   graph.links = graph.links.filter((l) => l.source !== sessionId);
 
-  // 添加新的出边
+  // 添加新的出边（id 统一带 ses_ 前缀，和节点对齐）
   for (const targetId of referencedIds) {
     // 只创建指向已存在会话的边（目标会话可能还没在图中，但不阻塞）
-    graph.links.push({ source: sessionId, target: targetId, type: "references" });
+    graph.links.push({ source: sessionId, target: normalizeSessionId(targetId), type: "references" });
   }
 
   // 去重边
@@ -170,10 +217,10 @@ export async function rebuildSessionGraph(
     }
 
     for (const targetId of referencedIds) {
-      const key = `${session.id}->${targetId}`;
+      const key = `${session.id}->${normalizeSessionId(targetId)}`;
       if (!linkSet.has(key)) {
         linkSet.add(key);
-        links.push({ source: session.id, target: targetId, type: "references" });
+        links.push({ source: session.id, target: normalizeSessionId(targetId), type: "references" });
       }
     }
   }

@@ -6,10 +6,14 @@
  *   momoka agent create --name <名称> [--workspace <目录>] [--model <模型>] [--system <提示词>]
  *   momoka agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄）
  *   momoka agent dispatch <agentId> <消息…>（异步派发，立即返回；适合值日生懒调度）
+ *   momoka agent dispatcher <消息…>（对值日生说一句，同步等回复——手机/外部渠道默认走这条）
  *   momoka agent reset <agentId>
  *   momoka agent stop <agentId>
- *   momoka session list
+ *   momoka session list [--query <词>] [--limit <n>]（默认按最近活动排序，限 30 条）
+ *   momoka session chat <ses_id|关键词> <消息…>（解析到该会话绑定的 Agent 并同步对话）
  *   momoka session inspect <ses_<id>>
+ *   momoka status（服务健康 + 各状态 Agent 数 + 台账未结单）
+ *   momoka help
  *
  * 无第三方依赖（Node 18+ 原生 fetch）。环境变量 MOMOKA_URL 可覆盖后端地址（默认 http://localhost:8888）。
  * --mono 强制纯文本输出（工具调用时自动加）；默认 TTY 时彩色。
@@ -18,12 +22,32 @@ import { spawn } from "node:child_process";
 
 const BASE = process.env.MOMOKA_URL ?? "http://localhost:8888";
 const MONO = process.argv.includes("--mono");
+/** 是否把 reasoning 流也打出来（默认关：手机/工具输出里太吵） */
+const SHOW_REASONING = process.argv.includes("--reasoning");
 
 function println(text) {
   process.stdout.write(`${text}\n`);
 }
 function errln(text) {
   process.stderr.write(`${text}\n`);
+}
+
+/** 用法文本（bot 的「帮助」回复直接用它） */
+function usage() {
+  println("MOMOKA CLI v1 — 让 Agent 用 Agent 应用");
+  println("用法：");
+  println("  momoka help");
+  println("  momoka status");
+  println("  momoka agent list [--query <主题>] [--limit <n>]");
+  println("  momoka agent create --name <名称> [--workspace <目录>] [--model <模型>] [--system <提示词>]");
+  println("  momoka agent chat <agentId> <消息…>");
+  println("  momoka agent dispatch <agentId> <消息…>");
+  println("  momoka agent dispatcher <消息…>");
+  println("  momoka agent reset <agentId>");
+  println("  momoka agent stop <agentId>");
+  println("  momoka session list [--query <词>] [--limit <n>]");
+  println("  momoka session chat <ses_id|关键词> <消息…>");
+  println("  momoka session inspect <ses_<id>>");
 }
 
 async function api(method, pathname, body) {
@@ -91,12 +115,19 @@ async function runStreamingChat(agentId, message) {
       if (!raw) continue;
       try {
         const evt = JSON.parse(raw);
-        if (evt.type === "text" && typeof evt.text === "string") parts.push(evt.text);
-        if (evt.type === "tool" && evt.name) {
-          parts.push(`\n[工具 ${evt.name} ${evt.status === "running" ? "运行中" : "完成"}]`);
+        // 服务端 SSE 事件名：token / reasoning / tool_start / tool_result / done / error
+        // （旧版这里找的是 text / tool，与真实事件名对不上 → 正文一条也收不到，只剩 [done run=…]）
+        if (evt.type === "token" && typeof evt.text === "string") parts.push(evt.text);
+        if (evt.type === "reasoning" && typeof evt.text === "string") parts.push(`\n[思考] ${evt.text}`);
+        if (evt.type === "tool_start" && evt.name) {
+          parts.push(`\n[工具 ${evt.name} 运行中]`);
+        }
+        if (evt.type === "tool_result" && evt.name) {
+          const brief = String(evt.result ?? "").replace(/\s+/g, " ").slice(0, 160);
+          parts.push(`\n[工具 ${evt.name} 完成] ${brief}`);
         }
         if (evt.type === "done") parts.push(`\n[done run=${evt.run_id ?? ""}]`);
-        if (evt.type === "error") parts.push(`\n[error ${evt.message ?? ""}]`);
+        if (evt.type === "error") parts.push(`\n[error ${evt.message ?? evt.error ?? ""}]`);
       } catch {
         /* 非 JSON 事件忽略 */
       }
@@ -137,18 +168,32 @@ function tokenizeChatMessage(positional) {
 async function main() {
   const argv = process.argv.slice(2).filter((token) => token !== "--mono");
   const [cmd, sub] = argv;
-  if (!cmd || !sub) {
-    println("MOMOKA CLI v1 — 让 Agent 用 Agent 应用");
-    println("用法：");
-    println("  momoka agent list");
-    println("  momoka agent create --name <名称> [--workspace <目录>] [--model <模型>] [--system <提示词>]");
-    println("  momoka agent chat <agentId> <消息…>");
-    println("  momoka agent dispatch <agentId> <消息…>");
-    println("  momoka agent reset <agentId>");
-    println("  momoka agent stop <agentId>");
-    println("  momoka session list");
-    println("  momoka session inspect <ses_<id>>");
-    process.exit(cmd ? 2 : 0);
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    usage();
+    process.exit(cmd ? 0 : 2);
+  }
+
+  if (cmd === "status") {
+    // 手机/外部渠道问「现在怎么样」的一句话总览：服务 + Agent 状态分布 + 台账未结单
+    const healthRes = await fetch(`${BASE}/health`).catch(() => null);
+    println(healthRes?.ok ? "服务：ok" : `服务：不可达（${BASE}）`);
+    const { data: agentData } = await api("GET", "/api/agents");
+    const agents = Array.isArray(agentData?.agents) ? agentData.agents : [];
+    const byState = new Map();
+    for (const agent of agents) byState.set(agent.state ?? "?", (byState.get(agent.state ?? "?") ?? 0) + 1);
+    println(`Agent 共 ${agents.length}：${[...byState].map(([state, count]) => `${state} ${count}`).join(" / ")}`);
+    const dispatcher = agents
+      .filter((agent) => agent.kind === "dispatcher")
+      .sort((a, b) => String(b.last_active_at ?? "").localeCompare(String(a.last_active_at ?? "")))[0];
+    println(dispatcher ? `值日生：${dispatcher.name}（${dispatcher.state}）${dispatcher.id}` : "值日生：未创建");
+    const { data: dispatchData } = await api("GET", "/api/dispatches?state=active");
+    const active = Array.isArray(dispatchData?.dispatches) ? dispatchData.dispatches : [];
+    println(`台账未结单：${active.length} 条`);
+    for (const item of active.slice(0, 10)) {
+      const label = item.target?.name ?? item.target?.agent_id ?? "?";
+      println(`  ${item.id}\t${item.state}\t${label}\t${String(item.task ?? "").slice(0, 40)}`);
+    }
+    return;
   }
 
   if (cmd === "agent") {
@@ -206,6 +251,20 @@ async function main() {
       println(`created ${agent.id} 「${agent.name}」 会话 ${agent.session_id}`);
       return;
     }
+    if (sub === "dispatcher") {
+      // 对值日生说一句（手机/外部渠道的默认目标）：解析 kind=dispatcher → 同步等回复
+      const message = positional.join(" ").trim();
+      if (!message) throw new Error("dispatcher 需要消息文本");
+      const { data } = await api("GET", "/api/agents");
+      const agents = Array.isArray(data?.agents) ? data.agents : [];
+      const dispatcher = agents
+        .filter((agent) => agent.kind === "dispatcher")
+        .sort((a, b) => String(b.last_active_at ?? "").localeCompare(String(a.last_active_at ?? "")))[0];
+      if (!dispatcher) throw new Error("没有值日生（请先在桌面上创建调度者 Agent）");
+      println(`→ 值日生 ${dispatcher.name} (${dispatcher.id})`);
+      println((await runStreamingChat(dispatcher.id, message)) || "(无输出)");
+      return;
+    }
     if (sub === "chat") {
       const { agentId, message } = tokenizeChatMessage(positional);
       if (!agentId) throw new Error("chat 需要 agentId");
@@ -241,17 +300,56 @@ async function main() {
   }
 
   if (cmd === "session") {
-    const { positional } = parseArgs(argv, sub);
+    const { named, positional } = parseArgs(argv, sub);
     if (sub === "list") {
       const { data } = await api("GET", "/api/sessions");
-      const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+      let sessions = Array.isArray(data?.sessions) ? data.sessions : [];
       if (sessions.length === 0) {
         println("(无会话)");
         return;
       }
-      for (const s of sessions.slice(0, 50)) {
+      // 与 agent list 同口径：先按最近活动排序，再按关键词过滤，再截断（避免把上百条灌进手机/模型）
+      const lastOf = (s) => String(s.updated_at ?? s.last_message_at ?? "");
+      sessions = [...sessions].sort((a, b) => lastOf(b).localeCompare(lastOf(a)));
+      const query = String(named.query ?? "").trim().toLowerCase();
+      if (query) {
+        sessions = sessions.filter((s) => `${s.id} ${s.name ?? ""} ${s.goal ?? ""}`.toLowerCase().includes(query));
+        if (sessions.length === 0) {
+          println(`(无匹配会话：${named.query})`);
+          return;
+        }
+      }
+      const limitRaw = Number(named.limit ?? 0);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : query ? 10 : 30;
+      const total = sessions.length;
+      for (const s of sessions.slice(0, limit)) {
         println(`${s.id}\t${s.name ?? ""}\t${s.goal ?? ""}${s.updated_at ? `\t${s.updated_at}` : ""}`);
       }
+      if (total > limit) println(`（已截断：共 ${total} 个，列出前 ${limit} 个；请用 --query <词> 精确筛选）`);
+      return;
+    }
+    if (sub === "chat") {
+      // 会话句柄 → 绑定 Agent → 同步对话（手机可说「会话 <关键词>：<任务>」）
+      const [handle, ...words] = positional;
+      const message = words.join(" ").trim();
+      if (!handle) throw new Error("session chat 需要 <ses_id|关键词> 与消息文本");
+      if (!message) throw new Error("session chat 需要消息文本");
+      const { data: sessionData } = await api("GET", "/api/sessions");
+      const sessions = Array.isArray(sessionData?.sessions) ? sessionData.sessions : [];
+      const bare = handle.replace(/^ses_/, "").toLowerCase();
+      const matched =
+        sessions.find((s) => s.id === handle) ??
+        sessions.find((s) => String(s.id).replace(/^ses_/, "") === bare) ??
+        [...sessions]
+          .sort((a, b) => String(b.updated_at ?? b.last_message_at ?? "").localeCompare(String(a.updated_at ?? a.last_message_at ?? "")))
+          .find((s) => `${s.name ?? ""} ${s.goal ?? ""}`.toLowerCase().includes(handle.toLowerCase()));
+      if (!matched) throw new Error(`找不到会话：${handle}（可先 session list --query <词>）`);
+      const { data: agentData } = await api("GET", "/api/agents");
+      const agents = Array.isArray(agentData?.agents) ? agentData.agents : [];
+      const bound = agents.find((agent) => agent.session_id === matched.id);
+      if (!bound) throw new Error(`会话 ${matched.id} 没有绑定的 Agent（session inspect 可看内容）`);
+      println(`→ 会话 ${matched.id}（${matched.name ?? matched.goal ?? ""}）→ ${bound.name} (${bound.id})`);
+      println((await runStreamingChat(bound.id, message)) || "(无输出)");
       return;
     }
     if (sub === "inspect") {

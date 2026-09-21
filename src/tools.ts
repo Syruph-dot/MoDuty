@@ -291,12 +291,35 @@ const MOMOKA_CLI_COMMANDS: Record<string, Set<string>> = {
   dispatch: new Set(["verdict", "list", "show", "cancel"]),
 };
 
-export function validateMomokaCliArgs(args: string[]): string | null {
+/**
+ * 远程渠道（手机机器人 bridge）额外放行的动词。
+ * 为什么不给 Agent 用：`agent dispatcher` 找的是调度者本身、`session chat` 是按会话驱动——
+ * Agent 互相唤醒会成环（值日生 → 自己 / 执行者 → 值日生 → 执行者），所以只在 bot 侧放行。
+ */
+const MOMOKA_CLI_REMOTE_ONLY: Record<string, Set<string>> = {
+  agent: new Set(["dispatcher"]),
+  session: new Set(["chat"]),
+};
+
+/** 无子命令的动词：help（用法文本）/ status（服务 + Agent 状态分布 + 台账未结单） */
+const MOMOKA_CLI_SOLO_COMMANDS = new Set(["help", "status"]);
+
+export type MomokaCliScope = "agent" | "remote";
+
+export function validateMomokaCliArgs(args: string[], scope: MomokaCliScope = "agent"): string | null {
   if (args.length === 0 || args.length > 64) return "参数数量非法（0 或超过 64 项）";
   const [cmd, sub, ...rest] = args;
+  if (MOMOKA_CLI_SOLO_COMMANDS.has(cmd)) {
+    return args.length === 1 ? null : `${cmd} 不接受参数`;
+  }
   const allowed = MOMOKA_CLI_COMMANDS[cmd];
-  if (!allowed) return `未知命令 '${cmd}'（仅允许 ${Object.keys(MOMOKA_CLI_COMMANDS).join("/")}）`;
-  if (!allowed.has(sub)) return `未知子命令 '${sub}'（${cmd} 允许 ${[...allowed].join("/")}）`;
+  const remoteOnly = scope === "remote" ? MOMOKA_CLI_REMOTE_ONLY[cmd] : undefined;
+  if (!allowed) return `未知命令 '${cmd}'（仅允许 ${[...Object.keys(MOMOKA_CLI_COMMANDS), ...MOMOKA_CLI_SOLO_COMMANDS].join("/")}）`;
+  const subAllowed = allowed.has(sub) || Boolean(remoteOnly?.has(sub));
+  if (!subAllowed) {
+    const all = new Set([...allowed, ...(scope === "remote" ? [...(MOMOKA_CLI_REMOTE_ONLY[cmd] ?? [])] : [])]);
+    return `未知子命令 '${sub}'（${cmd} 允许 ${[...all].join("/")}）`;
+  }
   if (cmd === "agent" && sub === "create") {
     const nameIdx = rest.indexOf("--name");
     if (nameIdx === -1 || !rest[nameIdx + 1]?.trim()) return "agent create 必须提供 --name <名称>";
@@ -307,6 +330,8 @@ export function validateMomokaCliArgs(args: string[]): string | null {
   if (cmd === "dispatch" && sub === "verdict" && rest.length < 2) return "dispatch verdict 需要 <dsp_id> 与 deliver|continue";
   if (cmd === "dispatch" && (sub === "show" || sub === "cancel") && rest.length === 0) return `dispatch ${sub} 需要 <dsp_id>`;
   if (cmd === "session" && sub === "inspect" && rest.length === 0) return "inspect 需要会话句柄（ses_<id>）";
+  if (cmd === "agent" && sub === "dispatcher" && rest.length === 0) return "agent dispatcher 需要消息文本";
+  if (cmd === "session" && sub === "chat" && rest.length < 2) return "session chat 需要 <ses_id|关键词> 与消息文本";
   for (const a of args) {
     if (typeof a !== "string" || a.includes("\0")) return "包含非法控制字符";
   }
@@ -468,8 +493,10 @@ export async function runMomokaCliTool(input: {
   args: string[];
   workDir?: string;
   commandTimeoutMs?: number;
+  /** 白名单口径：agent（工具调用，默认）| remote（手机机器人 bridge，多放行两个动词） */
+  scope?: MomokaCliScope;
 }): Promise<string> {
-  const invalid = validateMomokaCliArgs(input.args);
+  const invalid = validateMomokaCliArgs(input.args, input.scope ?? "agent");
   if (invalid) return `MOMOKA CLI 调用被拒绝：${invalid}`;
   const timeoutMs = input.commandTimeoutMs ?? 60_000;
   return await new Promise<string>((resolve) => {
@@ -652,9 +679,10 @@ export const TOOL_SPECS = [
       name: "run_momoka_cli",
       description:
         "调用 MOMOKA CLI 驱动/管理其它 Agent 应用（让 Agent 用 Agent 应用）。" +
-        "参数 args 是参数数组，首个元素为命令族（agent | session | dispatch），第二个为子命令：" +
+        "参数 args 是参数数组：help（看用法）与 status（服务健康 + Agent 状态分布 + 台账未结单）为单命令；" +
+        "其余首个元素为命令族（agent | session | dispatch），第二个为子命令：" +
         "agent list / agent create --name <名称> [--workspace <目录>] / agent chat <agentId> <消息…>（同步等待结果；消息可含 &ses_<id> 句柄链接相关会话）/ agent dispatch <agentId> <消息…>（异步派发，发起后立即返回，适合“派发完即回 idle”的懒调度）/ agent reset <agentId> / agent stop <agentId>；" +
-        "session list / session inspect <ses_<id>>；" +
+        "session list [--query <词>] [--limit <n>]（默认按最近活动排序并截断）/ session inspect <ses_<id>>；" +
         "dispatch verdict <dsp_id> deliver|continue [备注]（收尾判读结论：交付上报 / 返工继续，仅用于响应台账判读请求）；" +
         "dispatch list [--state active|all]（台账概览：未结单+最近交付，只读）/ dispatch show <dsp_id>（单条详情，含完整任务书）/ dispatch cancel <dsp_id> [备注]（放弃条目：结单但不交付，用于派错人或任务作废）。" +
         "只允许 MOMOKA 文档化子命令，不是任意 shell。执行有超时与输出截断。",

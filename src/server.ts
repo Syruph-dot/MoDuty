@@ -109,6 +109,15 @@ function listenWithFallback(
             console.warn(`  警告: 写 port file 失败: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
           }
         }
+        // 让进程内工具（run_momoka_cli / 机器人命令）知道自己的地址：CLI 子进程继承本环境变量
+        process.env.MOMOKA_URL = process.env.MOMOKA_URL ?? `http://127.0.0.1:${port}`;
+        // 远程机器人（手机操控）：按配置起停飞书长连接 / 微信长轮询
+        // 放在 listen 成功之后——机器人执行 CLI 时要能访问本机 HTTP 接口
+        void import("./bot/manager.js")
+          .then(({ botManager }) => botManager.applyAll())
+          .catch((error: unknown) => {
+            console.warn(`  警告: 启动远程机器人失败: ${error instanceof Error ? error.message : String(error)}`);
+          });
         // 注册进程退出时清理 port file + 中止所有活跃 chat 流
         const cleanup = () => {
           if (!portFile) return;

@@ -132,6 +132,19 @@ export const ASK_MAX_CHARS = 2000;
 const INSTRUCTION_LABEL = "指令（值日生的补充要求；与总体任务冲突时以总体任务为准）";
 
 /**
+ * 执行者侧的关键输入层：把本次任务里的 URL / 路径单独拎出来列一层。
+ *
+ * 理由：这些东西原本埋在任务书散文里，模型要么漏用、要么反复去猜（实测 MDG 任务：
+ * 执行者从头到尾拿不到仓库地址）。单独成层后它们是“字段”而不是“叙述”。
+ * 无句柄时返回空串（不占 token）。
+ */
+export function buildTaskInputBlock(message: string): string {
+  const handles = extractDispatchHandles(message ?? "");
+  if (handles.length === 0) return "";
+  return ["## 本次任务的关键输入（务必用上）", ...handles.map((token) => `- ${token}`)].join("\n");
+}
+
+/**
  * 构造下发消息：`总体任务：<老师原话>` + `指令：<值日生给的说明，可为空>`。
  *
  * 顺序与措辞由用户拍板（2026-09-21）：总体任务在前且必须是原话；指令是值日生

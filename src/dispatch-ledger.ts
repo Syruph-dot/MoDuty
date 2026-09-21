@@ -60,6 +60,9 @@ export interface DispatchRecord {
   continueCount?: number;
   /** 最近一次判读的结论（deliver | continue | deliver_forced …） */
   lastVerdict?: DispatchOutcome;
+  /** 老师原话（发起这次派发时的最新一条用户消息）——判读与状态卡的口径都以它为准，
+   *  不是值日生概括的任务书 */
+  askExcerpt?: string;
   /** 停转标记（写明检出时间；「继续」后清除） */
   stalledAt?: string;
 }

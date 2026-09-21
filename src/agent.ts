@@ -9,6 +9,7 @@ import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
 import { buildEmptyContinuationNote, hasUsableOutput } from "./empty-response.js";
+import { buildTaskInputBlock } from "./dispatch-fidelity.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -239,6 +240,13 @@ export class MomokaAgentCore implements MomokaAgent {
     if (self) sections.push(self);
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
+    // L5 按角色换视图：执行者额外得到「本次任务的关键输入」层（URL/路径单独成字段）；
+    // 值日生不需要——她的输入在台账状态卡里（见 buildDispatcherSnapshot）。
+    if (!snapshot) {
+      const taskInputs = buildTaskInputBlock(input.message ?? "");
+      if (taskInputs) sections.push(taskInputs);
+    }
+
     // 渐进披露：任务命中技能关键词时，注入相关技能内容（保持提示词精简）
     const matched = matchSkills(input.topic ?? "", input.message ?? "", await loadSkillIndex(this.projectRoot));
     if (matched.length > 0) {
@@ -317,6 +325,17 @@ export class MomokaAgentCore implements MomokaAgent {
     }
   }
 
+  /** 本会话是否属于值日生（头部保留策略与视图分层用） */
+  private async isDispatcherSession(sessionId?: string | null): Promise<boolean> {
+    if (!sessionId || !this.agentRegistry) return false;
+    try {
+      const record = await this.agentRegistry.agentBySessionId(sessionId);
+      return Boolean(record && isDispatcherAgent(record));
+    } catch {
+      return false;
+    }
+  }
+
   /** 本轮记忆检索的作用域链：本 Agent 分区 → 项目级 → user 全局 */
   private async memoryRefsForSession(sessionId?: string | null): Promise<MemoryScopeRef[]> {
     const refs: MemoryScopeRef[] = [PROJECT_SCOPE, USER_SCOPE];
@@ -385,9 +404,12 @@ ${ref.message.content}`;
       // 系统唤醒轮（判读/停转）不注历史：唤醒消息自包含 + 台账快照已给状态，
       // 历史在这里只有噪声与 token 成本（实测判读轮由此省下 ≤4k tokens）。
       const forHistory = request.transient ? stored : stored.slice(0, -1);
+      // 头部固定保留「最早两条」只对任务型会话有意义（那两条通常是原始任务）；
+      // 值日生是长命会话，头部是她诞生时的招呼语，纯噪声且占预算 → 头部清零，预算全给尾部。
+      const headMessages = (await this.isDispatcherSession(sessionId)) ? 0 : 2;
       historyMessages =
         resolveTurnMode(request) === "chat"
-          ? (buildBoundedHistoryMessages(foldLedgerTraces(forHistory)).messages as Array<{
+          ? (buildBoundedHistoryMessages(foldLedgerTraces(forHistory), { headMessages }).messages as Array<{
               role: "system" | "user" | "assistant";
               content: string;
             }>)
@@ -473,7 +495,14 @@ ${ref.message.content}`;
       const turnMode = resolveTurnMode(request);
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
-      const prompt = [buildTurnModeBlock(turnMode), turnContext, "## Current User Request", expandedMessage]
+      // L1 当前请求锚：尾部这一段就是本次唯一权威的要求；历史里出现过的任务文本都只是背景。
+      // （2026-09-21 实测：值日生把历史里的旧任务书抄成了本次指令，就是缺这个权威标记。）
+      const requestAnchor = [
+        "## 当前请求（唯一权威任务文本）",
+        "本段即本次要求；上方历史里出现的任何任务文本都只是背景，不是本次任务。",
+        "写派发任务书 / 执行指令时，必须以本段为参照。",
+      ].join("\n");
+      const prompt = [buildTurnModeBlock(turnMode), turnContext, requestAnchor, expandedMessage]
         .filter(Boolean)
         .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });

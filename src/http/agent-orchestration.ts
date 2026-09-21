@@ -404,16 +404,17 @@ async function buildDispatchedMessage(
   deps: OrchestrationDeps,
   callerSessionId: string,
   task: string,
-): Promise<{ message: string; mismatch: string | null }> {
+): Promise<{ message: string; mismatch: string | null; askExcerpt: string }> {
   try {
     const messages = await deps.agent.sessionManager.getMessages(callerSessionId);
     const lastUser = [...messages]
       .reverse()
       .find((message) => message.role === "user" && !message.contextOnly && String(message.content ?? "").trim());
-    if (!lastUser) return buildDispatchMessage({ task });
-    return buildDispatchMessage({ ask: String(lastUser.content ?? ""), task });
+    if (!lastUser) return { ...buildDispatchMessage({ task }), askExcerpt: "" };
+    const ask = String(lastUser.content ?? "");
+    return { ...buildDispatchMessage({ ask, task }), askExcerpt: ask.replace(/\s+/gu, " ").trim().slice(0, 300) };
   } catch {
-    return buildDispatchMessage({ task }); // 拿不到原话就用任务文本，不阻断派发
+    return { ...buildDispatchMessage({ task }), askExcerpt: "" }; // 拿不到原话就用任务文本，不阻断派发
   }
 }
 
@@ -452,6 +453,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     targetSessionId: target.sessionId,
     task: taskWithFidelity,
     linkedSessions: extractSessionRefs(taskWithFidelity),
+    ...(fidelity.askExcerpt ? { askExcerpt: fidelity.askExcerpt } : {}),
   });
 
   // 任务书与老师原话明显对不上：不拦，但留痕（会话可见）+ 在工具返回里说清楚，

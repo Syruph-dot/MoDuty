@@ -1,4 +1,5 @@
 import type { DispatchRecord } from "./dispatch-ledger.js";
+import { extractDispatchHandles } from "./dispatch-fidelity.js";
 
 /**
  * 台账快照：每轮注入提示词尾部（值日生专属），把"在途状态"从历史里拿出来。
@@ -10,6 +11,9 @@ import type { DispatchRecord } from "./dispatch-ledger.js";
  * 设计约束：
  * - 只给概览（未结单 + 最近交付 + 待拍板计数），细节走 `dispatch list/show`；
  * - 台账 id 必须给全（判读/取消都要用）；
+ * - 未结单条目额外给「老师原话 + 关键输入」：这两项是判读与重派时的口径依据，
+ *   不注入就只能翻会话历史找（2026-09-21 实测：就是这样抄错了旧任务书）；
+ * - 按条聚合（一条任务一行标题 + 若干细节行），不再是一条事件一句散话；
  * - 空台账且无待办时返回 null（不注入，别占 token）。
  */
 
@@ -47,12 +51,32 @@ export function formatStamp(iso: string | undefined, now = Date.now()): string {
 function describeOpen(record: DispatchRecord, targetNames: Record<string, string>, now: number): string {
   const name = targetNames[record.targetAgentId] ?? record.targetAgentId;
   const bits: string[] = [];
+  bits.push(`派发 ${formatStamp(record.dispatchedAt, now)}`);
   if (record.stalledAt) bits.push(`已停转 ${formatStamp(record.stalledAt, now)}`);
   else if (record.lastStatusAt) bits.push(`最近状态 ${record.lastStatus === "completed" ? "执行者完成" : record.lastStatus === "error" ? "执行者出错" : "疑似停转"} ${formatStamp(record.lastStatusAt, now)}`);
   if (record.continueCount) bits.push(`已返工 ${record.continueCount}/3`);
   if (record.lastVerdict) bits.push(`上次判读 ${record.lastVerdict}`);
   const state = record.state === "awaiting_verdict" ? "等判读" : "进行中";
-  return `- ${state} ${record.id} → 「${name}」 ${bits.length ? `· ${bits.join(" · ")}` : ""}`.trimEnd();
+  const head = `- ${state} ${record.id} → 「${name}」 ${bits.length ? `· ${bits.join(" · ")}` : ""}`.trimEnd();
+  // 老师原话与关键输入：这一条是判读/重派时的口径依据，不给就只能翻历史（串台的来源）
+  const detail: string[] = [];
+  if (record.askExcerpt) detail.push(`  老师原话：${record.askExcerpt}`);
+  const handles = extractDispatchHandles(record.task);
+  if (handles.length > 0) detail.push(`  关键输入：${handles.slice(0, 3).join(" ｜ ")}`);
+  return [head, ...detail].join("\n");
+}
+
+/** 已结单条目：只留一行结论 + 老师原话主题，避免散句留痕堆成流水账 */
+function describeClosed(record: DispatchRecord, targetNames: Record<string, string>, now: number): string {
+  const name = targetNames[record.targetAgentId] ?? record.targetAgentId;
+  const verdict = record.lastVerdict ?? "deliver";
+  const theme = (record.askExcerpt ?? "").slice(0, 40);
+  const tail = [
+    `${verdict}${record.continueCount ? `（返工 ${record.continueCount} 次）` : ""}`,
+    formatStamp(record.lastStatusAt ?? record.dispatchedAt, now),
+    theme ? `· 老师原话：${theme}${(record.askExcerpt ?? "").length > 40 ? "…" : ""}` : "",
+  ].filter(Boolean);
+  return `- ${record.id} → 「${name}」 ${tail.join(" ")}`;
 }
 
 /** 生成台账快照文本；无可注入内容时返回 null */
@@ -83,11 +107,7 @@ export function buildDispatchSnapshot(input: DispatchSnapshotInput): string | nu
   }
   if (closed.length > 0) {
     lines.push("最近交付：");
-    for (const record of closed) {
-      const name = targetNames[record.targetAgentId] ?? record.targetAgentId;
-      const verdict = record.lastVerdict ?? "deliver";
-      lines.push(`- ${record.id} → 「${name}」 ${verdict}${record.continueCount ? `（返工 ${record.continueCount} 次）` : ""} ${formatStamp(record.lastStatusAt ?? record.dispatchedAt, now)}`);
-    }
+    for (const record of closed) lines.push(describeClosed(record, targetNames, now));
   }
   lines.push(
     pending > 0

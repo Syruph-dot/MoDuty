@@ -74,6 +74,38 @@ describe("dispatch snapshot", () => {
     assert.ok(!text.includes("dsp_done_4"), "最旧的一条已结单不应出现在快照里");
     assert.match(text, /待老师拍板：1/);
   });
+
+  it("未结单条目带上「老师原话 + 关键输入」，并按条聚合（2026-09-21 串台复盘）", () => {
+    const now = Date.parse("2026-09-21T10:00:00.000Z");
+    const text = buildDispatchSnapshot({
+      records: [
+        record({
+          id: "dsp_074176ed8d29",
+          state: "awaiting_verdict",
+          targetAgentId: "agt_81116b6852d3",
+          dispatchedAt: "2026-09-21T09:08:00.000Z",
+          task: "总体任务：P1 横屏… 来源：https://typesafe.ai/blog/x\n\n指令（值日生的补充要求…）：研究一下别人给我的资产",
+          askExcerpt: "P1 横屏（适合电脑） P2 竖屏（适合手机） 【博客信息】标题：Jev 官方博客解读…",
+        }),
+        record({
+          id: "dsp_done_9",
+          state: "done",
+          targetAgentId: "agt_81116b6852d3",
+          lastVerdict: "deliver",
+          lastStatusAt: "2026-09-21T09:21:00.000Z",
+          askExcerpt: "研究一下别人给我的资产，他们的网站的服务器要到期，准备挂到我们这边。给出方案让我看看",
+        }),
+      ],
+      targetNames: { agt_81116b6852d3: "网站迁移" },
+      now,
+    }) ?? "";
+    // 未结单：原话主题与关键输入都要给（判读/重派的口径依据）
+    assert.match(text, /老师原话：P1 横屏/);
+    assert.match(text, /关键输入：https:\/\/typesafe\.ai\/blog\/x/);
+    assert.match(text, /派发 09-21 17:08/);
+    // 已结单：一行结论 + 原话主题（不复述整段）
+    assert.match(text, /dsp_done_9 .*deliver .*老师原话：研究一下别人给我的资产/);
+  });
 });
 
 describe("ledger trace folding", () => {

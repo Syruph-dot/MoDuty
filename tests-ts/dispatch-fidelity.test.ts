@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   ASK_MAX_CHARS,
   buildDispatchMessage,
+  buildTaskInputBlock,
   checkDispatchFidelity,
   extractDispatchHandles,
 } from "../src/dispatch-fidelity.js";
@@ -25,6 +26,16 @@ import { describeSelfBlock } from "../src/agent-identity.js";
 const REAL_ASK =
   "https://github.com/lMakiNishikinol/MDG-BlogWebsite/tree/my-local-work  研究一下别人给我的资产，他们的网站的服务器要到期，准备挂到我们这边。给出方案让我看看";
 const REAL_TASK = "研究一下别人给我的资产，他们的网站的服务器要到期，准备挂到我们这边。给出方案让我看看";
+
+test("关键输入层：把本次任务的 URL / 路径单独拎成一层；无句柄时不占 token", () => {
+  const block = buildTaskInputBlock(
+    "总体任务：https://typesafe.ai/blog/x 研究这个，产物放到 D:\\work\\out\\report.md",
+  );
+  assert.match(block, /^## 本次任务的关键输入（务必用上）/);
+  assert.match(block, /- https:\/\/typesafe\.ai\/blog\/x/);
+  assert.match(block, /D:\\work\\out\\report\.md/);
+  assert.equal(buildTaskInputBlock("帮我写一篇短文"), "");
+});
 
 test("句柄抽取：链接、Windows 与 ~/ 路径都能抽出来，句尾标点要剥掉", () => {
   assert.deepEqual(extractDispatchHandles(REAL_ASK), [

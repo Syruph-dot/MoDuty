@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import BotSettingsPanel from "./BotSettingsPanel";
 import { useDialogStore } from "../state/dialogStore";
 import {
   getOverscrollEffect,
@@ -20,10 +21,11 @@ import {
   type TierDefaultsView,
 } from "../lib/api";
 
-type SettingsTab = "models" | "runtime" | "about";
+type SettingsTab = "models" | "bots" | "runtime" | "about";
 
 const NAV_ITEMS: Array<{ key: SettingsTab; label: string; icon?: string }> = [
   { key: "models", label: "模型与轨道" },
+  { key: "bots", label: "远程机器人" },
   { key: "runtime", label: "运行时" },
   { key: "about", label: "关于" },
 ];
@@ -297,7 +299,7 @@ export default function SettingsScreen() {
       <nav className="settings-nav" aria-label="设置分类">
         <div className="settings-nav__brand">
           MoDuty 设置
-          <small>模型池 · 轨道 · 运行时</small>
+          <small>模型池 · 轨道 · 运行时 · 机器人</small>
         </div>
         {NAV_ITEMS.map((item) => (
           <button
@@ -479,6 +481,13 @@ export default function SettingsScreen() {
             <p className="settings-hint">
               普通对话/日报按默认轨道自动选模型：日报类低频任务默认用低消费轨道（可在生成日报前指定 modelTier）。配置保存在 <span className="settings-kbd">~/.momoka/settings.json</span>。
             </p>
+          </>
+        ) : null}
+
+        {tab === "bots" ? (
+          <>
+            <h2 className="settings-main__title">远程机器人</h2>
+            <BotSettingsPanel />
           </>
         ) : null}
 

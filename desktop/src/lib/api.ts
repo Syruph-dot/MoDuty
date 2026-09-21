@@ -393,3 +393,149 @@ export const dailyApi = {
   getDaily: (date: string) =>
     dailyRequest<string>(`/api/daily/entries?date=${encodeURIComponent(date)}`).catch(() => ""),
 };
+// ===== 远程机器人（手机操控 MoDuty）=====
+
+export type BotKind = "feishu" | "wechat";
+
+export type BotConnectionState =
+  | "disabled"
+  | "not_configured"
+  | "connecting"
+  | "connected"
+  | "waiting_scan"
+  | "scanned"
+  | "expired"
+  | "error";
+
+export interface BotStatusView {
+  kind: BotKind;
+  state: BotConnectionState;
+  label: string;
+  error?: string;
+  connectedAt?: number;
+  login?: { status: string; qrDataUrl: string; scanUrl: string; error: string };
+}
+
+export interface BotsConfigView {
+  feishu: { enabled: boolean; appId: string; domain: "feishu" | "lark"; hasSecret: boolean };
+  wechat: {
+    enabled: boolean;
+    ilinkBotId: string;
+    ilinkUserId: string;
+    baseUrl: string;
+    hasToken: boolean;
+    displayName?: string;
+    loggedInAt?: number;
+  };
+  defaultTarget: { kind: "dispatcher" | "session"; sessionId?: string };
+}
+
+export interface BotActivityView {
+  lastInboundAt: number;
+  lastOutboundAt: number;
+  lastInboundPreview: string;
+}
+
+export interface BotsView {
+  config: BotsConfigView;
+  statuses: BotStatusView[];
+  activity: BotActivityView;
+  configPath: string;
+}
+
+async function botRequest<T>(pathname: string, init?: RequestInit): Promise<T> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}${pathname}`, {
+    headers: init?.body ? { "content-type": "application/json" } : undefined,
+    ...init,
+  });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) detail = body.error;
+    } catch {
+      // 忽略非 JSON 错误体
+    }
+    throw new Error(`机器人接口失败：${detail}`);
+  }
+  return (await res.json()) as T;
+}
+
+export function fetchBots(): Promise<BotsView> {
+  return botRequest<BotsView>("/api/bots");
+}
+
+export function fetchBotStatus(): Promise<{ statuses: BotStatusView[]; activity: BotActivityView }> {
+  return botRequest<{ statuses: BotStatusView[]; activity: BotActivityView }>("/api/bots/status");
+}
+
+/** appSecret 省略/留空 = 不修改；clearSecret = 清空 */
+export function saveFeishuBot(patch: {
+  enabled?: boolean;
+  appId?: string;
+  appSecret?: string;
+  domain?: "feishu" | "lark";
+  clearSecret?: boolean;
+}): Promise<BotsView> {
+  return botRequest<BotsView>("/api/bots/feishu", { method: "PUT", body: JSON.stringify(patch) });
+}
+
+export function setWechatBotEnabled(enabled: boolean): Promise<BotsView> {
+  return botRequest<BotsView>("/api/bots/wechat", { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
+export function saveBotTarget(target: {
+  kind: "dispatcher" | "session";
+  sessionId?: string;
+}): Promise<{ config: BotsConfigView }> {
+  return botRequest<{ config: BotsConfigView }>("/api/bots/target", {
+    method: "PUT",
+    body: JSON.stringify(target),
+  });
+}
+
+export function botAction(
+  kind: BotKind,
+  action: "enable" | "disable" | "restart" | "test",
+  body?: Record<string, unknown>,
+): Promise<BotsView> {
+  return botRequest<BotsView>(`/api/bots/${kind}/${action}`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+export function startWechatBotLogin(): Promise<{
+  scanUrl: string;
+  qrDataUrl: string;
+  statuses: BotStatusView[];
+}> {
+  return botRequest("/api/bots/wechat/login", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function fetchWechatBotLogin(): Promise<{ status: BotStatusView; statuses: BotStatusView[] }> {
+  return botRequest("/api/bots/wechat/login");
+}
+
+export function cancelWechatBotLogin(): Promise<{ status: BotStatusView }> {
+  return botRequest("/api/bots/wechat/login", { method: "DELETE" });
+}
+
+export function logoutWechatBot(): Promise<BotsView> {
+  return botRequest("/api/bots/wechat/logout", { method: "POST", body: JSON.stringify({}) });
+}
+
+export interface SessionOptionView {
+  id: string;
+  name: string;
+  goal: string;
+  last_message_at: string;
+}
+
+export async function listSessionOptions(): Promise<SessionOptionView[]> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}/api/sessions`);
+  const data = (await jsonOrThrow(res, "list sessions")) as { sessions?: SessionOptionView[] };
+  return data.sessions ?? [];
+}

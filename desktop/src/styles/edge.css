@@ -49,6 +49,22 @@
   color: #8fd0ff;
 }
 
+/* 治理按钮（原左上角控制条那一组）：图标直露，flex 居中；直角矩形保留 */
+.wm-charm__btn--tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(232, 237, 247, 0.78);
+}
+
+.wm-charm__btn--tool[aria-pressed="true"] {
+  color: #8fd0ff;
+}
+
+.wm-charm__btn--tool:hover {
+  color: #eaf4ff;
+}
+
 /* hover：方形“向上渐变”背景整体渐显，0.3s 完成（背景层淡入） */
 .wm-charm__btn::before {
   content: "";

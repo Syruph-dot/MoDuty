@@ -3,16 +3,6 @@
  * 用户偏好：治理控件全部使用直角矩形（border-radius: 0，禁用圆角）
  * ============================================================ */
 
-/* ---- 治理按钮（控制条新增）：直角 ---- */
-.control-bar__btn--mgmt {
-  border-radius: 0;
-  font-size: 14px;
-}
-.control-bar__btn--mgmt.control-bar__btn--active {
-  background: rgba(79, 140, 255, 0.35);
-  color: #fff;
-}
-
 /* ---- 顶部治理栏（方案 A）：搜索 + chips + 排序 ----
  * 用户偏好：治理栏固定于左侧（不占顶部），直角矩形风格 */
 .filter-bar {

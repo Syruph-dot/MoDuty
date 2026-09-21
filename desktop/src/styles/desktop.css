@@ -50,12 +50,6 @@ body,
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-/* 治理入口：固定在左侧（用户偏好：治理栏放左边） */
-.control-bar--governance {
-  left: 14px;
-  right: auto;
-}
-
 /* 窗口控制：保留右上角 */
 .control-bar--window {
   right: 14px;

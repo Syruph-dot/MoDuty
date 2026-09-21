@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useAgentsStore } from "../state/agentsStore";
 import { useBrowserStore } from "../state/browserStore";
 import { useWindowManagerStore } from "../state/windowManagerStore";
+import { useDialogStore } from "../state/dialogStore";
+import { IconArchive, IconLayoutGrid, IconLayoutList, IconSearch } from "./ui/icons";
 
 /**
  * 右栏（45px，Windows 8 charms 风格，鼠标到右边缘唤出/移开收回）：
- * - 仅提供「打开/关闭模态」切换——视觉层面切换当前视图，不导航、不销毁数据
- * - off = 自由网格磁贴墙；on = 打开态分屏（左坞 + 右舞台 + 左栏列表）
+ * - 模态开关：off = 自由网格磁贴墙；on = 打开态整屏分屏（V2 左坞已删除）
+ * - 磁贴墙治理入口（原左上角控制条那一组）：搜索筛选 / 归档库 / 视图切换
  * - 尚无任何打开窗口时不允许进入空 on 模态
  *
  * 图标：直接嵌入 parametric_curve_clean.html 的 canvas 参数曲线。
@@ -51,6 +53,17 @@ export default function RightCharm() {
   const toggleMode = useWindowManagerStore((state) => state.toggleMode);
   const openAgentIds = useAgentsStore((state) => state.openAgentIds);
   const openBrowserIds = useBrowserStore((state) => state.openBrowserIds);
+  /* 磁贴墙治理入口（原来在左上角控制条那一组，现挂在右栏） */
+  const filterBarOpen = useAgentsStore((state) => state.filterBarOpen);
+  const toggleFilterBar = useAgentsStore((state) => state.toggleFilterBar);
+  const setArchiveOpen = useAgentsStore((state) => state.setArchiveOpen);
+  const viewMode = useAgentsStore((state) => state.viewMode);
+  const toggleViewMode = useAgentsStore((state) => state.toggleViewMode);
+  const settingsOpen = useDialogStore((state) => state.settingsOpen);
+  const dutyOpen = useDialogStore((state) => state.dutyOpen);
+  const memoryOpen = useDialogStore((state) => state.memoryOpen);
+  /** 页面（设置/值日生/记忆）打开时隐藏治理入口，与旧控制条行为一致 */
+  const pageOpen = settingsOpen || dutyOpen || memoryOpen;
   const [open, setOpen] = useState(false);
   const opening = mode === "on";
   const hasOpen = openAgentIds.length + openBrowserIds.length > 0;
@@ -194,6 +207,41 @@ export default function RightCharm() {
           {/* 直接嵌入:动态参数曲线 canvas（草稿全部参数/关键帧已复原） */}
           <canvas ref={cvRef} className="wm-charm__cv" width={120} height={120} aria-hidden="true" />
         </button>
+
+        {/* 磁贴墙治理：从左上方控制条移过来（页面打开时隐藏） */}
+        {pageOpen ? null : (
+          <>
+            <button
+              type="button"
+              className="wm-charm__btn wm-charm__btn--tool"
+              aria-label="搜索与筛选（切换治理栏）"
+              aria-pressed={filterBarOpen}
+              title="搜索 / 筛选 / 排序"
+              onClick={toggleFilterBar}
+            >
+              <IconSearch size={38} />
+            </button>
+            <button
+              type="button"
+              className="wm-charm__btn wm-charm__btn--tool"
+              aria-label="打开归档库"
+              title="归档库"
+              onClick={() => setArchiveOpen(true)}
+            >
+              <IconArchive size={38} />
+            </button>
+            <button
+              type="button"
+              className="wm-charm__btn wm-charm__btn--tool"
+              aria-label={viewMode === "grouped" ? "切换到桌面视图（自由磁贴）" : "切换到分组视图（按工作区）"}
+              aria-pressed={viewMode === "grouped"}
+              title={viewMode === "grouped" ? "桌面视图" : "分组视图"}
+              onClick={toggleViewMode}
+            >
+              {viewMode === "grouped" ? <IconLayoutGrid size={38} /> : <IconLayoutList size={38} />}
+            </button>
+          </>
+        )}
       </div>
     </>
   );

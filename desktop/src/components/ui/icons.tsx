@@ -74,6 +74,41 @@ export function IconClose(props: IconProps) {
   );
 }
 
+/** 归档柜：归档库 */
+export function IconArchive(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3.6" y="4.2" width="16.8" height="4.6" rx="1.2" />
+      <path d="M5.4 8.8V19a1.2 1.2 0 0 0 1.2 1.2h10.8a1.2 1.2 0 0 0 1.2-1.2V8.8" />
+      <path d="M10 12.6h4" />
+    </Icon>
+  );
+}
+
+/** 分组视图：带行文的框（▤） */
+export function IconLayoutList(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="4.4" width="16" height="15.2" rx="2" />
+      <path d="M7.6 9.4h8.8" />
+      <path d="M7.6 12.4h8.8" />
+      <path d="M7.6 15.4h5.2" />
+    </Icon>
+  );
+}
+
+/** 桌面视图：四宫格（▦） */
+export function IconLayoutGrid(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="4.4" width="6.6" height="6.6" rx="1.3" />
+      <rect x="13.4" y="4.4" width="6.6" height="6.6" rx="1.3" />
+      <rect x="4" y="13" width="6.6" height="6.6" rx="1.3" />
+      <rect x="13.4" y="13" width="6.6" height="6.6" rx="1.3" />
+    </Icon>
+  );
+}
+
 /** 地球：浏览器标签 */
 export function IconBrowser(props: IconProps) {
   return (

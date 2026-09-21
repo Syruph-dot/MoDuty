@@ -17,6 +17,7 @@ import { computeMetrics, displaceTiles, gridToPixels } from "../lib/gridLayout";
 import { startAgentEventStream, type AgentEventStreamControl } from "../lib/sseClient";
 import { emitDutyEvent } from "../lib/dutyEvents";
 import { useAgentAlerts } from "../hooks/useAgentAlerts";
+import AgentAlertToasts from "./AgentAlertToasts";
 import VerdictToasts from "./VerdictToasts";
 import { startBrowserEventStream } from "../lib/browserEvents";
 import { useAgentsStore, useVisibleAgents } from "../state/agentsStore";
@@ -1465,6 +1466,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       <RightCharm />
       {!pageOpen ? <LeftSidePanel /> : null}
 
+      {/* Agent 需要你介入（待答提问 / 待审批）：右下角 toast，点「打开窗口」直达 */}
+      <AgentAlertToasts />
       {/* 值日生判读上报（A6）：右下角 toast */}
       <VerdictToasts />
     </div>

@@ -12,6 +12,35 @@
 
 let permissionAsked = false;
 
+/**
+ * 通知权限：Chrome/Edge 规定 requestPermission() 必须在用户手势里调用，否则直接返回 default 且连权限气泡都不弹。
+ * 旧实现只在「要发通知的那一刻」申请（那里不在手势里）→ 永远拿不到权限 → 通知永远静默失败。
+ * 现在两条腿走路：启动时挂一次性手势监听提前申请（见 primeNotificationPermission），
+ * 发通知时再兜一次（已授权则直接通过）。
+ */
+export function primeNotificationPermission(): void {
+  if (typeof window === "undefined" || typeof Notification === "undefined") return;
+  if (Notification.permission !== "default") return;
+  const ask = (): void => {
+    cleanup();
+    if (permissionAsked) return;
+    permissionAsked = true;
+    void Notification.requestPermission().catch(() => undefined);
+  };
+  const cleanup = (): void => {
+    window.removeEventListener("pointerdown", ask, true);
+    window.removeEventListener("keydown", ask, true);
+  };
+  window.addEventListener("pointerdown", ask, true);
+  window.addEventListener("keydown", ask, true);
+}
+
+/** 当前通知能力：给 UI 判断「能不能弹系统提示」（browser 未授权 / shell 不支持时为 false） */
+export function notificationCapability(): "granted" | "default" | "denied" | "unsupported" {
+  if (typeof Notification === "undefined") return "unsupported";
+  return Notification.permission;
+}
+
 /** 是否跑在 Tauri 壳里（v1 注入 window.__TAURI__；纯 ESM 场景只有 IPC 全局对象） */
 function inTauri(): boolean {
   if (typeof window === "undefined") return false;
@@ -40,9 +69,8 @@ async function notifyViaWeb(title: string, body: string, tag: string, onClick?: 
   try {
     if (Notification.permission === "denied") return false;
     if (Notification.permission === "default") {
-      if (permissionAsked) return false;
-      permissionAsked = true;
-      const result = await Notification.requestPermission();
+      // 不在手势里时这次会静默失败，但没有副作用；拿到权限的时机靠 primeNotificationPermission
+      const result = await Notification.requestPermission().catch(() => "default" as NotificationPermission);
       if (result !== "granted") return false;
     }
     // tag 相同 → 同一 Agent 的旧提醒被替换而不是堆叠

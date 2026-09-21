@@ -12,6 +12,7 @@ import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
+import { describeSelfBlock } from "./agent-identity.js";
 import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
@@ -232,6 +233,9 @@ export class MomokaAgentCore implements MomokaAgent {
     // 值日生：台账快照放最前（在途状态的唯一事实源，不靠历史回忆）
     const snapshot = await this.buildDispatcherSnapshot(input.sessionId);
     if (snapshot) sections.push(snapshot);
+    // 自我身份：执行者要用 id 才能读自己的历史/搜自己的会话，不给就会靠猜（实测烧掉一整轮）
+    const self = await this.buildSelfIdentityBlock(input.sessionId);
+    if (self) sections.push(self);
     if (input.workDir) sections.push(`## Current Work Directory\n${input.workDir}`);
 
     // 渐进披露：任务命中技能关键词时，注入相关技能内容（保持提示词精简）
@@ -262,6 +266,27 @@ export class MomokaAgentCore implements MomokaAgent {
     }
 
     return sections.join("\n\n");
+  }
+
+  /**
+   * 自我身份块（名字 / agent_id / 本会话 session_id / 角色 / 工作目录）。
+   * 实测：不注入时执行者会猜自己的会话 id（ses_xxx? tile_xxx?），白烧一轮工具调用。
+   */
+  private async buildSelfIdentityBlock(sessionId?: string | null): Promise<string | null> {
+    if (!sessionId || !this.agentRegistry) return null;
+    try {
+      const record = await this.agentRegistry.agentBySessionId(sessionId);
+      if (!record) return null;
+      return describeSelfBlock({
+        id: record.id,
+        name: record.name,
+        sessionId: record.sessionId,
+        isDispatcher: isDispatcherAgent(record),
+        workspaceDir: record.workspaceDir,
+      });
+    } catch {
+      return null; // 取不到身份不影响本轮
+    }
   }
 
   /**

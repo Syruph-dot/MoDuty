@@ -1,4 +1,5 @@
 import path from "node:path";
+import { buildDispatchFidelityNote } from "../dispatch-fidelity.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
 import type { MomokaAgentCore } from "../agent.js";
@@ -208,9 +209,21 @@ export async function driveQuestionAnswered(deps: OrchestrationDeps, record: Age
  * ============================================================ */
 
 const triggerLabel = (trigger: DispatchTrigger): string =>
-  trigger === "completed" ? "执行者报告完成" : trigger === "error" ? "执行者出错" : "疑似停转（长时间无进展）";
+  trigger === "completed"
+    ? "执行者报告完成"
+    : trigger === "error"
+      ? "执行者出错"
+      : trigger === "verdict_unsettled"
+        ? "上一次判读没有给出结论（系统自动补唤醒）"
+        : "疑似停转（长时间无进展）";
 
-async function wakeDispatcher(deps: OrchestrationDeps, entry: DispatchRecord, trigger: DispatchTrigger): Promise<void> {
+async function wakeDispatcher(
+  deps: OrchestrationDeps,
+  entry: DispatchRecord,
+  trigger: DispatchTrigger,
+  /** 已补唤醒过一次：再空转就交给停转扫描，避免无限重试 */
+  retried = false,
+): Promise<void> {
   const dispatcher = await deps.registry.getAgent(entry.dispatcherId);
   if (!dispatcher || !isDispatcherAgent(dispatcher)) return;
   const message = [
@@ -229,9 +242,21 @@ async function wakeDispatcher(deps: OrchestrationDeps, entry: DispatchRecord, tr
     transient: true,
     // 停转复查与普通判读分开：前者先核对快照是否已被结单，避免对已交付条目重复提交判定
     turnMode: trigger === "stalled" ? "stalled" : "verdict",
-  }).catch((error: unknown) => {
-    console.error("[waker] 唤醒值日生判读失败:", error);
-  });
+  })
+    .then(async () => {
+      // 判读轮跑完但没提交判定（实测 2026-09-21：模型只调了一次 inspect_session 就收尾、正文 0 字）：
+      // 条目仍是 awaiting_verdict。此时若不补唤醒，就得等 30 分钟的停转阈值，任务白等半小时。
+      const fresh = (await deps.registry.dispatches.listAll()).find((item) => item.id === entry.id);
+      if (!fresh || fresh.state !== "awaiting_verdict") return;
+      if (retried) {
+        console.warn(`[waker] 条目 ${entry.id} 判读轮两次都没给出结论，交回停转扫描（30 分钟后再试）`);
+        return;
+      }
+      await wakeDispatcher(deps, fresh, "verdict_unsettled", true);
+    })
+    .catch((error: unknown) => {
+      console.error("[waker] 唤醒值日生判读失败:", error);
+    });
 }
 
 /* ============================================================
@@ -332,6 +357,27 @@ export async function handleLedgerQuery(
  * （http.ts 接线；tools.ts 命中相关子命令时不再 spawn CLI 回环 HTTP）
  * ============================================================ */
 
+/**
+ * 取调用者会话最后一条老师消息（跳过 contextOnly 的注入消息），
+ * 抽出里面出现、而任务书里没带上的链接/路径 → 返回补全说明（没有缺失则返回空串）。
+ */
+async function dispatchFidelityNote(
+  deps: OrchestrationDeps,
+  callerSessionId: string,
+  task: string,
+): Promise<string> {
+  try {
+    const messages = await deps.agent.sessionManager.getMessages(callerSessionId);
+    const lastUser = [...messages]
+      .reverse()
+      .find((message) => message.role === "user" && !message.contextOnly && String(message.content ?? "").trim());
+    if (!lastUser) return "";
+    return buildDispatchFidelityNote(String(lastUser.content ?? ""), task);
+  } catch {
+    return ""; // 拿不到原话不阻断派发，只是少一层兜底
+  }
+}
+
 export async function handleDispatchBridge(deps: OrchestrationDeps, input: DispatchBridgeInput): Promise<{ ok: boolean; output: string; dispatchId?: string }> {
   if (input.kind === "verdict") {
     return { ok: true, output: await handleDispatchVerdict(deps, input) };
@@ -356,18 +402,23 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     if (refusal) return { ok: false, output: refusal };
   }
 
+  // 派发保真：老师原话里的链接/路径若没进任务书，自动补在尾部（执行者才有输入可用）
+  const fidelity = await dispatchFidelityNote(deps, caller.sessionId, task);
+  const taskWithFidelity = (task + fidelity).slice(0, LEDGER_TASK_MAX_CHARS);
+
   const entry = await deps.registry.recordDispatch({
     dispatcherId: caller.id,
     dispatcherSessionId: caller.sessionId,
     targetAgentId: target.id,
     targetSessionId: target.sessionId,
-    task: task.slice(0, LEDGER_TASK_MAX_CHARS),
-    linkedSessions: extractSessionRefs(task),
+    task: taskWithFidelity,
+    linkedSessions: extractSessionRefs(taskWithFidelity),
   });
 
   if (input.kind === "chat") {
     // 同步派发：等执行者本轮结束（结果给调用者）；台账照常进入判读队列
-    const result = await driveAgentTurn(deps, target, { message: task });    const output = result.response.response.trim();
+    const result = await driveAgentTurn(deps, target, { message: taskWithFidelity });
+    const output = result.response.response.trim();
     return {
       ok: true,
       dispatchId: entry.id,
@@ -392,7 +443,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
   }
 
   // 异步派发：发起即回（懒调度）
-  void driveAgentTurn(deps, target, { message: task }).catch((error: unknown) => {
+  void driveAgentTurn(deps, target, { message: taskWithFidelity }).catch((error: unknown) => {
     console.error("[dispatch] 驱动执行者失败:", error);
   });
   return {

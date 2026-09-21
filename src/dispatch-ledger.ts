@@ -20,7 +20,7 @@ import { atomicWriteJson, withFileLock } from "./write-queue.js";
 
 export type DispatchEntryState = "tracking" | "awaiting_verdict" | "done";
 /** 触发判读的原因：执行者正常完成 / 出错 / 停转扫描器合成 */
-export type DispatchTrigger = "completed" | "error" | "stalled";
+export type DispatchTrigger = "completed" | "error" | "stalled" | "verdict_unsettled";
 /** 值日生判读出口：交付（上报用户）/ 继续（返工） */
 export type DispatchVerdict = "deliver" | "continue";
 

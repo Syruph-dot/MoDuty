@@ -8,6 +8,7 @@ import { IndexStore } from "./index-store.js";
 import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
+import { buildEmptyContinuationNote, hasUsableOutput } from "./empty-response.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
 import { MomokaHttpError } from "./http-error.js";
@@ -412,6 +413,10 @@ ${ref.message.content}`;
     if (sessionId) {
       streamingMessage = await this.sessionManager.beginStreamingMessage(sessionId);
     }
+    // 本轮流式到的思考字数：Proma 口径里「有思考」也算可见产出，不是空响应
+    let streamedReasoningChars = 0;
+    // 空响应续跑提示（第 2 次尝试起追加，续跑而不是重发任务）
+    let continuationNote = "";
     const onEvent = (event: StreamEvent): void => {
       const sm = streamingMessage;
       const sid = sessionId;
@@ -443,6 +448,7 @@ ${ref.message.content}`;
         }
       } else if (event.type === "reasoning") {
         // 思考过程随流式消息落盘（重开窗口还能看；上限见 session-manager 的 REASONING_MAX_CHARS）
+        streamedReasoningChars += event.text.length;
         if (sm && sid) this.sessionManager.appendStreamingReasoning(sid, sm.id, event.text);
       } else if (event.type === "tool_result") {
         for (let i = streamingTools.length - 1; i >= 0; i -= 1) {
@@ -476,22 +482,25 @@ ${ref.message.content}`;
       // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
       try {
         result = await withRetry(
-          async () => {
-            const runResult = await this.options.modelClient.run(prompt, {
+          async (attempt) => {
+            // 空响应续跑：第 2 次起追加续跑提示（同一 transcript 往下做，不重发任务）
+            const attemptPrompt = continuationNote ? `${prompt}\n\n${continuationNote}` : prompt;
+            const runResult = await this.options.modelClient.run(attemptPrompt, {
               systemPrompt, topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
               tools,
               historyMessages,
               onEvent, signal: request.signal,
               sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
             });
-            // 空响应：本轮没有任何**文本产出** → 当成可重试失败，而不是交给上层记 completed。
-            // 实测 2026-09-21：执行者「调完一批工具后上游空轮」以 done 收尾——磁贴标绿、任务零交付，
-            // 观测者（用户与值日生）都看不出发生了什么。判读轮例外：它以「是否提交判定」为准，
-            // 由唤醒侧复查（见 agent-orchestration 的 wakeDispatcher），这里只在它完全无动作时才判空。
-            const judgedTurn = turnMode === "verdict" || turnMode === "stalled";
-            const noText = !runResult.output.trim();
-            const noToolCall = (runResult.toolCalls ?? []).length === 0;
-            if (judgedTurn ? noText && noToolCall : noText) {
+            // 空响应口径对齐 Proma（isVisibleRunMessage）：正文 / 工具调用 / 思考任一存在
+            // 即算本轮有产出，「只调工具没写正文」是正常回合——完成度归台账与判读判，
+            // 不在这一层判失败。只有**什么都没回来**（无正文、无工具、无思考）才算空响应。
+            const usable = hasUsableOutput({
+              text: runResult.output,
+              toolCalls: runResult.toolCalls,
+              reasoningChars: streamedReasoningChars,
+            });
+            if (!usable) {
               const empty = new Error("模型返回空响应（上游只回了空流），本轮没有任何产出");
               empty.name = "EmptyResponseError";
               throw empty;
@@ -508,6 +517,10 @@ ${ref.message.content}`;
             },
             onRetry: (info) => {
               retryAttempts = info.attempt;
+              // 空响应：下一轮不是重发任务，而是带着续跑提示接着往下做
+              if (info.error instanceof Error && info.error.name === "EmptyResponseError") {
+                continuationNote = buildEmptyContinuationNote(info.attempt, 3);
+              }
               void appendTraceEvent(tracePath, "run_retry", {
                 attempt: info.attempt,
                 delayMs: info.delayMs,
@@ -533,7 +546,9 @@ ${ref.message.content}`;
         await this.sessionManager
           .finishStreamingMessage(sessionId, streamingMessage.id, {
             status: isAbort ? "stopped" : "error",
-            ...(isEmptyResponse ? { content: "（本轮无任何输出：上游模型返回空流，已按失败处理）" } : {}),
+            ...(isEmptyResponse
+            ? { content: `（本轮无任何输出：上游连续 ${retryAttempts + 1} 次只回空流，已停止重试。消息保留，可直接重发或换个模型）` }
+            : {}),
           })
           .catch(() => undefined);
       }

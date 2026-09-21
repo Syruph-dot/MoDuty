@@ -135,8 +135,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   // 父容器尺寸（用于度量网格）；ResizeObserver 驱动
   const wallRef = useRef<HTMLDivElement | null>(null);
 
-  // ---- 打开态关联会话（&ses_ 图）：右半屏打开的 session 的出/入边邻居（最多 12，时间倒序）----
-  const [relatedAgentIds, setRelatedAgentIds] = useState<string[]>([]);
   /** T1：打开卡片的世界 X（右舞台自由草稿坐标；首次打开时回退到该磁贴自由网格 X 并在此记录） */
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
   /** Y 错位：默认锁 Y（top=stage.y）；拖拽突破阈值后写入，右键归位清空 */
@@ -145,7 +143,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const commitOpenWorldY = useCallback((id: string, y: number) => {
     setOpenWorldY((prev) => ({ ...prev, [id]: Math.round(y) }));
   }, []);
-  /** T2：内容层当前横向滚动量（open 模式 dock 视口补偿用） */
+  /** T2：内容层当前横向滚动量（打开卡片的边缘滚动用） */
   const [wallScrollX, setWallScrollX] = useState(0);
   /** T4：打开卡片 z 层级序（后位 = 顶层；点击激活置顶） */
   const [openZOrder, setOpenZOrder] = useState<string[]>([]);
@@ -337,62 +335,23 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
   // ---- 打开态布局：Agent + 浏览器磁贴统一进入 open 分屏；widget 永远自由摆放 ----
   const openIds = [...openAgentIds, ...openBrowserIds];
-  // 打开态关联会话集合（渲染过滤 + dock 布局共用）
-  const relatedSet = useMemo(() => new Set(relatedAgentIds), [relatedAgentIds]);
   // 模态由右栏切换（on=打开态；off=磁贴墙）。打开/收起窗口仍驱动 openIds。
   const openMode = wmMode === "on";
 
   // 分组视图（方案 B）：仅空闲墙且 viewMode=grouped 时启用
   const groupedMode = viewMode === "grouped" && !openMode;
 
-  // ---- 打开态关联会话（&ses_ 图）：T7 改为「当前实例快照」----
-  // 旧逻辑：收集全部已打开绘画取并集批量查询（代码保留于下方注释，便于恢复多绘画聚合）。
-  // 本次：只在 openMode 由关→开的瞬间，以当时「最新打开的绘画」为当前实例单独查询一次；
-  // 左右联动断开：右侧再打开/关闭/拖拽/置顶不再触发左侧面板重算（断/重联方案待后续设计）。
-  useEffect(() => {
-    if (!openMode) {
-      setRelatedAgentIds([]);
-      return;
-    }
-    // [旧实现——多绘画并集查询，保留不删] const sessionIds = openAgentIds.map(...)...ids=sessionIds.join(",")
-    const currentId = openAgentIds[openAgentIds.length - 1];
-    const sessionId = currentId ? agents.find((candidate) => candidate.id === currentId)?.session_id : undefined;
-    if (!sessionId) {
-      setRelatedAgentIds([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const base = await awaitApiBase();
-        const res = await fetch(`${base}/api/sessions/related?ids=${sessionId}`);
-        const data = (await res.json()) as { sessions?: Array<{ agentId: string }> };
-        if (!cancelled) setRelatedAgentIds((data.sessions ?? []).map((s) => s.agentId));
-      } catch {
-        if (!cancelled) setRelatedAgentIds([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // 故意仅依赖 openMode：进入 open 时取一次快照，右侧后续变化不驱动左侧（断联动）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openMode]);
   // 最后一个窗口收起后自动回到磁贴墙（模态保持 user 可手动切回 on）
   useEffect(() => {
     if (wmMode === "on" && openIds.length === 0) {
       setWmMode("off");
     }
   }, [wmMode, openIds.length, setWmMode]);
+  // 打开态布局：左坞已删除，只剩整屏舞台（打开卡片按 2n / 2n+1 铺开）
   const layout = useMemo(() => {
     if (!openMode || !isBoundsReady(bounds)) return null;
-    // 左坞只放：关联会话（最多 12）+ 全部 browser（用户确认 A：browser 保留续排）
-    const allIds = [
-      ...agents.filter((a) => openAgentIds.includes(a.id) || relatedSet.has(a.id)).map((a) => a.id),
-      ...browsers.map((b) => b.id),
-    ];
-    return computeOpenLayout(bounds, openIds, allIds);
-  }, [openMode, openIds, agents, browsers, bounds, relatedSet]);
+    return computeOpenLayout(bounds, openIds);
+  }, [openMode, openIds, bounds]);
 
   // ---- Win8 网格：度量 + free 模式统一 gridMap + 画布宽度 ----
   const metrics = useMemo(
@@ -1037,7 +996,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     };
   }, [openMode, wallRef, setOverscroll, clearOverscroll, releaseOverscroll]);
 
-  // T2：open 模式下跟踪容器 scrollLeft（dock 视口补偿）
+  // T2：open 模式下跟踪容器 scrollLeft（打开卡片的边缘滚动用）
   useEffect(() => {
     const el = wallRef.current;
     if (!el || !openMode) return;
@@ -1242,11 +1201,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         </div>
       ) : null}
 
-      {/* 打开态：左半屏坞背景（无文字提示） */}
-      {openMode && layout ? (
-        <div className="dock-area" style={{ left: layout.dock.x, top: layout.dock.y, width: layout.dock.w, height: layout.dock.h }} aria-hidden="true" />
-      ) : null}
-
       {/* ---- 内容层 .tile-wall__content：滚动内容 + 橡皮筋位移载体（越界时整体 translateX） ---- */}
       <div ref={contentRef} className="tile-wall__content" style={{ width: contentWidth, height: "100%" }}>
       {/* 拖拽成组：组名层（组带顶部保留行左对齐，Segoe UI Light；用户组双击可编辑） */}
@@ -1315,35 +1269,29 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         // 分组视图：Agent 磁贴由 GroupedWall 统一渲染（非自由网格）
         if (groupedMode) return null;
         const isOpen = openAgentIds.includes(agent.id);
-        const inDock = openMode && !isOpen && relatedSet.has(agent.id);
-        const canvasGhost = openMode && !isOpen && !relatedSet.has(agent.id);
+        // 打开态里未打开的磁贴 = 画布弱化参照（左坞删除后不再有坞磁贴）
+        const canvasGhost = openMode && !isOpen;
         // 墙治理（A+D）：空闲态只渲染墙内可见；打开态的画布弱化层同样只显示墙内可见（归档/筛选外不显示）
         if (!openMode && !wallIds.has(agent.id)) return null;
         if (openMode && canvasGhost && !wallIds.has(agent.id)) return null;
-        // 双几何：打开态 → 打开卡使用“世界 X + 右舞台尺寸”（T1，不再田字格强排）／dock 仍走布局引擎；
+        // 双几何：打开态 → 打开卡使用“世界 X + 右舞台尺寸”（T1，不再田字格强排）；
         //         空闲态 → band 局部网格派生像素（灰框让位时用 displaced 覆盖）
         const displacedGrid = displaced[agent.id];
         const band = bandById[bandOf[agent.id]] ?? null;
         const sourceGrid = band?.gridMap[agent.id] ?? null;
         const bandX = band?.x ?? 0;
         const geometry =
-          openMode && layout && (isOpen || inDock)
-            ? isOpen
-              ? {
-                  x: Number.isFinite(openWorldX[agent.id]) ? openWorldX[agent.id] : 0,
-                  y: Number.isFinite(openWorldY[agent.id]) ? openWorldY[agent.id] : layout.stage.y,
-                  w: layout.stage.w,
-                  h: layout.stage.h,
-                }
-              : {
-                  // T2：dock 固定在视口（内容层随容器 scrollLeft 平移，这里反向补偿）
-                  ...(layout.geometryOf[agent.id] ?? EMPTY_TILE),
-                  x: (layout.geometryOf[agent.id]?.x ?? 0) + wallScrollX,
-                }
+          openMode && layout && isOpen
+            ? {
+                x: Number.isFinite(openWorldX[agent.id]) ? openWorldX[agent.id] : 0,
+                y: Number.isFinite(openWorldY[agent.id]) ? openWorldY[agent.id] : layout.stage.y,
+                w: layout.stage.w,
+                h: layout.stage.h,
+              }
             : metrics && sourceGrid
               ? gridToPixels(displacedGrid ?? sourceGrid, metrics, bandX)
               : EMPTY_TILE;
-        const tileMode = !openMode ? "free" : isOpen ? "expanded" : inDock ? "dock" : "free";
+        const tileMode = !openMode ? "free" : isOpen ? "expanded" : "free";
         // 广义 Tile 统一拖放（agent 与 widget 同路径，见 handleDragMove / handleTileCommit）
         return (
           <TileShell
@@ -1354,11 +1302,9 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             grid={!openMode ? sourceGrid ?? undefined : undefined}
             gridMap={!openMode ? band?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
-            bounds={bounds}
             mode={tileMode}
             dragHandleSelector={isOpen ? ".agent-window__header" : undefined}
-            dockRightEdgeX={layout?.dockRightEdgeX}
-            zIndex={isOpen ? 20 + zRankOf(agent.id) : openMode ? (inDock ? 1 : 0) : 1}
+            zIndex={isOpen ? 20 + zRankOf(agent.id) : openMode ? 0 : 1}
             displacedPreview={!!displacedGrid && tileMode === "free"}
             bandX={bandX}
             canvasGhost={canvasGhost}
@@ -1367,7 +1313,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
             onCommit={(next) => handleTileCommit(agent.id, next)}
             dropTarget={dropHint?.tileId === agent.id}
-            onDropToDock={isOpen ? () => closeAgent(agent.id) : undefined}
+            onDropToEdge={isOpen ? () => closeAgent(agent.id) : undefined}
             onWorldXCommit={isOpen ? (x) => commitOpenWorldX(agent.id, x) : undefined}
             onWorldYCommit={isOpen ? (y) => commitOpenWorldY(agent.id, y) : undefined}
             onActivate={isOpen ? () => raiseAgent(agent.id) : undefined}
@@ -1401,17 +1347,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         const geometry =
           openMode && layout
             ? (() => {
-                const bGeom = layout.geometryOf[browser.id] ?? EMPTY_TILE;
-                // T2：dock（非打开）固定在视口，反向补偿容器 scrollLeft
-                if (!isOpen) {
-                  return { ...bGeom, x: bGeom.x + wallScrollX };
-                }
-                return bGeom;
+                return layout.geometryOf[browser.id] ?? EMPTY_TILE;
               })()
             : metrics && browserGrid
               ? gridToPixels(displacedGrid ?? browserGrid, metrics, bandX)
               : EMPTY_TILE;
-        const tileMode = !openMode ? "free" : isOpen ? "expanded" : "dock";
+        const tileMode = !openMode ? "free" : isOpen ? "expanded" : "free";
         const browserMenuItems: ContextMenuItem[] = [
           {
             id: "open-browser",
@@ -1433,10 +1374,8 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             grid={!openMode ? browserGrid ?? undefined : undefined}
             gridMap={!openMode ? band?.gridMap : undefined}
             metrics={!openMode ? metrics ?? undefined : undefined}
-            bounds={bounds}
             mode={tileMode}
             dragHandleSelector={isOpen ? ".browser-window__header" : undefined}
-            dockRightEdgeX={layout?.dockRightEdgeX}
             zIndex={isOpen ? 21 : 1}
             displacedPreview={!!displacedGrid}
             bandX={bandX}
@@ -1445,7 +1384,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onDragMove={(cx, cy) => handleDragMove(browser.id, cx, cy)}
             onCommit={(next) => handleTileCommit(browser.id, next)}
             dropTarget={dropHint?.tileId === browser.id}
-            onDropToDock={isOpen ? () => closeBrowser(browser.id) : undefined}
+            onDropToEdge={isOpen ? () => closeBrowser(browser.id) : undefined}
             contextMenuItems={browserMenuItems}
             onOpenTile={tileMode === "expanded" ? undefined : () => openBrowser(browser.id)}
           >
@@ -1488,7 +1427,6 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             grid={sourceGrid}
             gridMap={band?.gridMap}
             metrics={metrics ?? undefined}
-            bounds={bounds}
             mode="free"
             zIndex={1}
             disableResize={def.fixedSize}

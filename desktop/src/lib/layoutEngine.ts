@@ -20,24 +20,14 @@ export interface Rect {
 }
 
 export interface OpenLayoutResult {
-  /** agentId → 打开态 geometry（未打开→坞格子；已打开→舞台格子） */
+  /** tileId → 打开态 geometry（只有已打开的磁贴有戏：整屏舞台分格） */
   geometryOf: Record<string, TileGeometry>;
-  /** 左半屏坞区域（含内边距前的外框） */
-  dock: Rect;
-  /** 右半屏舞台区域 */
+  /** 舞台区域（V2：占满整墙——左坞已删除，未打开的磁贴不再排一列小格子） */
   stage: Rect;
-  /** 坞与舞台的分界 x 坐标（磁贴中心小于它即视为"拖入左坞"） */
-  dockRightEdgeX: number;
 }
 
-/** 左半屏坞占整墙宽度的比例 */
-export const DOCK_RATIO = 0.3;
 /** 舞台格子之间的间隙与四周内边距 */
 export const STAGE_GAP = 10;
-/** 坞区域四周内边距 */
-export const DOCK_PADDING = 10;
-/** 坞内每行最多磁贴数 */
-export const DOCK_COLS = 3;
 
 /** 画布为空时的安全兜底（bounds 尚未测量到） */
 export function isBoundsReady(bounds: { width: number; height: number }): boolean {
@@ -47,30 +37,20 @@ export function isBoundsReady(bounds: { width: number; height: number }): boolea
 /**
  * 计算打开态布局。
  *
+ * V2：左坞（未打开磁贴的紧凑网格列）已删除——「当前 Agent 的下属」改用窗口头部的标签页条表达，
+ * 所以打开态只有一整块舞台，打开卡片铺满整墙。
+ *
  * @param bounds   整墙尺寸（像素）
  * @param openIds  当前打开的磁贴 id（顺序 = 打开顺序，越早越靠前）
- * @param allIds   全部磁贴 id（openIds 之外的进坞）
  */
 export function computeOpenLayout(
   bounds: { width: number; height: number },
   openIds: string[],
-  allIds: string[],
 ): OpenLayoutResult {
   const width = Math.max(0, bounds.width);
   const height = Math.max(0, bounds.height);
 
-  const dock: Rect = {
-    x: 0,
-    y: 0,
-    w: width * DOCK_RATIO,
-    h: height,
-  };
-  const stage: Rect = {
-    x: dock.w,
-    y: 0,
-    w: width - dock.w,
-    h: height,
-  };
+  const stage: Rect = { x: 0, y: 0, w: width, h: height };
 
   const geometryOf: Record<string, TileGeometry> = {};
 
@@ -99,28 +79,5 @@ export function computeOpenLayout(
     geometryOf[id] = { x, y, w, h };
   });
 
-  // ---- 左半屏坞：未打开的磁贴（关联会话网格：≤6 → 2×3；>6 → 3×4，最多 12）----
-  const dockIds = allIds.filter((id) => !openIds.includes(id));
-  const m = dockIds.length;
-  // 用户规则：候选 ≤6 → 2 列；>6 → 3 列。行数不限（browser 续排可能超过 12）
-  const dockCols = m > 0 ? (m <= 6 ? 2 : 3) : 1;
-  const dockRows = m > 0 ? Math.ceil(m / dockCols) : 0;
-  const usableW = Math.max(0, dock.w - DOCK_PADDING * 2);
-  const usableH = Math.max(0, dock.h - DOCK_PADDING * 2);
-  const dockCellW = dockCols > 0 ? usableW / dockCols : 0;
-  const dockCellH = dockRows > 0 ? usableH / dockRows : 0;
-
-  dockIds.forEach((id, index) => {
-    if (!width || !height) {
-      geometryOf[id] = { x: dock.x + DOCK_PADDING, y: DOCK_PADDING, w: 0, h: 0 };
-      return;
-    }
-    const col = index % dockCols;
-    const row = Math.floor(index / dockCols);
-    const x = dock.x + DOCK_PADDING + col * dockCellW;
-    const y = dock.y + DOCK_PADDING + row * dockCellH;
-    geometryOf[id] = { x, y, w: dockCellW, h: dockCellH };
-  });
-
-  return { geometryOf, dock, stage, dockRightEdgeX: dock.x + dock.w };
+  return { geometryOf, stage };
 }

@@ -23,11 +23,10 @@ import { useAgentsStore } from "../state/agentsStore";
 /**
  * 磁贴壳的交互模式：
  * - free     —— 无磁贴打开时：Win8 网格拖动 + 量化缩放（现状自由态已去自由化）
- * - dock     —— 打开态左坞小磁贴：位置由布局引擎决定，禁拖禁 resize
  * - expanded —— 打开态右舞台窗口：仅拖拽把手（header）可拖、禁 resize；
- *               拖入左坞松手 → onDropToDock（收起），否则回弹到布局位置
+ *               拖到屏幕左/右极端松手 → onDropToEdge（丢弃关闭），否则回弹到布局位置
  */
-export type TileShellMode = "free" | "dock" | "expanded";
+export type TileShellMode = "free" | "expanded";
 
 interface TileShellProps {
   /** 唯一 id（用于 data-attr / 调试） */
@@ -49,8 +48,6 @@ interface TileShellProps {
   onDragMove?: (centerX: number, centerY: number) => void;
   /** 松手提交：移位由 Desktop 按灰框解译决定（次不回传）；缩放把壳内算好的量化网格回传 */
   onCommit: (next?: TileGrid) => void;
-  /** 父容器尺寸（用于 clamp，防止磁贴被拖出可见区；expanded 模式用） */
-  bounds?: { width: number; height: number };
   /** z-index（用于选中置顶） */
   zIndex?: number;
   /** 其它磁贴的像素几何（expanded 模式的边吸附用） */
@@ -61,10 +58,9 @@ interface TileShellProps {
   mode?: TileShellMode;
   /** expanded 模式下可拖拽的把手选择器（如 .agent-window__header）；未命中则不启动拖拽 */
   dragHandleSelector?: string;
-  /** expanded 模式：松手时磁贴中心 x 小于该值 → onDropToDock（收起） */
-  dockRightEdgeX?: number;
+  /** T5：打开卡拖到屏幕左/右极端 → 丢弃关闭（V2 左坞已删除，只剩这一个边缘行为） */
+  onDropToEdge?: (id: string) => void;
   /** expanded 模式：拖到左坞松手后触发（关闭该磁贴） */
-  onDropToDock?: (id: string) => void;
   /** T3 草稿纸模式：expanded 松手时把最终世界 X 交回父级（并做释放惯性） */
   onWorldXCommit?: (x: number) => void;
   /** Y 错位提交：解锁后松手把最终 Y（top）交回父级（与 X 一同提交） */
@@ -90,7 +86,7 @@ interface TileShellProps {
   dropTarget?: boolean;
   /** 组带起始 X（px，内容区相对坐标）：缩放灰框像素派生时叠加 */
   bandX?: number;
-  /** 打开态画布弱化层：未打开且非 dock 的磁贴以画布位置弱化显示（透明可见初始画布） */
+  /** 打开态画布弱化层：未打开的磁贴以画布位置弱化显示（透明可见初始画布） */
   canvasGhost?: boolean;
 }
 
@@ -105,7 +101,6 @@ const MIN_W = 200;
 const MIN_H = 120;
 const MAX_W = 1200;
 const MAX_H = 900;
-const SCREEN_EDGE = 0;
 /** Y 锁定阈值 px：拖拽垂直位移未超此值前 Y 保持不动；一旦超过即解锁，XY 都跟手（进入错位） */
 const Y_LOCK_PX = 25;
 
@@ -180,14 +175,12 @@ export default function TileShell({
   metrics,
   onDragMove,
   onCommit,
-  bounds,
   zIndex,
   others,
   disableResize,
   mode = "free",
   dragHandleSelector,
-  dockRightEdgeX,
-  onDropToDock,
+  onDropToEdge,
   onOpenTile,
   onWorldXCommit,
   onWorldYCommit,
@@ -247,7 +240,6 @@ export default function TileShell({
   // 拖拽中的视觉偏移（四维：x/y 平移 + w/h 尺寸增量）——resize 时壳尺寸也要实时跟随鼠标
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0, w: 0, h: 0 });
   // expanded 模式：拖拽进入左坞区域时的反馈标志
-  const [overDock, setOverDock] = useState(false);
   // 收拢（二态→一态）时保留最后一张背面，直到翻转动画完成再卸载——避免窗口"直接消失"
   const lastBackRef = useRef<ReactNode | null>(null);
   if (back) {
@@ -421,12 +413,8 @@ export default function TileShell({
         w: snapped.w - geometry.w,
         h: snapped.h - geometry.h,
       });
-      if (mode === "expanded") {
-        const centerX = snapped.x + snapped.w / 2;
-        setOverDock(dockRightEdgeX !== undefined && centerX < dockRightEdgeX);
-      }
     },
-    onEnd: (dx, dy, didMove, dragMode) => {
+    onEnd: (dx, dy, didMove, _dragMode) => {
       // 真实拖动过：短暂抑制 click/双击，避免误打开
       if (didMove) {
         armSuppressClick();
@@ -437,11 +425,10 @@ export default function TileShell({
           onCommit(ghostRef.current ?? undefined);
         }
       } else if (didMove && originRef.current) {
-        const next = applyDelta(originRef.current, dx, dy, dragMode);
         if (paperMode) {
           // T5：拖到屏幕左/右极端 → 丢弃关闭（复用父级现有关闭，不重写）
           if (edgeSideRef.current !== 0) {
-            onDropToDock?.(id);
+            onDropToEdge?.(id);
           } else {
             // Y 错位：仅解锁后提交（锁定态 Y 保持原 top，不写）——松手瞬间提交，避免 Y 再独立滑动
             const finalY = originRef.current.y + (paperYUnlockRef.current ? dy : 0);
@@ -458,15 +445,7 @@ export default function TileShell({
             }
           }
         } else {
-          const { snapped } = computeSnap(next, shiftRef.current);
-          const finalGeom = clamp(snapped, bounds);
-          if (mode === "expanded") {
-            // 拖入左坞 → 收起；否则视觉回弹（不落盘、不污染 idle tiles）
-            const centerX = finalGeom.x + finalGeom.w / 2;
-            if (dockRightEdgeX !== undefined && centerX < dockRightEdgeX) {
-              onDropToDock?.(id);
-            }
-          }
+          // 打开卡拖拽只移动位置（不落盘、不污染 idle tiles）
         }
       }
       originRef.current = null;
@@ -477,7 +456,6 @@ export default function TileShell({
       if (!paperMode || paperInertiaRef.current === null) {
         setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       }
-      setOverDock(false);
       edgeSideRef.current = 0;
       setEdgeSide(0);
       clearSnapGuides();
@@ -491,7 +469,6 @@ export default function TileShell({
       if (!paperGlide) {
         setDragOffset({ x: 0, y: 0, w: 0, h: 0 });
       }
-      setOverDock(false);
       edgeSideRef.current = 0;
       setEdgeSide(0);
     }
@@ -580,7 +557,6 @@ export default function TileShell({
   };
 
   const startMove = (event: React.MouseEvent) => {
-    if (mode === "dock") return; // 坞磁贴位置由布局计算，不响应拖拽
     cancelPaperInertia();
     if (mode === "expanded") {
       // 展开窗口只有拖拽把手（header）可以拖动；其余区域（输入框/按钮）不触发
@@ -607,7 +583,7 @@ export default function TileShell({
   };
 
   const startResize = (event: React.MouseEvent, dir: ResizeDirection) => {
-    if (mode !== "free") return; // dock / expanded 均不 resize
+    if (mode !== "free") return; // expanded（打开卡）不 resize
     originRef.current = { ...geometry };
     originGridRef.current = grid ? { ...grid } : null;
     onMouseDown(event, `resize-${dir}` as DragMode);
@@ -643,12 +619,12 @@ export default function TileShell({
   };
 
   const shellModeClass =
-    mode === "dock" ? " tile-shell--dock" : mode === "expanded" ? " tile-shell--expanded" : "";
+    mode === "expanded" ? " tile-shell--expanded" : "";
   const edgeClass = edgeSide === -1 ? " tile-shell--edge-left" : edgeSide === 1 ? " tile-shell--edge-right" : "";
 
   return (
     <div
-      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${overDock ? " tile-shell--over-dock" : ""}${shellModeClass}${edgeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}${dropTarget ? " tile-shell--drop" : ""}`}
+      className={`tile-shell${isDragging ? " tile-shell--dragging" : ""}${shellModeClass}${edgeClass}${canvasGhost ? " tile-shell--canvas-ghost" : ""}${dropTarget ? " tile-shell--drop" : ""}`}
       style={style}
       data-tile-id={id}
       data-drag-mode={dragMode ?? ""}
@@ -689,17 +665,4 @@ export default function TileShell({
       ))}
     </div>
   );
-}
-
-/** 把磁贴 clamp 到父容器内（顶部不限制、左右下边各留至少 32px 在屏内；expanded 模式用） */
-function clamp(geom: TileGeometry, bounds?: { width: number; height: number }): TileGeometry {
-  if (!bounds) return geom;
-  const maxX = Math.max(SCREEN_EDGE, bounds.width - 32);
-  const maxY = Math.max(SCREEN_EDGE, bounds.height - 32);
-  return {
-    x: Math.min(Math.max(geom.x, -(geom.w - 32)), maxX),
-    y: Math.min(Math.max(geom.y, SCREEN_EDGE), maxY),
-    w: geom.w,
-    h: geom.h,
-  };
 }

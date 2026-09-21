@@ -22,13 +22,14 @@
   user-select: none;
 }
 
-/* 打开态画布弱化层：未打开磁贴透明可见（dock 背景透明 → 可见初始画布） */
+/* 打开态画布弱化层：未打开磁贴透明可见（可见初始画布） */
 .tile-shell--canvas-ghost {
   opacity: 0.28;
   z-index: 0;
   pointer-events: auto;
   cursor: pointer;
 }
+
 .tile-shell--canvas-ghost .tile-flip,
 .tile-shell--canvas-ghost .agent-tile {
   border-radius: 8px;
@@ -175,73 +176,12 @@
 .tile-shell--expanded .tile-flip__face--front .agent-tile__scan,
 .tile-shell--expanded .tile-flip__face--front .agent-tile__utility {
   display: none;
-}
-
-/* ---- 打开态分屏：左半屏坞（背景 + 提示） ---- */
-
-.dock-area {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.025);
-  border-right: 1px solid rgba(255, 255, 255, 0.07);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.dock-area__label {
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(232, 237, 247, 0.3);
-}
-
-.dock-area__hint {
-  font-size: 11px;
-  color: rgba(232, 237, 247, 0.22);
-}
-
-/* 坞磁贴：紧凑小卡片，位置由布局计算，不拖不缩 */
-
-.tile-shell--dock {
-  cursor: default;
-  transition: left 200ms cubic-bezier(0.25, 0.8, 0.3, 1), top 200ms cubic-bezier(0.25, 0.8, 0.3, 1), width 200ms cubic-bezier(0.25, 0.8, 0.3, 1), height 200ms cubic-bezier(0.25, 0.8, 0.3, 1);
-}
-
-.tile-shell--dock .agent-tile {
-  min-height: 0;
-  gap: 5px;
-  padding: 8px 10px;
-}
-
-/* T5：边缘丢弃意图（拖到屏幕左/右极端时） */
+}/* T5：边缘丢弃意图（拖到屏幕左/右极端时） */
 .tile-shell--edge-left .agent-window,
 .tile-shell--edge-right .agent-window {
   border-color: rgba(232, 90, 90, 0.9) !important;
   box-shadow: 0 0 0 2px rgba(232, 90, 90, 0.4), 0 0 26px rgba(232, 90, 90, 0.35);
-}
-
-/* 坞磁贴只保留名字 + footer 时间（隐藏翻页主体 / scan / utility） */
-.tile-shell--dock .agent-tile__pages,
-.tile-shell--dock .agent-tile__scan,
-.tile-shell--dock .agent-tile__utility {
-  display: none;
-}
-
-.tile-shell--dock .agent-tile__name {
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.tile-shell--dock:hover {
-  outline: 1px solid rgba(79, 140, 255, 0.4);
-  outline-offset: 0px;
-}
-
-/* 展开窗口（右舞台）：强化阴影 + 拖入左坞高亮 */
+}/* 展开窗口（右舞台）：强化阴影 + 拖入左坞高亮 */
 
 .tile-shell--expanded {
   border-radius: 10px;
@@ -251,17 +191,7 @@
 
 .tile-shell--expanded.tile-shell--dragging {
   box-shadow: 0 30px 72px rgba(0, 0, 0, 0.55);
-}
-
-.tile-shell--over-dock {
-  box-shadow: 0 0 0 2px #4f8cff, 0 24px 64px rgba(0, 0, 0, 0.5);
-}
-
-.tile-shell--over-dock .agent-window {
-  border-radius: 10px;
-}
-
-.tile-shell--dragging {
+}.tile-shell--dragging {
   cursor: grabbing;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
   opacity: 0.65;
@@ -417,15 +347,7 @@
 .agent-tile__rename-input:focus {
   border-color: #000;
   box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.55), 0 1px 2px rgba(0, 0, 0, 0.25);
-}
-
-/* 左坞小磁贴里的输入框适配更紧凑的字号 */
-.tile-shell--dock .agent-tile__rename-input {
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.state-dot {
+}.state-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;

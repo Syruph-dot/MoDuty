@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
 import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from "./approvals.js";
-import { decodeCommandOutput } from "./exec-encoding.js";
+import { decodeNodeOutput } from "./exec-encoding.js";
 import { isFullyAutomatic } from "./permission-mode.js";
 import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
@@ -517,7 +517,7 @@ export async function runMomokaCliTool(input: {
     child.once("close", (code) => {
       clearTimeout(timer);
       const output = [Buffer.concat(stdout), Buffer.concat(stderr)]
-        .map((buffer) => decodeCommandOutput(buffer))
+        .map((buffer) => decodeNodeOutput(buffer))
         .filter(Boolean)
         .join("\n");
       const trimmed = output.length > 12_000 ? `${output.slice(0, 12_000)}\n…(输出过长已截断，共 ${output.length} 字符)` : output;

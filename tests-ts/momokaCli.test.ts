@@ -41,3 +41,15 @@ test("远程渠道（手机机器人）多放行两个动词，Agent 侧不放�
   assert.match(validateMomokaCliArgs(["agent", "dispatcher", "hi"]) ?? "", /未知子命令/);
   assert.match(validateMomokaCliArgs(["session", "chat", "ses_abc", "hi"]) ?? "", /未知子命令/);
 });
+
+test("回归：MoDuty CLI 的输出按 UTF-8 解码，中文与结构性字符都不乱码", async () => {
+  // 实测 2026-09-21：以前用 decodeCommandOutput（Windows 走 GBK）解 Node 子进程输出，
+  // 微信机器人回复变成「MOMOKA CLI v1 鈥� 璁� Agent 鐢� Agent 搴旂敤」，Agent 读到的
+  // run_momoka_cli 工具结果同样受影响。
+  const { runMomokaCliTool } = await import("../src/tools.js");
+  const help = await runMomokaCliTool({ args: ["help"] });
+  assert.ok(help.includes("MOMOKA CLI"), help.slice(0, 120));
+  assert.ok(!help.includes("\uFFFD"), `不应出现替换符：${help.slice(0, 120)}`);
+  assert.ok(!/[\uFFFD]|鈥|璁|鐢|搴/.test(help), `不应出现 UTF-8 被当 GBK 解的典型乱码：${help.slice(0, 160)}`);
+  assert.match(help, /用法|命令|usage/iu);
+});

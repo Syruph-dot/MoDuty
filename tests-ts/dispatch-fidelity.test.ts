@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDispatchFidelityNote, extractDispatchHandles } from "../src/dispatch-fidelity.js";
+import {
+  buildDispatchFidelityNote,
+  buildDispatchMismatchRefusal,
+  checkDispatchFidelity,
+  extractDispatchHandles,
+} from "../src/dispatch-fidelity.js";
 import { describeSelfBlock } from "../src/agent-identity.js";
 
 /**
@@ -59,4 +64,35 @@ test("自我身份块：给出可用 id，缺 id/sessionId 时不注入半截信
     describeSelfBlock({ id: "agt_a75dfea26f66", name: "值日生", sessionId: "ses_30620c1873eb", isDispatcher: true }) ?? "",
     /值日生（调度者）/,
   );
+});
+
+test("一致性体检：老师原话有句柄、任务书一个没沾 → 判定为脱节（实测 2026-09-21 的错派）", () => {
+  const ask = [
+    "P1 横屏（适合电脑）  P2 竖屏（适合手机）  【博客信息】",
+    "标题：Jev 官方博客解读：把“快思考”做成软件原语",
+    "来源：https://typesafe.ai/blog/introducing-system-one-models-and-jev",
+    "文档：https://docs.typesafe.ai/introduction  评测：https://evals.typesafe.ai/",
+  ].join("\n");
+  const wrongTask = "研究一下别人给我的资产，他们的网站的服务器要到期，准备挂到我们这边。给出方案让我看看";
+  const check = checkDispatchFidelity(ask, wrongTask);
+  assert.equal(check.disconnected, true);
+  assert.equal(check.missing.length, 3);
+  const refusal = buildDispatchMismatchRefusal({ ask, task: wrongTask, missing: check.missing });
+  assert.match(refusal, /任务书与老师的最新消息对不上，已拒绝派发/);
+  assert.match(refusal, /不要沿用历史里的旧任务书/);
+  assert.match(refusal, /typesafe\.ai\/blog\/introducing-system-one-models-and-jev/);
+});
+
+test("一致性体检：任务书带上其中任意一条句柄就不算脱节（只是漏了其它几条，走补全）", () => {
+  const ask = "看 https://a.example/x 和 https://b.example/y";
+  const partial = "研究 https://a.example/x 这篇";
+  const check = checkDispatchFidelity(ask, partial);
+  assert.equal(check.disconnected, false);
+  assert.deepEqual(check.missing, ["https://b.example/y"]);
+});
+
+test("一致性体检：老师原话本来就没有句柄时不判定为脱节（纯文字任务照常派发）", () => {
+  const check = checkDispatchFidelity("帮我写一篇短文", "写一篇 500 字短文");
+  assert.equal(check.disconnected, false);
+  assert.equal(check.askHandles.length, 0);
 });

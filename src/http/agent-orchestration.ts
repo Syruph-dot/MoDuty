@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildDispatchFidelityNote } from "../dispatch-fidelity.js";
+import { buildDispatchFidelityNote, buildDispatchMismatchRefusal, checkDispatchFidelity } from "../dispatch-fidelity.js";
 import { buildReworkMessage, buildVerdictWakeMessage } from "../verdict-prompt.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
@@ -399,16 +399,22 @@ async function dispatchFidelityNote(
   deps: OrchestrationDeps,
   callerSessionId: string,
   task: string,
-): Promise<string> {
+): Promise<{ note: string; refusal: string | null }> {
   try {
     const messages = await deps.agent.sessionManager.getMessages(callerSessionId);
     const lastUser = [...messages]
       .reverse()
       .find((message) => message.role === "user" && !message.contextOnly && String(message.content ?? "").trim());
-    if (!lastUser) return "";
-    return buildDispatchFidelityNote(String(lastUser.content ?? ""), task);
+    if (!lastUser) return { note: "", refusal: null };
+    const ask = String(lastUser.content ?? "");
+    // 完全脱节（老师原话有句柄、任务书一个没沾）→ 拒绝派发，别用补全掩盖写错的任务书
+    const check = checkDispatchFidelity(ask, task);
+    if (check.disconnected) {
+      return { note: "", refusal: buildDispatchMismatchRefusal({ ask, task, missing: check.missing }) };
+    }
+    return { note: buildDispatchFidelityNote(ask, task), refusal: null };
   } catch {
-    return ""; // 拿不到原话不阻断派发，只是少一层兜底
+    return { note: "", refusal: null }; // 拿不到原话不阻断派发，只是少一层兜底
   }
 }
 
@@ -438,7 +444,8 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
 
   // 派发保真：老师原话里的链接/路径若没进任务书，自动补在尾部（执行者才有输入可用）
   const fidelity = await dispatchFidelityNote(deps, caller.sessionId, task);
-  const taskWithFidelity = (task + fidelity).slice(0, LEDGER_TASK_MAX_CHARS);
+  if (fidelity.refusal) return { ok: false, output: fidelity.refusal };
+  const taskWithFidelity = (task + fidelity.note).slice(0, LEDGER_TASK_MAX_CHARS);
 
   const entry = await deps.registry.recordDispatch({
     dispatcherId: caller.id,

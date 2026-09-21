@@ -44,6 +44,62 @@ export function extractDispatchHandles(text: string): string[] {
 }
 
 /**
+ * 任务书与老师原话的一致性体检。
+ *
+ * 为什么要体检而不是只补全（2026-09-21 实测）：老师在同一条会话里发了**新任务**
+ * （TypeSafe AI / Jev 的博客解读，原话带 3 个 typesafe.ai 链接），值日生却把历史里
+ * 那条「研究一下别人给我的资产…网站服务器到期…」的**旧任务书原文**当成任务书派了出去，
+ * 还顺手把新执行者命名为「网站迁移」；系统随后把老师原话里的 3 个新链接「保真补全」
+ * 贴到那条旧任务书上——旧任务 + 新链接拼成了一条谁都没要过的任务，执行者拿到的输入是错的。
+ *
+ * 补全只能补“漏”，補不了“错”：任务书与老师原话完全脉节时，补全反而掩盖了错误。
+ * 所以那条路径改成拒绝派发：让派发者拿着老师这条最新消息重写任务书。
+ */
+export interface DispatchFidelityCheck {
+  /** 老师原话里的句柄 */
+  askHandles: string[];
+  /** 任务书里的句柄 */
+  taskHandles: string[];
+  /** 老师原话里有、任务书里没有的 */
+  missing: string[];
+  /** 完全脉节：老师原话有句柄，任务书一个都没沾上 */
+  disconnected: boolean;
+}
+
+export function checkDispatchFidelity(originalAsk: string, task: string): DispatchFidelityCheck {
+  const askHandles = extractDispatchHandles(originalAsk ?? "");
+  const taskHandles = extractDispatchHandles(task ?? "");
+  const missing = askHandles.filter((token) => !(task ?? "").includes(token));
+  const shared = askHandles.some((token) => (task ?? "").includes(token));
+  return {
+    askHandles,
+    taskHandles,
+    missing,
+    disconnected: askHandles.length > 0 && !shared,
+  };
+}
+
+/** 腔节时的拒绝文案：把两边原样摆出来，让派发者自己看出写错了哪一段 */
+export function buildDispatchMismatchRefusal(input: { ask: string; task: string; missing: string[] }): string {
+  const clip = (text: string, max: number): string => {
+    const flat = (text ?? "").replace(/\s+/gu, " ").trim();
+    return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+  };
+  return [
+    "错误：任务书与老师的最新消息对不上，已拒绝派发（避免执行者拿错任务白跑）。",
+    "",
+    `老师最新消息（节选）：${clip(input.ask, 300)}`,
+    `你这次的任务书（节选）：${clip(input.task, 300)}`,
+    "",
+    `老师消息里给了这些输入：${input.missing.join("、")}；任务书里一条都没有。`,
+    "请重新调用 agent dispatch：",
+    "- 任务书必须基于老师**这条最新消息**来写，不要沿用历史里的旧任务书或台账里的旧条目文本；",
+    "- 如果只需要其中一部分输入，也至少把需要的那几条写进任务书；",
+    "- 如果老师只是顺带提到而任务确实用不到这些输入，请在任务书里写明这一点再重新派发。",
+  ].join("\n");
+}
+
+/**
  * 生成补全说明：只补「原话里有、任务书里没有」的句柄，不改写任务书本身。
  * 没有缺失（或原话里本来就没有句柄）时返回空串，调用方拼接即可。
  */

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildDispatchEnvelope } from "../dispatch-fidelity.js";
+import { buildDispatchMessage } from "../dispatch-fidelity.js";
 import { buildReworkMessage, buildVerdictWakeMessage } from "../verdict-prompt.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
@@ -396,23 +396,24 @@ export async function handleLedgerQuery(
  * 抽出里面出现、而任务书里没带上的链接/路径 → 返回补全说明（没有缺失则返回空串）。
  */
 /**
- * 老师原话随行：任务书与老师原话有分歧迹象时，把原话整段附在任务书尾部。
- * 不做拒绝、不改写任务书——系统手里有原话，就该把它带上，而不是把模型的笔误变成对老师的阻塞。
+ * 构造下发消息：`总体任务：<老师原话>` + `指令：<值日生给的说明>`。
+ * 老师原话每单必带——它是执行者唯一拿得到的权威任务文本，值日生的指令只作补充。
+ * 不拒绝派发、不改写指令：系统手里有原话，就该把它带上。
  */
-async function dispatchFidelityNote(
+async function buildDispatchedMessage(
   deps: OrchestrationDeps,
   callerSessionId: string,
   task: string,
-): Promise<{ note: string; mismatch: string | null }> {
+): Promise<{ message: string; mismatch: string | null }> {
   try {
     const messages = await deps.agent.sessionManager.getMessages(callerSessionId);
     const lastUser = [...messages]
       .reverse()
       .find((message) => message.role === "user" && !message.contextOnly && String(message.content ?? "").trim());
-    if (!lastUser) return { note: "", mismatch: null };
-    return buildDispatchEnvelope(String(lastUser.content ?? ""), task);
+    if (!lastUser) return buildDispatchMessage({ task });
+    return buildDispatchMessage({ ask: String(lastUser.content ?? ""), task });
   } catch {
-    return { note: "", mismatch: null }; // 拿不到原话不阻断派发，只是少一层兜底
+    return buildDispatchMessage({ task }); // 拿不到原话就用任务文本，不阻断派发
   }
 }
 
@@ -441,8 +442,8 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
   }
 
   // 派发保真：老师原话里的链接/路径若没进任务书，自动补在尾部（执行者才有输入可用）
-  const fidelity = await dispatchFidelityNote(deps, caller.sessionId, task);
-  const taskWithFidelity = (task + fidelity.note).slice(0, LEDGER_TASK_MAX_CHARS);
+  const fidelity = await buildDispatchedMessage(deps, caller.sessionId, task);
+  const taskWithFidelity = fidelity.message.slice(0, LEDGER_TASK_MAX_CHARS);
 
   const entry = await deps.registry.recordDispatch({
     dispatcherId: caller.id,

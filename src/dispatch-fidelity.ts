@@ -62,20 +62,48 @@ export interface DispatchFidelityCheck {
   taskHandles: string[];
   /** 老师原话里有、任务书里没有的 */
   missing: string[];
-  /** 完全脉节：老师原话有句柄，任务书一个都没沾上 */
+  /** 指令与老师原话的二元组重合度（0–1） */
+  overlap: number;
+  /** 完全脉节：指令与老师原话几乎没有任何共同文本（不是在说同一件事） */
   disconnected: boolean;
 }
 
+/** 重合度低于这个值就认为指令与老师原话说的不是同一件事 */
+export const DISCONNECTED_OVERLAP = 0.2;
+
+/**
+ * 老师原话与指令的文本重合度（CJK/任意字符的二元组包含率，0–1）。
+ *
+ * 用来判断「值日生写的指令到底是不是在说老师这件事」——不能再用「句柄有没有带上」
+ * 当判据（那只能看出“漏”，看不出“错”），而且原话现在每单必带，句柄缺失已经无害。
+ */
+export function textOverlapRatio(originalAsk: string, task: string): number {
+  const flat = (text: string): string => (text ?? "").replace(/\s+/gu, "");
+  const grams = (text: string): string[] => {
+    const s = flat(text);
+    const out: string[] = [];
+    for (let i = 0; i + 1 < s.length; i += 1) out.push(s.slice(i, i + 2));
+    return out;
+  };
+  const taskGrams = grams(task);
+  if (taskGrams.length === 0) return 1;
+  const askGrams = new Set(grams(originalAsk));
+  return taskGrams.filter((gram) => askGrams.has(gram)).length / taskGrams.length;
+}
+
 export function checkDispatchFidelity(originalAsk: string, task: string): DispatchFidelityCheck {
-  const askHandles = extractDispatchHandles(originalAsk ?? "");
-  const taskHandles = extractDispatchHandles(task ?? "");
-  const missing = askHandles.filter((token) => !(task ?? "").includes(token));
-  const shared = askHandles.some((token) => (task ?? "").includes(token));
+  const ask = (originalAsk ?? "").trim();
+  const body = (task ?? "").trim();
+  const askHandles = extractDispatchHandles(ask);
+  const taskHandles = extractDispatchHandles(body);
+  const missing = askHandles.filter((token) => !body.includes(token));
+  const overlap = body ? textOverlapRatio(ask, body) : 1;
   return {
     askHandles,
     taskHandles,
     missing,
-    disconnected: askHandles.length > 0 && !shared,
+    overlap,
+    disconnected: body.length > 0 && ask.length > 0 && overlap < DISCONNECTED_OVERLAP,
   };
 }
 
@@ -87,38 +115,47 @@ export function checkDispatchFidelity(originalAsk: string, task: string): Dispat
  * 任务确实用不到」这种正常派发。而系统手里本来就有老师的原话：正确做法是**带上它**，
  * 让执行者永远拿得到真话，老师的任务永远发得出去，笔误不再有致命后果。
  *
- * 什么时候附：任务书与老师原话出现任何分歧迹象（句柄缺失，或完全脱节）时才附，
- * 两边一致时不附，避免每单都塞一段冗余长文。
+ * 什么时候用：**每单都这么发**。老师原话是执行者唯一拿得到的权威任务文本，
+ * 不依赖任何「分歧迹象」判断——判据本身也会错，而原话永远是对的。
  */
-export interface DispatchEnvelope {
-  /** 任务书尾巴要追加的文本（可能为空串） */
-  note: string;
+export interface DispatchMessage {
+  /** 实际下发给执行者的消息正文 */
+  message: string;
   /** 分歧留痕描述（不阻断派发，只用于会话留痕与工具返回，让派发者看见） */
   mismatch: string | null;
 }
 
-/** 附在任务书尾部的老师原话块（截断上限见 ASK_BLOCK_MAX_CHARS） */
-const ASK_BLOCK_MAX_CHARS = 1200;
+/** 老师原话截断上限（原话是权威文本，但也不能让单条消息无限长） */
+export const ASK_MAX_CHARS = 2000;
 
-export function buildDispatchEnvelope(originalAsk: string, task: string): DispatchEnvelope {
-  const ask = (originalAsk ?? '').trim();
-  if (!ask) return { note: '', mismatch: null };
-  const check = checkDispatchFidelity(ask, task);
-  if (check.missing.length === 0) return { note: '', mismatch: null };
-
-  const lines = ['', '（老师原话·任务书以此为准）', ask.slice(0, ASK_BLOCK_MAX_CHARS)];
-  if (check.missing.length > 0) {
-    lines.push('', '其中这些输入务必用上：', ...check.missing.map((token) => `- ${token}`));
-  }
-  const mismatch = check.disconnected
-    ? `任务书与老师原话完全脱节（老师原话里的 ${check.missing.length} 个输入任务书一条都没带）——系统已把老师原话附在任务书尾部，任务书本身未改写`
-    : null;
-  return { note: lines.join("\n"), mismatch };
-}
+/** 指令行的固定提示：值日生写的任务书是补充要求，冲突时以老师原话为准 */
+const INSTRUCTION_LABEL = "指令（值日生的补充要求；与总体任务冲突时以总体任务为准）";
 
 /**
- * 兼容入口：只要「要追加的文本」，不关心留痕。
+ * 构造下发消息：`总体任务：<老师原话>` + `指令：<值日生给的说明，可为空>`。
+ *
+ * 顺序与措辞由用户拍板（2026-09-21）：总体任务在前且必须是原话；指令是值日生
+ * 生成（或可能不生成）的补充说明。这样即使值日生把指令写错（实测把历史里的旧任务书
+ * 抄成了新指令），执行者手里也一定有老师这次真正说的话。
  */
-export function buildDispatchFidelityNote(originalAsk: string, task: string): string {
-  return buildDispatchEnvelope(originalAsk, task).note;
+export function buildDispatchMessage(input: { ask?: string; task: string }): DispatchMessage {
+  const ask = (input.ask ?? "").trim();
+  const task = (input.task ?? "").trim();
+  // 拿不到老师原话（例如调用者不是会话）：退回只发任务文本，不编造
+  if (!ask) return { message: task, mismatch: null };
+
+  const askText = ask.length > ASK_MAX_CHARS
+    ? `${ask.slice(0, ASK_MAX_CHARS)}\n…（老师原话过长已截断，完整原话见老师会话）`
+    : ask;
+  // 值日生把原话原样当作指令时不必重复一遍
+  const instruction = task && task !== ask ? task : "";
+  const message = instruction
+    ? `总体任务：${askText}\n\n${INSTRUCTION_LABEL}：${instruction}`
+    : `总体任务：${askText}`;
+
+  const check = checkDispatchFidelity(ask, task);
+  const mismatch = check.disconnected
+    ? `值日生的指令与老师原话说的不是同一件事（文本重合度 ${(check.overlap * 100).toFixed(0)}%）——已按「总体任务 = 老师原话」下发，指令仅作补充；若指令本身写错了，请用老师这条最新消息重派一条并取消本条`
+    : null;
+  return { message, mismatch };
 }

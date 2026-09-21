@@ -103,6 +103,8 @@ async function runStreamingChat(agentId, message) {
   const decoder = new TextDecoder();
   let buffer = "";
   const parts = [];
+  /** 思考分片先收着：一整段思考最后只用一个【思考】块括起来 */
+  const reasoning = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -118,7 +120,7 @@ async function runStreamingChat(agentId, message) {
         // 服务端 SSE 事件名：token / reasoning / tool_start / tool_result / done / error
         // （旧版这里找的是 text / tool，与真实事件名对不上 → 正文一条也收不到，只剩 [done run=…]）
         if (evt.type === "token" && typeof evt.text === "string") parts.push(evt.text);
-        if (evt.type === "reasoning" && typeof evt.text === "string") parts.push(`\n[思考] ${evt.text}`);
+        if (evt.type === "reasoning" && typeof evt.text === "string") reasoning.push(evt.text);
         if (evt.type === "tool_start" && evt.name) {
           parts.push(`\n[工具 ${evt.name} 运行中]`);
         }
@@ -133,7 +135,13 @@ async function runStreamingChat(agentId, message) {
       }
     }
   }
-  return parts.join("").trim();
+  const body = parts.join("").trim();
+  // 思考：整段包在【思考】…【/思考】里（此前每个分片各占一行，手机上满屏 [思考]）
+  if (SHOW_REASONING) {
+    const thinking = reasoning.join("").trim();
+    if (thinking) return [`【思考】\n${thinking}\n【/思考】`, body].filter(Boolean).join("\n\n");
+  }
+  return body;
 }
 
 function parseArgs(argv, sub) {

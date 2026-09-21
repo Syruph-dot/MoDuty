@@ -16,6 +16,7 @@ import {
   type WechatBotSettings,
 } from "../bot-config.js";
 import { classifyBotCommand, runBotCommand } from "./command.js";
+import { splitReplyForDelivery } from "./reply-format.js";
 import { FeishuBridge } from "./feishu.js";
 import { WeChatBridge, type WechatLoginStatus } from "./wechat.js";
 
@@ -202,11 +203,20 @@ class BotManager {
   }
 
   private async safeReply(reply: (text: string) => Promise<void>, text: string): Promise<void> {
-    try {
-      await reply(text);
-      this.activity.lastOutboundAt = Date.now();
-    } catch (error) {
-      console.warn(`[机器人] 回复失败：${error instanceof Error ? error.message : String(error)}`);
+    // 不截断：一条完整回应拆成多条消息发完（拆点见 splitReplyForDelivery）
+    const parts = splitReplyForDelivery(text);
+    if (parts.length === 0) return;
+    for (const [index, part] of parts.entries()) {
+      try {
+        await reply(part);
+        this.activity.lastOutboundAt = Date.now();
+      } catch (error) {
+        console.warn(
+          `[机器人] 回复失败（第 ${index + 1}/${parts.length} 条）：${error instanceof Error ? error.message : String(error)}`,
+        );
+        return; // 一条失败就不要再往下刷屏
+      }
+      if (index < parts.length - 1) await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 

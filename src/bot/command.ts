@@ -18,7 +18,8 @@ export interface BotCommandResult {
   ran: boolean;
 }
 
-const MAX_REPLY_CHARS = 2000;
+/** 单条回复的硬上限（跑飞时兜底；正常不再截断——投递时拆成多条消息，见 bot/reply-format.ts） */
+const MAX_REPLY_CHARS = 60_000;
 /** 驱动 Agent 的那类命令（chat / dispatcher / dispatch）允许跑很久 */
 const CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 const QUICK_TIMEOUT_MS = 60 * 1000;
@@ -96,7 +97,8 @@ export function polishCliOutput(raw: string): string {
   let text = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   if (tools > 0) text = `${text}\n\n（期间调用了 ${tools} 个工具）`.trim();
   if (text.length > MAX_REPLY_CHARS) {
-    text = `${text.slice(0, MAX_REPLY_CHARS)}\n…（回复过长已截断，原文 ${text.length} 字）`;
+    // 只做跑飞兜底；正常长度不再截断，由投递层拆成多条消息发完（见 bot/reply-format.ts）
+    text = `${text.slice(0, MAX_REPLY_CHARS)}\n…（输出异常过长，已在 ${MAX_REPLY_CHARS} 字处停止读取）`;
   }
   return text || "（没有输出）";
 }
@@ -131,6 +133,8 @@ async function runCli(args: string[], timeoutMs: number): Promise<BotCommandResu
     args,
     scope: "remote",
     commandTimeoutMs: timeoutMs,
+    // 手机上要发完整回应：输出上限调大（投递层会拆成多条消息，不截断）
+    maxOutputChars: 60_000,
   });
   return { text: polishCliOutput(raw), ran: true };
 }

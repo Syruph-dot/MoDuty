@@ -35,9 +35,12 @@ test("输出整理：去掉 done 行与工具噪声、统计工具次数、超�
   assert.doesNotMatch(out, /done run=/);
   assert.doesNotMatch(out, /→ 值日生/);
 
+  // 用户拍板：正常长度不截断（投递层会拆成多条消息发完），只保留跑飞兜底
   const long = polishCliOutput("x".repeat(2500));
-  assert.match(long, /已截断/);
-  assert.ok(long.length < 2500);
+  assert.equal(long.length, 2500);
+  assert.doesNotMatch(long, /已截断/);
+  const runaway = polishCliOutput("x".repeat(61_000));
+  assert.match(runaway, /停止读取/);
 
   assert.equal(polishCliOutput("   \n\n  "), "（没有输出）");
 });

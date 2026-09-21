@@ -493,6 +493,8 @@ export async function runMomokaCliTool(input: {
   args: string[];
   workDir?: string;
   commandTimeoutMs?: number;
+  /** 输出保留上限（字符）。默认 12000（喂给模型够用）；手机机器人那边调大，因为回复要发完不能截断 */
+  maxOutputChars?: number;
   /** 白名单口径：agent（工具调用，默认）| remote（手机机器人 bridge，多放行两个动词） */
   scope?: MomokaCliScope;
 }): Promise<string> {
@@ -520,7 +522,8 @@ export async function runMomokaCliTool(input: {
         .map((buffer) => decodeNodeOutput(buffer))
         .filter(Boolean)
         .join("\n");
-      const trimmed = output.length > 12_000 ? `${output.slice(0, 12_000)}\n…(输出过长已截断，共 ${output.length} 字符)` : output;
+      const cap = input.maxOutputChars ?? 12_000;
+      const trimmed = output.length > cap ? `${output.slice(0, cap)}\n…(输出过长已截断，共 ${output.length} 字符)` : output;
       resolve(trimmed || `MOMOKA CLI 退出码 ${code}`);
     });
   });

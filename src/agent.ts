@@ -461,9 +461,10 @@ ${ref.message.content}`;
     let retryAttempts = 0;
     try {
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
+      const turnMode = resolveTurnMode(request);
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
-      const prompt = [buildTurnModeBlock(resolveTurnMode(request)), turnContext, "## Current User Request", expandedMessage]
+      const prompt = [buildTurnModeBlock(turnMode), turnContext, "## Current User Request", expandedMessage]
         .filter(Boolean)
         .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
@@ -480,8 +481,14 @@ ${ref.message.content}`;
               onEvent, signal: request.signal,
               sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
             });
-            // 空响应：本轮没有任何产出（连工具调用都没有）→ 当成可重试失败，而不是交给上层记 completed
-            if (!runResult.output.trim() && (runResult.toolCalls ?? []).length === 0) {
+            // 空响应：本轮没有任何**文本产出** → 当成可重试失败，而不是交给上层记 completed。
+            // 实测 2026-09-21：执行者「调完一批工具后上游空轮」以 done 收尾——磁贴标绿、任务零交付，
+            // 观测者（用户与值日生）都看不出发生了什么。判读轮例外：它以「是否提交判定」为准，
+            // 由唤醒侧复查（见 agent-orchestration 的 wakeDispatcher），这里只在它完全无动作时才判空。
+            const judgedTurn = turnMode === "verdict" || turnMode === "stalled";
+            const noText = !runResult.output.trim();
+            const noToolCall = (runResult.toolCalls ?? []).length === 0;
+            if (judgedTurn ? noText && noToolCall : noText) {
               const empty = new Error("模型返回空响应（上游只回了空流），本轮没有任何产出");
               empty.name = "EmptyResponseError";
               throw empty;

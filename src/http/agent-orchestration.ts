@@ -1,5 +1,6 @@
 import path from "node:path";
 import { buildDispatchFidelityNote } from "../dispatch-fidelity.js";
+import { buildVerdictWakeMessage } from "../verdict-prompt.js";
 import { readdir, stat, readFile } from "node:fs/promises";
 
 import type { MomokaAgentCore } from "../agent.js";
@@ -208,35 +209,51 @@ export async function driveQuestionAnswered(deps: OrchestrationDeps, record: Age
  * 唤醒器：台账条目 → 值日生判读请求（transient 注入，不落历史）
  * ============================================================ */
 
-const triggerLabel = (trigger: DispatchTrigger): string =>
-  trigger === "completed"
-    ? "执行者报告完成"
-    : trigger === "error"
-      ? "执行者出错"
-      : trigger === "verdict_unsettled"
-        ? "上一次判读没有给出结论（系统自动补唤醒）"
-        : "疑似停转（长时间无进展）";
+/** 上一轮判读做了什么：取调度者会话里最后一条「有工具调用」的 agent 消息 */
+async function lastJudgeAttemptTools(deps: OrchestrationDeps, dispatcher: AgentRecord): Promise<string[]> {
+  try {
+    const messages = await deps.agent.sessionManager.getMessages(dispatcher.sessionId);
+    const withTools = messages.filter((message) => {
+      const calls = (message as { toolCalls?: unknown[] }).toolCalls;
+      return message.role === "agent" && Array.isArray(calls) && calls.length > 0;
+    });
+    const last = withTools[withTools.length - 1];
+    const calls = (last as { toolCalls?: Array<{ tool?: string }> } | undefined)?.toolCalls ?? [];
+    return calls.map((call) => String(call?.tool ?? "")).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 async function wakeDispatcher(
   deps: OrchestrationDeps,
   entry: DispatchRecord,
   trigger: DispatchTrigger,
-  /** 已补唤醒过一次：再空转就交给停转扫描，避免无限重试 */
-  retried = false,
+  options: {
+    /** 已补唤醒过一次：再空转就交给停转扫描，避免无限重试 */
+    retried?: boolean;
+    /** 补唤醒/长时间未判：带上「上一轮做了什么」，让模型能自我纠偏 */
+    previousAttemptTools?: string[];
+    unsettledAttempt?: number;
+  } = {},
 ): Promise<void> {
   const dispatcher = await deps.registry.getAgent(entry.dispatcherId);
   if (!dispatcher || !isDispatcherAgent(dispatcher)) return;
-  const message = [
-    `【台账判读请求】条目 ${entry.id}：${triggerLabel(trigger)}。任务：${entry.task.slice(0, 160)}`,
-    `执行者会话：&ses_${entry.targetSessionId.replace(/^ses_/, "")}`,
-    entry.continueCount ? `已返工轮次：${entry.continueCount}/${DISPATCH_MAX_CONTINUE}。` : undefined,
-    "请 read_session 看该会话的收尾部分（不要整篇读），判读产出是否有效：",
-    `无效（报错/截断/未收尾/与任务无关）→ run_momoka_cli dispatch verdict ${entry.id} continue [问题备注]`,
-    `有效或无法挽救 → run_momoka_cli dispatch verdict ${entry.id} deliver [交付备注]`,
-    "判定通过工具提交即可，不要向老师复述任务内容，也不要重复派发任务。",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  // 补唤醒时把「上一轮只读不判」写进提示词——重试不能只是再叫一遍
+  const previousAttemptTools =
+    options.previousAttemptTools ??
+    (trigger === "verdict_unsettled" || options.retried ? await lastJudgeAttemptTools(deps, dispatcher) : undefined);
+  const message = buildVerdictWakeMessage({
+    entry: {
+      id: entry.id,
+      task: entry.task,
+      targetSessionId: entry.targetSessionId,
+      continueCount: entry.continueCount ?? 0,
+    },
+    trigger,
+    ...(previousAttemptTools ? { previousAttemptTools } : {}),
+    ...(options.unsettledAttempt ? { unsettledAttempt: options.unsettledAttempt } : {}),
+  });
   void driveAgentTurn(deps, dispatcher, {
     message,
     transient: true,
@@ -244,26 +261,24 @@ async function wakeDispatcher(
     turnMode: trigger === "stalled" ? "stalled" : "verdict",
   })
     .then(async () => {
-      // 判读轮跑完但没提交判定（实测 2026-09-21：模型只调了一次 inspect_session 就收尾、正文 0 字）：
+      // 判读轮跑完但没提交判定（实测：模型只调了一次 inspect_session 就收尾、正文 0 字）：
       // 条目仍是 awaiting_verdict。此时若不补唤醒，就得等 30 分钟的停转阈值，任务白等半小时。
       const fresh = (await deps.registry.dispatches.listAll()).find((item) => item.id === entry.id);
       if (!fresh || fresh.state !== "awaiting_verdict") return;
-      if (retried) {
+      if (options.retried) {
         console.warn(`[waker] 条目 ${entry.id} 判读轮两次都没给出结论，交回停转扫描（30 分钟后再试）`);
         return;
       }
-      await wakeDispatcher(deps, fresh, "verdict_unsettled", true);
+      await wakeDispatcher(deps, fresh, "verdict_unsettled", {
+        retried: true,
+        unsettledAttempt: (options.unsettledAttempt ?? 1) + 1,
+      });
     })
     .catch((error: unknown) => {
       console.error("[waker] 唤醒值日生判读失败:", error);
     });
 }
 
-/* ============================================================
- * 台账查询（只读 + 放弃条目）：值日生的“眼睛”
- * ============================================================ */
-
-/** 名字解析：agentId → 展示名（取不到回退 id） */
 async function dispatchTargetNames(deps: OrchestrationDeps): Promise<Record<string, string>> {
   try {
     const agents = await deps.registry.listAgents();
@@ -775,7 +790,13 @@ async function scanStalledDispatches(deps: OrchestrationDeps): Promise<void> {
       const base = Date.parse(entry.lastStatusAt ?? entry.dispatchedAt);
       if (Number.isFinite(base) && now - base > stallThresholdMs()) {
         await deps.registry.dispatches.touch(entry.id);
-        await wakeDispatcher(deps, entry, entry.lastStatus ?? "error");
+        // 这一轮必定是「反复没结论」的场景：带上上一轮做了什么，别只再叫一遍
+        const dispatcher = await deps.registry.getAgent(entry.dispatcherId);
+        const previousAttemptTools = dispatcher ? await lastJudgeAttemptTools(deps, dispatcher) : undefined;
+        await wakeDispatcher(deps, entry, entry.lastStatus ?? "error", {
+          ...(previousAttemptTools ? { previousAttemptTools } : {}),
+          unsettledAttempt: 1,
+        });
       }
     }
   }

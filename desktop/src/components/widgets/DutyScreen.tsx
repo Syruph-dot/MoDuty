@@ -52,6 +52,9 @@ const STATE_LABEL: Record<DispatchView["state"], string> = {
 /** 与后端 dispatch-ledger.ts 的 DISPATCH_MAX_CONTINUE 保持一致（仅用于展示 x/3） */
 const DISPATCH_MAX_CONTINUE = 3;
 
+/** 退页浮出动画时长，与 momoka-settings-out 关键帧一致（到点后才真正卸载） */
+const EXIT_MS = 250;
+
 function isToday(iso: string | null): boolean {
   if (!iso) return false;
   const t = Date.parse(iso);
@@ -151,6 +154,7 @@ function LedgerCard({
 export default function DutyScreen() {
   const open = useDialogStore((state) => state.dutyOpen);
   const closeDuty = useDialogStore((state) => state.closeDuty);
+  const closeSettings = useDialogStore((state) => state.closeSettings);
   const agents = useAgentsStore((state) => state.agents);
   const openAgentById = useAgentsStore((state) => state.openAgent);
 
@@ -182,8 +186,30 @@ export default function DutyScreen() {
   const requestClose = useCallback(() => {
     if (closing) return;
     setClosing(true);
-    window.setTimeout(closeDuty, 250);
+    window.setTimeout(closeDuty, EXIT_MS);
   }, [closing, closeDuty]);
+
+  /**
+   * 从值日生页“跳出去”做一件事：先退页（浮出动画）再执行。
+   * 整页是 `position: fixed; z-index: 300` 的覆盖层，而磁贴墙在 pageOpen 时整体退场（不挂载），
+   * 所以直接 openAgent 会“点了没反应”——桌面看不见、页还盖在上面。
+   * 设置页共用同一套 pageOpen 逻辑，一并关掉，保证磁贴墙真的回来。
+   */
+  const leaveFor = useCallback(
+    (act: () => void) => {
+      if (closing) return;
+      setClosing(true);
+      window.setTimeout(() => {
+        closeDuty();
+        closeSettings();
+        act();
+      }, EXIT_MS);
+    },
+    [closing, closeDuty, closeSettings],
+  );
+
+  /** 打开执行者窗口 = 退页 + 打开对方磁贴（新开卡片会由桌面自动缓动居中） */
+  const openAgentAndLeave = useCallback((agentId: string) => leaveFor(() => openAgentById(agentId)), [leaveFor, openAgentById]);
 
   useEffect(() => {
     if (!open) return;
@@ -231,9 +257,9 @@ export default function DutyScreen() {
     (sessionId: string) => {
       const bare = sessionId.replace(/^ses_/, "");
       const bound = agents.find((agent) => agent.session_id === sessionId || agent.session_id === bare || agent.session_id === `ses_${bare}`);
-      if (bound) openAgentById(bound.id);
+      if (bound) openAgentAndLeave(bound.id);
     },
-    [agents, openAgentById],
+    [agents, openAgentAndLeave],
   );
 
   if (!open) return null;
@@ -309,7 +335,7 @@ export default function DutyScreen() {
                     type="button"
                     className="duty-screen__target-chip"
                     title={`打开执行者窗口：${target.name}`}
-                    onClick={() => openAgentById(target.id)}
+                    onClick={() => openAgentAndLeave(target.id)}
                   >
                     {target.name}
                     {target.count > 1 ? <span className="duty-screen__target-count">×{target.count}</span> : null}
@@ -327,7 +353,7 @@ export default function DutyScreen() {
               view={view}
               expanded={expandedId === view.id}
               onToggle={() => setExpandedId((prev) => (prev === view.id ? null : view.id))}
-              onOpenAgent={openAgentById}
+              onOpenAgent={openAgentAndLeave}
               onOpenSession={openSession}
             />
           ))}
@@ -338,7 +364,7 @@ export default function DutyScreen() {
               view={view}
               expanded={expandedId === view.id}
               onToggle={() => setExpandedId((prev) => (prev === view.id ? null : view.id))}
-              onOpenAgent={openAgentById}
+              onOpenAgent={openAgentAndLeave}
               onOpenSession={openSession}
             />
           ))}

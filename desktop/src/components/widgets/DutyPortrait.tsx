@@ -116,9 +116,20 @@ export default function DutyPortrait() {
     if (!host) return;
     const box = (host.parentElement ?? host) as HTMLElement;
     const card = (host.closest(".tile-shell") as HTMLElement | null) ?? box;
+    /** 在磁贴里吗：磁贴的容器就是格子本体（高度固定），整页的容器高度由排版决定（可能远高于角色） */
+    const tileAnchored = card !== box;
+    /**
+     * 摸头判定（只看指针的纵向落点）。
+     * - 磁贴：容器顶部 `PAT_ZONE_RATIO`，与「上方 2/5 只摸头、下方 3/5 打开/拖动」的约定一致；
+     * - 整页：容器比角色高时，容器比例会落到角色头顶上方的空白里（摸不到头）；
+     *   而且整页立绘没有「点击打开」这种竞争动作 ⇒ 按「角色可见部分的顶部 40%」判定。
+     */
     const inPatZone = (clientY: number) => {
       const rect = card.getBoundingClientRect();
-      return rect.height > 0 && clientY - rect.top < rect.height * PAT_ZONE_RATIO;
+      if (rect.height <= 0) return false;
+      if (tileAnchored || charHeightPx <= 0) return clientY - rect.top < rect.height * PAT_ZONE_RATIO;
+      const charTop = rect.bottom - charHeightPx;
+      return clientY >= charTop - 4 && clientY < charTop + charHeightPx * PAT_ZONE_RATIO;
     };
     const blockCardInPatZone = (event: MouseEvent) => {
       if (event.type === "mousedown" && event.button !== 0) return;
@@ -137,6 +148,8 @@ export default function DutyPortrait() {
     let pat: Reaction = {};
     let patDriver: any = null;
     let gazeDriver: any = null;
+    /** 角色可见部分在屏幕上的高度（CSS px；fit() 之后有效，用于整页里的摸头区判定） */
+    let charHeightPx = 0;
     const pointer = { nx: 0, ny: 0, clientX: 0 };
     const gazeTarget = { x: 0, y: 0 };
     const gazeCurrent = { x: 0, y: 0 };
@@ -157,6 +170,15 @@ export default function DutyPortrait() {
       stage.scale.set(scale);
       stage.x = -band.x * scale;
       stage.y = app.screen.height - (band.y + band.height) * scale;
+      charHeightPx = band.height * scale;
+      /*
+       * 整页的容器高度是排版决定的（`.duty-screen__portrait`），可能比角色高一大截，
+       * 于是立绘贴着底部、头顶上方留白。把角色可见部分的真实比例汇报给容器（CSS 变量），
+       * 让它按角色大小收缩；磁贴容器是满格，不使用这个变量。
+       */
+      if (!tileAnchored) {
+        box.style.setProperty("--duty-portrait-aspect", (band.width / band.height).toFixed(4));
+      }
     };
 
     const resize = () => {

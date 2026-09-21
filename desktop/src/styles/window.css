@@ -1624,7 +1624,16 @@
 .duty-screen__portrait {
   flex: none;
   width: 100%;
-  aspect-ratio: 3 / 4;
+}
+
+/*
+ * 高度必须显式回落成 auto 并提权：整页容器同时带 .duty-girl__portrait（全息边框/扫描线），
+ * 它是 `height: 100%`（磁贴里要铺满格子），会把 aspect-ratio 顶掉 → 立绘贴底、上方空一大截。
+ * 比例由 DutyPortrait 按角色可见部分汇报（--duty-portrait-aspect），加载完前用 3/4 兜底。
+ */
+.duty-screen .duty-screen__portrait {
+  height: auto;
+  aspect-ratio: var(--duty-portrait-aspect, 3 / 4);
 }
 
 .duty-screen__chat {

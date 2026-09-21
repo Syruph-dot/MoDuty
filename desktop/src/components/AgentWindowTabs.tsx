@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { IconAgent, IconBack, IconBrowser } from "./ui/icons";
@@ -72,8 +72,14 @@ export default function AgentWindowTabs({
   onDetach: (subject: TabSubject) => void;
 }) {
   const stripRef = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef<HTMLButtonElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
+
+  /** 切到别的对象后把当前标签滚回可见（标签多时它容易被挤到视野外） */
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+  }, [activeKey]);
 
   /** 滚轮纵向量转横向滚动：塞不下的标签要能左右滚 */
   const onWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
@@ -164,6 +170,7 @@ export default function AgentWindowTabs({
         <button
           key={item.key}
           type="button"
+          ref={item.key === activeKey ? activeRef : undefined}
           role="tab"
           className={`agent-window__tab${item.key === activeKey ? " agent-window__tab--active" : ""}${
             item.selectable ? "" : " agent-window__tab--locked"

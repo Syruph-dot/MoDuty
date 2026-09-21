@@ -44,24 +44,16 @@
   white-space: nowrap;
 }
 
-.agent-window__state {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: rgba(232, 237, 247, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  padding: 3px 10px;
-}
-
 .agent-window__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   border: none;
   border-radius: 8px;
   background: transparent;
   color: #cdd6e6;
-  font-size: 20px;
   cursor: pointer;
 }
 
@@ -82,14 +74,15 @@
 
 .agent-window__export-btn,
 .agent-window__tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   border: none;
   border-radius: 8px;
   background: transparent;
   color: #cdd6e6;
-  font-size: 16px;
-  line-height: 1;
   cursor: pointer;
 }
 

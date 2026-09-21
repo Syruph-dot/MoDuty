@@ -8,6 +8,7 @@ import { buildMessageSequence } from "../lib/sessionMessages";
 import { useEdgeOverscroll } from "../lib/edgeOverscroll";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
+import { IconClose, IconDownload, IconGear, IconSearch } from "./ui/icons";
 import { useAgentsStore } from "../state/agentsStore";
 import type { Agent } from "../types";
 
@@ -1067,7 +1068,6 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
         <div className="agent-window__identity">
           <span className={`state-dot state-dot--${agent.state}`} aria-hidden="true" />
           <h2 className="agent-window__title">{agent.name}</h2>
-          <span className="agent-window__state">{agent.state}{agent.phase ? ` · ${agent.phase}` : ""}</span>
         </div>
         <div className="agent-window__header-actions">
           <button
@@ -1079,7 +1079,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             onClick={() => void openRoleEditor()}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            ⚙
+            <IconGear />
           </button>
           <button
             type="button"
@@ -1090,7 +1090,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             onClick={toggleSearch}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            🔍
+            <IconSearch />
           </button>
           <div className="agent-window__export">
             <button
@@ -1102,7 +1102,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
               onClick={() => setExportOpen((open) => !open)}
               onMouseDown={(event) => event.stopPropagation()}
             >
-              ⭳
+              <IconDownload />
             </button>
             {exportOpen ? (
               <div className="agent-window__export-menu" role="menu" aria-label="导出格式">
@@ -1125,7 +1125,7 @@ export default function AgentWindow({ agent, onClose }: { agent: Agent; onClose:
             onClick={onClose}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            ×
+            <IconClose />
           </button>
         </div>
       </header>

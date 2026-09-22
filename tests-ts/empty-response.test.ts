@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEmptyContinuationNote, hasUsableOutput } from "../src/empty-response.js";
+import {
+  QUIET_TURN_FALLBACK,
+  buildEmptyContinuationNote,
+  buildQuietTurnNudge,
+  hasUsableOutput,
+} from "../src/empty-response.js";
 
 test("有正文 = 有产出", () => {
   assert.equal(hasUsableOutput({ text: "方案如下……" }), true);
@@ -31,4 +36,17 @@ test("续跑提示：接着往下做，不重发任务，且带次数", () => {
   assert.match(note, /不要重复已经完成或已经提交的操作/);
   assert.match(note, /立即执行下一项具体行动/);
   assert.match(note, /不要从头再来/);
+});
+
+test("聊天轮只跑工具没说话：续跑提示要求它说人话，且不判失败", () => {
+  const nudge = buildQuietTurnNudge(1, 1);
+  assert.match(nudge, /还差一句给老师的话（第 1\/1 次）/);
+  assert.match(nudge, /没有对老师说过一句话/);
+  assert.match(nudge, /用一两句人话回复老师/);
+  assert.match(nudge, /不要复述工具输出/);
+});
+
+test("续跑都用完仍没开口：给一句兼容说明，不让老师面对空白", () => {
+  assert.match(QUIET_TURN_FALLBACK, /本轮没有生成回复/);
+  assert.match(QUIET_TURN_FALLBACK, /换个模型重试/);
 });

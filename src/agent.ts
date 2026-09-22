@@ -8,7 +8,12 @@ import { IndexStore } from "./index-store.js";
 import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
-import { buildEmptyContinuationNote, hasUsableOutput } from "./empty-response.js";
+import {
+  QUIET_TURN_FALLBACK,
+  buildEmptyContinuationNote,
+  buildQuietTurnNudge,
+  hasUsableOutput,
+} from "./empty-response.js";
 import { buildTaskInputBlock } from "./dispatch-fidelity.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
@@ -63,6 +68,9 @@ const ROLEPLAY_SLOT_BLOCK = `## 角色扮演（可选，最后一个区块）
 - 槽位只影响表达，不影响判定与动作。`;
 
 /** 记忆注入预算：条数与字符双约束（超预算的整条丢弃，不截断半条） */
+/** 聊天轮「只跑了工具没说话」最多再给几轮机会（有界，避免空转烧 token） */
+const MAX_QUIET_TURN_ROUNDS = 1;
+
 const MEMORY_RECALL_BUDGET = { limit: 6, charBudget: 1200 };
 
 /**
@@ -490,9 +498,10 @@ ${ref.message.content}`;
     };
     let result: ModelRunResult;
     let retryAttempts = 0;
+    // 轮次模式提到 try 外：成功收尾时要判断「这一轮是不是有人在等回复」
+    const turnMode = resolveTurnMode(request);
     try {
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
-      const turnMode = resolveTurnMode(request);
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
       // L1 当前请求锚：尾部这一段就是本次唯一权威的要求；历史里出现过的任务文本都只是背景。
@@ -509,9 +518,11 @@ ${ref.message.content}`;
       const tools = await this.toolsForSession(sessionId);
       // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；
       // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
-      try {
-        result = await withRetry(
-          async (attempt) => {
+      let quietRounds = 0;
+      for (;;) {
+        try {
+          result = await withRetry(
+            async (attempt) => {
             // 空响应续跑：第 2 次起追加续跑提示（同一 transcript 往下做，不重发任务）
             const attemptPrompt = continuationNote ? `${prompt}\n\n${continuationNote}` : prompt;
             const runResult = await this.options.modelClient.run(attemptPrompt, {
@@ -566,6 +577,18 @@ ${ref.message.content}`;
         }
         throw error;
       }
+
+        // 聊天轮：只跑了工具、一句人话都没说 → 再给一轮机会（不是失败、不是停止）。
+        // 实测 2026-09-22：老师在值日生对话里派了文件任务，她调了三次工具、正文 0 字就结束，
+        // 老师那边只看到自己发的那条消息，以为没回。
+        if (turnMode !== "chat" || result.output.trim() || quietRounds >= MAX_QUIET_TURN_ROUNDS) break;
+        quietRounds += 1;
+        await appendTraceEvent(tracePath, "quiet_turn_nudge", {
+          round: quietRounds,
+          toolCalls: (result.toolCalls ?? []).length,
+        }).catch(() => undefined);
+        continuationNote = buildQuietTurnNudge(quietRounds, MAX_QUIET_TURN_ROUNDS);
+      }
     } catch (error) {
       // 收尾标记：主动停止→stopped，其他异常→error（原异常继续抛给路由层）
       if (sessionId && streamingMessage) {
@@ -610,6 +633,8 @@ ${ref.message.content}`;
         toolCalls: result.toolCalls ?? [],
         segments,
         timeline,
+        // 聊天轮整轮没写出正文（只跑了工具）：不让老师面对空白
+        ...(turnMode === "chat" && !result.output.trim() ? { content: QUIET_TURN_FALLBACK } : {}),
       });
     } else if (sessionId) {
       await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });

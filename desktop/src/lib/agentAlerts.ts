@@ -14,7 +14,7 @@
 import { listAgents } from "./api";
 import { deriveVisibleAgents } from "./agentFilter";
 import { notifyNative } from "./nativeNotify";
-import { useAgentsStore } from "../state/agentsStore";
+import { ensureAgentInList, useAgentsStore } from "../state/agentsStore";
 import { useDialogStore } from "../state/dialogStore";
 
 export type AgentAlertState = "requiring_input" | "waiting_approval";
@@ -95,8 +95,7 @@ export function raiseAgentAlert(input: { agentId: string; name?: string; state: 
     body: alertBody(state),
     tag: `moduty-agent-${agentId}`,
     onClick: () => {
-      useAgentsStore.getState().openAgent(agentId);
-      window.focus();
+      void openAgentFromAlert(agentId).then(() => window.focus());
     },
   });
 }
@@ -122,7 +121,9 @@ export function clearAgentAlert(agentId: string): void {
  * 2. 被归档（手动归档，或超出自定义活跃天数被自动归档）的 Agent 不在墙上，
  *    openAgent 只改打开集合、没有磁贴承载 → 点了像没反应。这里先让它回到墙上（都可在归档库里反悔）。
  */
-export function openAgentFromAlert(agentId: string): void {
+export async function openAgentFromAlert(agentId: string): Promise<void> {
+  // 后端新建的 Agent（值日生/机器人建的）可能还没进前端列表：拉一次再开，别点了没反应
+  await ensureAgentInList(agentId);
   const store = useAgentsStore.getState();
   const agent = store.agents.find((candidate) => candidate.id === agentId);
   if (agent?.kind === "dispatcher") {

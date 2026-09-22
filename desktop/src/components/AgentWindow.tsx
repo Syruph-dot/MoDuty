@@ -601,7 +601,7 @@ export default function AgentWindow({
   };
 
   /** 命中跳转：当前会话 → 原地滚动高亮；其他会话 → 打开对应 Agent 窗口后跳转 */
-  const jumpFromHit = (hit: SessionSearchHit): void => {
+  const jumpFromHit = async (hit: SessionSearchHit): Promise<void> => {
     const firstTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[0][0] : 0;
     if (firstTurn <= 0) return;
     if (hit.id === agent.session_id) {
@@ -611,7 +611,12 @@ export default function AgentWindow({
       jumpToTurn(firstTurn);
       return;
     }
-    const targetAgent = agents.find((candidate) => candidate.session_id === hit.id);
+    let targetAgent = agents.find((candidate) => candidate.session_id === hit.id);
+    if (!targetAgent) {
+      // 本地列表可能落后（值日生/机器人刚在后端建了 Agent）→ 拉一次再找，别直接报找不到
+      await useAgentsStore.getState().load();
+      targetAgent = useAgentsStore.getState().agents.find((candidate) => candidate.session_id === hit.id);
+    }
     if (!targetAgent) {
       setSearchMsg("未找到对应 Agent，无法跳转");
       return;

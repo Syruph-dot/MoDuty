@@ -15,6 +15,16 @@ import { useWindowManagerStore } from "./windowManagerStore";
  * - 磁贴几何与组属 → tileStore（单一事实源），本 store 不再保存/双写
  * ════════════════════════════════════════════════════════════════ */
 
+/** 遇到本地不认识的 agent 事件时，节流拉一次列表（1.5s 合并多次事件） */
+let unknownAgentReloadTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleUnknownAgentReload(): void {
+  if (unknownAgentReloadTimer) return;
+  unknownAgentReloadTimer = setTimeout(() => {
+    unknownAgentReloadTimer = null;
+    void useAgentsStore.getState().load();
+  }, 1500);
+}
+
 /** 磁贴墙治理偏好（A+B+D）持久化 key：UI 本地状态，与后端无关 */
 const MGMT_STORAGE_KEY = "momoka:tiles:mgmt-v1";
 
@@ -264,7 +274,11 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     }
     set((state) => {
       const target = state.agents.find((agent) => agent.id === event.agent_id);
-      if (!target) return {};
+      if (!target) {
+        // 事件里的 agent 本地不认识（多半是后端刚建的）：防抖拉一次列表，让磁贴自己冒出来
+        scheduleUnknownAgentReload();
+        return {};
+      }
       // 幂等短路
       const prevStats = target.context_stats;
       const nextStats = event.context_stats;
@@ -461,6 +475,20 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
  * 统一可见集派生 hook（A 搜索/筛选 + D 活跃/归档两层；默认不传 now 用当前时间）。
  * 桌面墙（free/grouped）与归档面板共用，保证两边口径一致。
  */
+/**
+ * 确保某个 agent 在本地列表里（不在就拉一次最新列表）；返回是否可用。
+ *
+ * 动机：值日生 / 手机机器人在**后端**新建的 Agent 不会自动进前端列表，
+ * 于是出现「磁贴不出、&tile_ chip 点了没反应」的静默失败——跳转前必须先确认真有这个人。
+ * 放在 store 定义之外：写在 store 初始化器里会构成自引用，TS 会把整个 store 的类型判成 any。
+ */
+export async function ensureAgentInList(id: string): Promise<boolean> {
+  const state = useAgentsStore.getState();
+  if (state.agents.some((agent) => agent.id === id)) return true;
+  await state.load(); // load 里会为新 agent 建磁贴
+  return useAgentsStore.getState().agents.some((agent) => agent.id === id);
+}
+
 export function useVisibleAgents() {
   const agents = useAgentsStore((state) => state.agents);
   const filters = useAgentsStore((state) => state.filters);

@@ -130,7 +130,7 @@ export default function AgentAlertToasts() {
             </button>
             <button
               type="button"
-              onClick={() => openAgentFromAlert(alert.agentId)}
+              onClick={() => void openAgentFromAlert(alert.agentId)}
               style={{
                 padding: "4px 12px",
                 borderRadius: 7,

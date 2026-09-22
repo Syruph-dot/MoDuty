@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { awaitApiBase, cancelAgentChat } from "../../lib/api";
 import { IconThought } from "../ui/icons";
 import { subscribeDutyEvents } from "../../lib/dutyEvents";
-import { useAgentsStore } from "../../state/agentsStore";
+import { ensureAgentInList, useAgentsStore } from "../../state/agentsStore";
 
 /**
  * 值日生对话内核（从 DutyGirl 的对话框里抽出，供两种壳共用）：
@@ -138,9 +138,6 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
   const openedAtRef = useRef(0);
   const streamingRef = useRef(false);
 
-  const agents = useAgentsStore((state) => state.agents);
-  const openAgentById = useAgentsStore((state) => state.openAgent);
-
   const sessions = useSessionCandidates();
   const candidates = useMemo(() => {
     if (!mentionAt) return [];
@@ -149,23 +146,34 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
     return base.slice(0, 20);
   }, [sessions, mentionAt]);
 
-  /** chip 点击：把 &ses_/&tile_ 目标解析成 agentId 后打开窗口 */
+  /** chip 点击：把 &ses_/&tile_ 目标解析成 agentId 后打开窗口
+   *  本地列表可能落后（值日生/机器人刚刚在后端建的 Agent）→ 先 ensureAgent 再开，
+   *  否则会出现「点了 chip 什么都不发生」的静默失败。 */
   const openRefTarget = useCallback(
-    (raw: string, kind: "ses" | "tile") => {
+    async (raw: string, kind: "ses" | "tile") => {
       const id = raw.replace(/^(ses|tile)_/, "");
+      const store = useAgentsStore.getState();
+      const found = () => useAgentsStore.getState().agents;
       if (kind === "tile") {
-        if (agents.some((agent) => agent.id === id)) openAgentById(id);
+        if (found().some((agent) => agent.id === id) || (await ensureAgentInList(id))) store.openAgent(id);
         return;
       }
       // ses_：通过 sessionId 反查绑定 agent；绑定失败则尝试把 id 当裸 agent id（兼容 &ses_<agt> 手误）
-      const bound = agents.find((agent) => agent.session_id === `ses_${id}` || agent.session_id === id);
+      const bound = found().find((agent) => agent.session_id === `ses_${id}` || agent.session_id === id);
       if (bound) {
-        openAgentById(bound.id);
-      } else if (agents.some((agent) => agent.id === id)) {
-        openAgentById(id);
+        store.openAgent(bound.id);
+        return;
       }
+      if (found().some((agent) => agent.id === id)) {
+        store.openAgent(id);
+        return;
+      }
+      // 本地没有：拉一次最新列表再找（新会话/新 Agent 就在这里被认出来）
+      await store.load();
+      const late = found().find((agent) => agent.session_id === `ses_${id}` || agent.session_id === id || agent.id === id);
+      if (late) store.openAgent(late.id);
     },
-    [agents, openAgentById],
+    [],
   );
 
   /* 历史加载 + 事件驱动增量刷新（替代轮询）：

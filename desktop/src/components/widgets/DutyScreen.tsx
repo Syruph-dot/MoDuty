@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useDispatchLedger, usePendingQuestions } from "../../hooks/useDutyData";
 import { resolveDutyAgentId } from "../../lib/dutyAgent";
-import { useAgentsStore } from "../../state/agentsStore";
+import { ensureAgentInList, useAgentsStore } from "../../state/agentsStore";
 import { useDialogStore } from "../../state/dialogStore";
 import type { Agent, DispatchView } from "../../types";
 import QuestionCard from "../ui/QuestionCard";
@@ -208,8 +208,19 @@ export default function DutyScreen() {
     [closing, closeDuty, closeSettings],
   );
 
-  /** 打开执行者窗口 = 退页 + 打开对方磁贴（新开卡片会由桌面自动缓动居中） */
-  const openAgentAndLeave = useCallback((agentId: string) => leaveFor(() => openAgentById(agentId)), [leaveFor, openAgentById]);
+  /** 打开执行者窗口 = 退页 + 打开对方磁贴（新开卡片会由桌面自动缓动居中）
+   *  先 ensureAgentInList：值日生/机器人刚在后端建的 Agent 可能还没进前端列表，
+   *  直接 openAgent 只会改「打开集合」、没有磁贴承载 → 点了什么都不发生（2026-09-22 实测）。 */
+  const openAgentAndLeave = useCallback(
+    (agentId: string) =>
+      leaveFor(() => {
+        void (async () => {
+          await ensureAgentInList(agentId);
+          openAgentById(agentId);
+        })();
+      }),
+    [leaveFor, openAgentById],
+  );
 
   useEffect(() => {
     if (!open) return;

@@ -439,6 +439,12 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   };
 }
 
+/** 单次模型调用的输出预算（含 thinking）。默认 16384，可用 MOMOKA_MAX_TOKENS 覆盖 */
+function maxOutputTokens(): number {
+  const raw = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
+  return Number.isFinite(raw) && raw >= 256 ? Math.floor(raw) : 16_384;
+}
+
 async function callModelRound(options: {
   fetchImpl: FetchLike;
   baseUrl: string;
@@ -457,6 +463,10 @@ async function callModelRound(options: {
   const payload: Record<string, unknown> = {
     model,
     messages,
+    // 必须显式给输出预算：thinking 计入 completion_tokens，默认预算很容易被长思考吃光，
+    // 于是 finish_reason=length、正文为空——2026-09-22 实测：模型思考 1 万字符、正文 0 字，
+    // 表现成「工具轮之后不说话 / 机器人只回『（期间调用了 N 个工具）』」。
+    max_tokens: maxOutputTokens(),
   };
   if (enableTools) {
     payload.tools = toolSpecs ?? TOOL_SPECS;

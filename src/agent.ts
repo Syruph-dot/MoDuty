@@ -12,7 +12,6 @@ import {
   QUIET_TURN_FALLBACK,
   buildEmptyContinuationNote,
   buildQuietTurnNudge,
-  hasUsableOutput,
 } from "./empty-response.js";
 import { buildTaskInputBlock } from "./dispatch-fidelity.js";
 import { PlanStore } from "./plan-store.js";
@@ -445,12 +444,17 @@ ${ref.message.content}`;
     }
     // 本轮流式到的思考字数：Proma 口径里「有思考」也算可见产出，不是空响应
     let streamedReasoningChars = 0;
+    // 本轮流出的正文字数：用来判断「这一轮模型到底说没说话」
+    // （累计的 toolCalls 会掩盖后面的空轮——2026-09-22 实测：第一轮调了工具，
+    //   续跑轮空回，却被 hasUsableOutput 当成有产出，于是谁都没发现模型没说话）
+    let streamedTextChars = 0;
     // 空响应续跑提示（第 2 次尝试起追加，续跑而不是重发任务）
     let continuationNote = "";
     const onEvent = (event: StreamEvent): void => {
       const sm = streamingMessage;
       const sid = sessionId;
       if (event.type === "token" && sm && sid) {
+        streamedTextChars += event.text.length;
         this.sessionManager.appendStreamingMessage(sid, sm.id, event.text);
         segmentBuf += event.text;
         if (!segmentHasText) {
@@ -519,7 +523,15 @@ ${ref.message.content}`;
       // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；
       // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
       let quietRounds = 0;
+      // 每轮开头的基准值：用来判断「这一轮到底产出了什么」
+      let seenToolCalls = 0;
+      let roundToolStart = 0;
+      let roundTextStart = 0;
+      let roundReasoningStart = 0;
       for (;;) {
+        roundToolStart = seenToolCalls;
+        roundTextStart = streamedTextChars;
+        roundReasoningStart = streamedReasoningChars;
         try {
           result = await withRetry(
             async (attempt) => {
@@ -534,13 +546,15 @@ ${ref.message.content}`;
             });
             // 空响应口径对齐 Proma（isVisibleRunMessage）：正文 / 工具调用 / 思考任一存在
             // 即算本轮有产出，「只调工具没写正文」是正常回合——完成度归台账与判读判，
-            // 不在这一层判失败。只有**什么都没回来**（无正文、无工具、无思考）才算空响应。
-            const usable = hasUsableOutput({
-              text: runResult.output,
-              toolCalls: runResult.toolCalls,
-              reasoningChars: streamedReasoningChars,
-            });
-            if (!usable) {
+            // 不在这一层判失败。
+            // 关键：这里看的是**这一轮新增**的部分，不是整轮累计——累计的 toolCalls 会把
+            // 「工具轮之后的空轮」掩益掉（2026-09-22 实测：续跑轮空回却没人发现）。
+            const producedThisRound =
+              runResult.output.trim().length > 0 ||
+              streamedTextChars > roundTextStart ||
+              (runResult.toolCalls ?? []).length > roundToolStart ||
+              streamedReasoningChars > roundReasoningStart;
+            if (!producedThisRound) {
               const empty = new Error("模型返回空响应（上游只回了空流），本轮没有任何产出");
               empty.name = "EmptyResponseError";
               throw empty;
@@ -581,8 +595,10 @@ ${ref.message.content}`;
         // 聊天轮：只跑了工具、一句人话都没说 → 再给一轮机会（不是失败、不是停止）。
         // 实测 2026-09-22：老师在值日生对话里派了文件任务，她调了三次工具、正文 0 字就结束，
         // 老师那边只看到自己发的那条消息，以为没回。
+        seenToolCalls = (result.toolCalls ?? []).length;
         if (turnMode !== "chat" || result.output.trim() || quietRounds >= MAX_QUIET_TURN_ROUNDS) break;
         quietRounds += 1;
+        // 续跑轮如果又空回，下一轮带的是同一份续跑提示（有界，见 MAX_QUIET_TURN_ROUNDS）
         await appendTraceEvent(tracePath, "quiet_turn_nudge", {
           round: quietRounds,
           toolCalls: (result.toolCalls ?? []).length,
@@ -628,13 +644,19 @@ ${ref.message.content}`;
         segmentBuf = "";
         segmentHasText = false;
       }
+      // 聊天轮整轮没写出正文（只跑了工具/空回）：把兜底文案当一次 token 事件发出去——
+      // 只写会话内容的话，手机/CLI 这类流式消费者看不到（它们收的是 SSE 的 token 事件）。
+      if (turnMode === "chat" && !result.output.trim()) {
+        onEvent({ type: "token", text: QUIET_TURN_FALLBACK });
+        segmentBuf += QUIET_TURN_FALLBACK;
+        segmentHasText = true;
+        result = { ...result, output: QUIET_TURN_FALLBACK };
+      }
       await this.sessionManager.finishStreamingMessage(sessionId, streamingMessage.id, {
         outputId,
         toolCalls: result.toolCalls ?? [],
         segments,
         timeline,
-        // 聊天轮整轮没写出正文（只跑了工具）：不让老师面对空白
-        ...(turnMode === "chat" && !result.output.trim() ? { content: QUIET_TURN_FALLBACK } : {}),
       });
     } else if (sessionId) {
       await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [] });

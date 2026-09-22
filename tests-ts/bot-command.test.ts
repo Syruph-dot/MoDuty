@@ -61,3 +61,16 @@ test("/chat 与 /agent 缺参数时给出用法", async () => {
   assert.equal(agent.ran, false);
   assert.match(agent.text, /用法：\/agent/);
 });
+
+test("回归：只有工具调用、没有正文时，不能只回「（期间调用了 N 个工具）」", () => {
+  const raw = [
+    "→ 值日生 值日生 (agt_a75dfea26f66)",
+    "[工具 run_momoka_cli 运行中]",
+    "[工具 run_momoka_cli 完成] 服务：ok",
+    "[done run=run_x]",
+  ].join("\n");
+  const out = polishCliOutput(raw);
+  assert.match(out, /本轮调用了 1 个工具，但没有生成回复/);
+  assert.match(out, /可以再说一遍，或换个模型重试/);
+  assert.doesNotMatch(out, /^（期间调用了 1 个工具）$|^\s*（期间调用了 1 个工具）\s*$/);
+});

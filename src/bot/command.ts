@@ -95,6 +95,10 @@ export function polishCliOutput(raw: string): string {
     kept.push(trimmed);
   }
   let text = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  // 有工具调用但一句正文都没有：不要只回一句「（期间调用了 N 个工具）」——那不是回复
+  if (!text && tools > 0) {
+    return `（本轮调用了 ${tools} 个工具，但没有生成回复：上游只回了工具调用/空流。可以再说一遍，或换个模型重试。）`;
+  }
   if (tools > 0) text = `${text}\n\n（期间调用了 ${tools} 个工具）`.trim();
   if (text.length > MAX_REPLY_CHARS) {
     // 只做跑飞兜底；正常长度不再截断，由投递层拆成多条消息发完（见 bot/reply-format.ts）

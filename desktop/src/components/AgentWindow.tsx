@@ -12,6 +12,7 @@ import QuestionRecap from "./ui/QuestionRecap";
 import { IconClose, IconDownload, IconGear, IconSearch, IconThought } from "./ui/icons";
 import AgentWindowTabs, { type TabItem, type TabSubject } from "./AgentWindowTabs";
 import BrowserView from "./BrowserView";
+import { MessageMinimap } from "./MessageMinimap";
 import { useAgentRelations } from "../hooks/useAgentRelations";
 import { useBrowserStore } from "../state/browserStore";
 import { useAgentsStore } from "../state/agentsStore";
@@ -34,6 +35,8 @@ interface StoredMessage {
   contextOnly?: boolean;
   /** 模型思考过程（上游 reasoning 累积，随消息落盘） */
   reasoning?: string;
+  /** 产出这条消息的模型名（随消息落盘，消息头展示） */
+  model?: string;
 }
 
 /** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
@@ -76,6 +79,10 @@ interface DisplayMessage {
   userEditable?: boolean;
   /** 推理/思考内容（流式累积，独立于 content） */
   reasoning?: string;
+  /** 消息时间（ISO；消息头展示 HH:MM） */
+  timestamp?: string;
+  /** 产出这条消息的模型名（消息头展示） */
+  model?: string;
   toolCard?: {
     name: string;
     args: string;
@@ -86,6 +93,27 @@ interface DisplayMessage {
 }
 
  
+
+/** 消息头：模型名 + 时间（对齐 Proma 的 MessageHeader；用户消息不显示） */
+function MessageMeta({ message }: { message: DisplayMessage }): React.ReactElement | null {
+  if (message.role !== "agent") return null;
+  const clock = formatClock(message.timestamp);
+  if (!message.model && !clock) return null;
+  return (
+    <div className="msg__meta">
+      {message.model ? <span className="msg__model">{message.model}</span> : null}
+      {clock ? <span className="msg__time">{clock}</span> : null}
+    </div>
+  );
+}
+
+/** ISO 时间 → 本地 HH:MM（消息头用） */
+function formatClock(iso?: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 /**
  * 单条消息（memo 化）：流式 token 只更新流式那条消息的 content，
@@ -256,6 +284,7 @@ const MessageItem = memo(function MessageItem({
 
   return (
     <div className={`msg msg--${message.role}${jump ? " msg--jump" : ""}`} data-mk={message.key}>
+      <MessageMeta message={message} />
       <div className="msg__bubble" dangerouslySetInnerHTML={{ __html: html }} />
       {message.reasoning ? (
         // 流式中自动展开（能看着它想），流完自动收起（点开可回看）
@@ -320,12 +349,26 @@ export default function AgentWindow({
   agent,
   onClose,
   embedded = false,
+  onHeaderDoubleClick,
 }: {
   agent: Agent;
   onClose: () => void;
   /** 作为下钻内容嵌入别的窗口时：不画窗口外壳与标签条（由外层提供），仅保留操作按钮 */
   embedded?: boolean;
+  /** 双击标题栏：把视口平滑滚到本窗口所在 X（多窗口横向铺开时用来定位） */
+  onHeaderDoubleClick?: () => void;
 }) {
+  /** 用户是否贴着底部：贴着才自动跟随，否则不打扰他正在看的位置 */
+  const userPinnedRef = useRef(true);
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = (): void => {
+      userPinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -664,6 +707,7 @@ export default function AgentWindow({
             role: isUser ? "user" : "agent",
             content: message.content,
             status: message.status,
+            timestamp: message.timestamp,
             ...(isUser && message.id ? { messageId: message.id, userEditable: true } : {}),
           });
           return;
@@ -696,6 +740,8 @@ export default function AgentWindow({
               role: "agent",
               content: item.content,
               status: message.status,
+              timestamp: message.timestamp,
+              ...(message.model ? { model: message.model } : {}),
               ...(message.id ? { messageId: message.id } : {}),
               ...attachReasoning,
             });
@@ -862,9 +908,33 @@ export default function AgentWindow({
     }
   };
 
+  /**
+   * 自动跟随：只在「多了消息」或「尾部正文变长（流式追加）」时贴到底部。
+   * 展开/折叠工具卡既不加消息、也不改正文长度——视图必须留在原处。
+   * （原实现依赖整个 messages 引用，展开工具卡会重建数组 ⇒ 每次都把视图拽到最底。）
+   */
+  const messageCount = messages.length;
+  const tailContentLength = messages[messageCount - 1]?.content.length ?? 0;
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [messages, streaming]);
+    if (!userPinnedRef.current) return;
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight });
+  }, [messageCount, tailContentLength, streaming]);
+
+  /** 消息导航的数据源：每条消息一行摘要（工具卡用工具名） */
+  const minimapItems = useMemo(
+    () =>
+      messages.map((message) => ({
+        id: message.key,
+        role: message.role,
+        preview: (message.role === "tool" ? message.toolCard?.name ?? "工具调用" : message.content)
+          .replace(/\s+/gu, " ")
+          .trim()
+          .slice(0, 160),
+      })),
+    [messages],
+  );
 
   // 切换 tool card 折叠/展开（useCallback 保持稳定引用，配合 MessageItem memo）
   const toggleToolCollapsed = useCallback((key: string) => {
@@ -969,7 +1039,7 @@ export default function AgentWindow({
       return;
     }
     setStreamError(null);
-    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed }]);
+    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString() }]);
     setStreaming(true);
     stopPolling(); // 有后台轮询时先停掉，由 SSE 接管实时更新
     const controller = new AbortController();
@@ -977,7 +1047,7 @@ export default function AgentWindow({
     const TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无响应视为超时
     const combinedSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     let currentAgentKey = `agent-${Date.now()}`;
-    setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "" }]);
+    setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "", timestamp: new Date().toISOString() }]);
     // token 合帧：SSE token 到达频率远高于渲染需求（每 token 一次 setMessages/render/markdown），
     // 先积累到 buffer，由 requestAnimationFrame 每帧最多 flush 一次 → 渲染频率上限 60fps。
     // 注意：切换 currentAgentKey（tool call 分界）或流结束前必须 flush，否则尾部 token 会掉入下一条消息。
@@ -1260,7 +1330,11 @@ export default function AgentWindow({
 
   return (
     <div className={`agent-window${embedded ? " agent-window--embedded" : ""}`} role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
-      <header className="agent-window__header" title="拖动标题栏到左栏可收起">
+      <header
+        className="agent-window__header"
+        title="拖动标题栏到左栏可收起；双击可把视口滚到本窗口"
+        onDoubleClick={onHeaderDoubleClick}
+      >
         {embedded ? null : <AgentWindowTabs items={tabItems} activeKey={currentTab ? "current" : "lead"} onSelect={selectTab} onDetach={detachTab} />}
         <div className="agent-window__header-actions">
           <button
@@ -1417,6 +1491,8 @@ export default function AgentWindow({
         </button>
       ) : null}
 
+      {/* 消息区包一层定位容器：导航条要相对「消息区」定位，否则会盖到顶部工具栏上 */}
+      <div className="agent-window__body">
       <div className="agent-window__list" ref={listRef} aria-live="polite" onMouseUp={captureQuote}>
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
@@ -1490,6 +1566,9 @@ export default function AgentWindow({
         ) : null}
 
         {streamError ? <p className="agent-window__error" role="alert">{streamError}</p> : null}
+      </div>
+
+      <MessageMinimap items={minimapItems} scrollRef={listRef} />
       </div>
 
       <footer className="agent-window__composer">

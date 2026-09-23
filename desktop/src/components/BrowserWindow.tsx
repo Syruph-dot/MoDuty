@@ -10,13 +10,20 @@ import { IconClose } from "./ui/icons";
 export default function BrowserWindow({
   browser,
   onClose,
+  onHeaderDoubleClick,
 }: {
   browser: BrowserInfo;
   onClose: () => void;
+  /** 双击标题栏：把视口平滑滚到本窗口所在 X */
+  onHeaderDoubleClick?: () => void;
 }) {
   return (
     <div className="browser-window" role="dialog" aria-label={`浏览器 ${browser.name} 窗口`}>
-      <header className="browser-window__header" title="拖动标题栏可移动">
+      <header
+        className="browser-window__header"
+        title="拖动标题栏可移动；双击可把视口滚到本窗口"
+        onDoubleClick={onHeaderDoubleClick}
+      >
         <div className="browser-window__identity">
           <span
             className={`state-dot state-dot--${browser.state === "ready" ? "running" : browser.state === "error" ? "error" : "idle"}`}

@@ -9,7 +9,7 @@
   background: rgba(13, 18, 30, 0.94);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border-radius: 10px;
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -428,6 +428,15 @@
 
 /* （已移除）DutyWindow 覆盖层：值日生改为整页视图 DutyScreen，不再用 portal 浮层 */
 
+/* 消息区：导航条的定位基准（顶部工具栏与底部输入框都不属于它） */
+.agent-window__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .agent-window__list {
   flex: 1;
   overflow-y: auto;
@@ -435,6 +444,221 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 原生滚动条由右侧「消息导航」取代（见 MessageMinimap） */
+  scrollbar-width: none;
+}
+
+.agent-window__list::-webkit-scrollbar {
+  display: none;
+}
+
+/* 消息导航（minimap）：对齐 Proma 的 scroll-minimap —— 横杠列 + 滚动进度条 */
+.chat-minimap {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  pointer-events: none;
+}
+
+.chat-minimap__bars {
+  position: relative;
+  flex: none;
+  width: 24px;
+  margin-top: 12px;
+  pointer-events: auto;
+}
+
+.chat-minimap__bar {
+  position: absolute;
+  left: 4px;
+  width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(120, 170, 255, 0.28);
+  transition: background 120ms ease;
+}
+
+.chat-minimap__bar--user {
+  background: rgba(120, 170, 255, 0.5);
+}
+
+.chat-minimap__bar--visible {
+  background: rgba(160, 200, 255, 0.85);
+}
+
+.chat-minimap__track-wrap {
+  position: relative;
+  flex: none;
+  width: 8px;
+  margin-left: 4px;
+  padding: 16px 0;
+  pointer-events: auto;
+}
+
+.chat-minimap__track {
+  position: relative;
+  height: 100%;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.chat-minimap__thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: 999px;
+  background: rgba(232, 237, 247, 0.14);
+  cursor: grab;
+  transition: background 100ms ease;
+}
+
+.chat-minimap__thumb:hover {
+  background: rgba(232, 237, 247, 0.25);
+}
+
+.chat-minimap__thumb--active {
+  background: rgba(232, 237, 247, 0.32);
+  cursor: grabbing;
+}
+
+/* 展开面板（hover 横杠时出现） */
+.chat-minimap__panel {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  max-height: min(420px, 60vh);
+  margin: 12px 4px 0 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(20, 26, 40, 0.98);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.chat-minimap__panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(232, 237, 247, 0.7);
+}
+
+.chat-minimap__panel-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.chat-minimap__panel-search {
+  flex: none;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.chat-minimap__panel-search input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8edf7;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.chat-minimap__panel-search input:focus {
+  outline: none;
+  border-color: rgba(120, 170, 255, 0.5);
+}
+
+.chat-minimap__panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-minimap__panel-empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(232, 237, 247, 0.45);
+}
+
+.chat-minimap__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-minimap__item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.chat-minimap__item--visible {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-minimap__item-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: rgba(232, 237, 247, 0.3);
+}
+
+.chat-minimap__item-dot--user {
+  background: rgba(90, 140, 235, 0.9);
+}
+
+.chat-minimap__item-dot--agent {
+  background: rgba(160, 200, 255, 0.7);
+}
+
+.chat-minimap__item-text {
+  flex: 1;
+  min-width: 0;
+  color: rgba(232, 237, 247, 0.8);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.chat-minimap__item-empty {
+  opacity: 0.4;
+}
+
+.chat-minimap__mark {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: rgba(120, 170, 255, 0.25);
+  color: #cfe0ff;
 }
 
 .agent-window__empty {
@@ -463,20 +687,43 @@
   justify-content: flex-end;
 }
 
+/* agent 消息纵向堆叠：消息头 → 正文 → 思考块（正文不再包气泡，与 Proma 一致铺开） */
 .msg--agent {
+  flex-direction: column;
+  align-items: stretch;
   justify-content: flex-start;
 }
 
 .msg__bubble {
   max-width: min(660px, 78%);
-  padding: 11px 15px;
+  padding: 10px 14px;
   border-radius: 0;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 消息头：模型名 + 时间（对齐 Proma 的 MessageHeader，但不带头像；用户侧不显示） */
+.msg__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+}
+
+.msg__model {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(232, 237, 247, 0.6);
+}
+
+.msg__time {
+  font-size: 10px;
+  color: rgba(232, 237, 247, 0.38);
+  font-variant-numeric: tabular-nums;
 }
 
 .msg--user .msg__bubble {
@@ -557,37 +804,45 @@
   text-align: right;
 }
 
-/* agent 气泡渲染 Markdown：交给标记自己控制换行/段落 */
+/* agent 正文渲染 Markdown（同时去掉气泡外观：对齐 Proma，整幅铺开） */
 .msg--agent .msg__bubble {
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
   white-space: normal;
 }
 
 /* Markdown 内容样式（仅 agent 气泡内生效） */
 .msg--agent .msg__bubble :where(h1, h2, h3, h4, h5, h6) {
-  margin: 0.7em 0 0.35em;
+  margin: 8px 0;
   line-height: 1.3;
   font-weight: 650;
 }
 .msg--agent .msg__bubble :where(h1) {
-  font-size: 1.35em;
+  font-size: 2.25em;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   padding-bottom: 0.2em;
 }
 .msg--agent .msg__bubble :where(h2) {
-  font-size: 1.2em;
+  font-size: 1.5em;
 }
-.msg--agent .msg__bubble :where(h3, h4, h5, h6) {
-  font-size: 1.05em;
+.msg--agent .msg__bubble :where(h3) {
+  font-size: 1.25em;
+}
+.msg--agent .msg__bubble :where(h4, h5, h6) {
+  font-size: 1em;
 }
 .msg--agent .msg__bubble :where(p) {
-  margin: 0.45em 0;
+  margin: 6px 0;
 }
 .msg--agent .msg__bubble :where(ul, ol) {
-  margin: 0.45em 0;
-  padding-left: 1.5em;
+  margin: 6px 0;
+  padding-left: 1.625em;
 }
 .msg--agent .msg__bubble :where(li) {
-  margin: 0.2em 0;
+  margin: 0.5em 0;
+  line-height: 1.6;
 }
 .msg--agent .msg__bubble :where(blockquote) {
   margin: 0.5em 0;
@@ -639,7 +894,15 @@
 .msg--agent .msg__bubble :where(hr) {
   border: none;
   border-top: 1px solid rgba(255, 255, 255, 0.14);
-  margin: 0.7em 0;
+  margin: 12px 0;
+}
+
+/* 首尾子元素贴边（对齐 Proma：首段不留上边距、末段不留底边距） */
+.msg--agent .msg__bubble > :first-child {
+  margin-top: 0;
+}
+.msg--agent .msg__bubble > :last-child {
+  margin-bottom: 0;
 }
 .msg--agent .msg__bubble :where(img) {
   max-width: 100%;
@@ -791,7 +1054,7 @@
   border: 1px dashed rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
-  font-size: 12px;
+  font-size: 14px;
   color: rgba(232, 237, 247, 0.62);
 }
 
@@ -1354,8 +1617,8 @@
   background: rgba(16, 19, 26, 0.86);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
   color: #e8edf7;
   font: inherit;

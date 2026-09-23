@@ -542,15 +542,39 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     scrollAnimRef.current = requestAnimationFrame(tick);
   }, []);
 
+  /**
+   * 打开磁贴时登记「待居中」，打开后由下面的 useLayoutEffect 平滑滚到它所在 X。
+   * 直接绑在打开动作上（而不是只看 openIds 的 diff），这样双击打开、从分组墙打开、
+   * 以及「先打开、后切模态」的时序都不会漏掉这次居中。
+   */
+  const requestCenter = useCallback((id: string) => {
+    centerPendingRef.current = id;
+  }, []);
+
+  /** 把视口平滑滚到某个已打开磁贴所在 X（卡片中心对齐视口中心）——双击标题栏用 */
+  const centerTileX = useCallback(
+    (id: string) => {
+      const node = wallRef.current;
+      if (!node || !openMode || !layout) return;
+      const worldX = openTile.worldXOf(id);
+      if (worldX === null) return;
+      const cardW = layout.stage.w > 0 ? layout.stage.w : bounds.width;
+      const maxScroll = Math.max(0, node.scrollWidth - node.clientWidth);
+      const target = Math.max(0, Math.min(maxScroll, worldX + cardW / 2 - node.clientWidth / 2));
+      animateWallScrollTo(target);
+    },
+    [openMode, layout, bounds.width, openTile, animateWallScrollTo],
+  );
+
   // 记录“这次新打开的那张”（等它的世界 X 就绪后再居中）
   useEffect(() => {
     const prev = prevOpenIdsRef.current;
     if (openMode) {
       const fresh = openIds.filter((id) => !prev.includes(id));
       if (fresh.length > 0) centerPendingRef.current = fresh[fresh.length - 1];
-    } else {
-      centerPendingRef.current = null;
     }
+    // 只在全部收起时清空：模态晚一步变 on 时不要把刚登记的居中丢掉
+    if (openIds.length === 0) centerPendingRef.current = null;
     prevOpenIdsRef.current = openIds;
   }, [openIds, openMode]);
 
@@ -1040,17 +1064,33 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     return () => el.removeEventListener("scroll", onScroll);
   }, [openMode]);
 
+  /**
+   * 连击两次右键 = 所有磁贴 Y 归位（仅「有磁贴打开且确实错位」时）。
+   *
+   * 为什么在捕获阶段监听 window：第一次右键会立即弹出菜单，第二次右键如果落在菜单上，
+   * 会被菜单自己的 contextmenu 处理吃掉（不冒泡到 tile-wall）。捕获阶段先于它执行，
+   * 所以无论鼠标在哪都能认出「第二次右键」。
+   */
+  const lastRightClickAtRef = useRef(0);
+  useEffect(() => {
+    if (!openMode) return;
+    const onContextMenuCapture = (event: MouseEvent): void => {
+      const now = Date.now();
+      const isSecond = now - lastRightClickAtRef.current < 400;
+      lastRightClickAtRef.current = isSecond ? 0 : now;
+      if (!isSecond) return;
+      if (Object.keys(openWorldY).length === 0) return;
+      event.preventDefault();
+      useContextMenuStore.getState().hide(); // 收掉第一次右键弹出的菜单
+      resetOpenWorldY(); // 所有磁贴 Y 归位（回到默认 top），X 保留
+    };
+    window.addEventListener("contextmenu", onContextMenuCapture, { capture: true });
+    return () => window.removeEventListener("contextmenu", onContextMenuCapture, { capture: true });
+  }, [openMode, openWorldY, resetOpenWorldY]);
+
   // 桌面空白处右键 → 弹出菜单（New Agent / Add widget / Refresh / Change wallpaper / Zoom）
   const onContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {      // 点在磁贴上不响应（仅空白桌面）
-      if (openMode) {
-        event.preventDefault();
-        // 有错位卡时右键整理：所有磁贴 Y 归位（回到默认 top），X 保留
-        if (Object.keys(openWorldY).length > 0) {
-          resetOpenWorldY();
-        }
-        return;
-      }
       if (event.target instanceof Element && event.target.closest(".tile-shell")) {
         return;
       }
@@ -1219,7 +1259,14 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
 
       {/* free 模式内容层见下方 .tile-wall__content（同时承担撑宽 + 橡皮筋位移） */}
       {/* grouped 视图（方案 B）：按工作区分组，X 轴分列布局 */}
-      {!openMode && groupedMode ? <GroupedWall onOpen={onOpen} /> : null}
+      {!openMode && groupedMode ? (
+        <GroupedWall
+          onOpen={(agent) => {
+            requestCenter(agent.id);
+            onOpen(agent);
+          }}
+        />
+      ) : null}
 
       {/* A+B 空态：墙内无命中（free 视图） */}
       {!openMode && !groupedMode && !loading && agents.length > 0 && wallAgents.length === 0 ? (
@@ -1332,13 +1379,19 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             bandX={bandX}
             canvasGhost={canvasGhost}
             flipped={isOpen}
-            back={isOpen ? <AgentWindow agent={agent} onClose={() => closeAgent(agent.id)} /> : undefined}
+            back={isOpen ? (
+              <AgentWindow
+                agent={agent}
+                onClose={() => closeAgent(agent.id)}
+                onHeaderDoubleClick={() => centerTileX(agent.id)}
+              />
+            ) : undefined}
             onDragMove={(cx, cy) => handleDragMove(agent.id, cx, cy)}
             onCommit={(next) => handleTileCommit(agent.id, next)}
             dropTarget={dropHint?.tileId === agent.id}
             contextMenuItems={!openMode ? buildAgentMenu(agent) : undefined}
             {...openTile.shellPropsOf(agent.id, isOpen, ".agent-window__header")}
-            onOpenTile={tileMode === "expanded" ? undefined : () => onOpen(agent)}
+            onOpenTile={tileMode === "expanded" ? undefined : () => { requestCenter(agent.id); onOpen(agent); }}
           >
             <AgentTile
               agent={agent}
@@ -1391,13 +1444,19 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             displacedPreview={!!displacedGrid && tileMode === "free"}
             bandX={bandX}
             flipped={isOpen}
-            back={isOpen ? <BrowserWindow browser={browser} onClose={() => closeBrowser(browser.id)} /> : undefined}
+            back={isOpen ? (
+              <BrowserWindow
+                browser={browser}
+                onClose={() => closeBrowser(browser.id)}
+                onHeaderDoubleClick={() => centerTileX(browser.id)}
+              />
+            ) : undefined}
             onDragMove={(cx, cy) => handleDragMove(browser.id, cx, cy)}
             onCommit={(next) => handleTileCommit(browser.id, next)}
             dropTarget={dropHint?.tileId === browser.id}
             contextMenuItems={browserMenuItems}
             {...openTile.shellPropsOf(browser.id, isOpen, ".browser-window__header")}
-            onOpenTile={tileMode === "expanded" ? undefined : () => openBrowser(browser.id)}
+            onOpenTile={tileMode === "expanded" ? undefined : () => { requestCenter(browser.id); openBrowser(browser.id); }}
           >
             <BrowserTile browser={browser} />
           </TileShell>

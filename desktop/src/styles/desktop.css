@@ -8,6 +8,22 @@ body,
   overflow: hidden;
 }
 
+/*
+ * 隐藏所有原生滚动条（滚动功能不受影响，滚轮/触控板照常）。
+ * 各处滚动容器原本各写了一套 ::-webkit-scrollbar / scrollbar-width 样式，
+ * 这里统一覆盖：消息区改用右侧「消息导航」（MessageMinimap），其余区域靠滚轮。
+ */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
 .desktop-shell {
   position: relative;
   width: 100%;
@@ -15,6 +31,11 @@ body,
   background: linear-gradient(160deg, #10141f 0%, #1b2334 55%, #0d1424 100%);
   color: #e8edf7;
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 字体特性对齐 Proma（字体栈保留 MoDuty 自己的） */
+  font-feature-settings: "cv11", "ss01", "ss03", "tnum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .desktop-placeholder {

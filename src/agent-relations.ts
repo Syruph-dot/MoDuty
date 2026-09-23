@@ -1,7 +1,7 @@
 import type { AgentRegistry } from "./agent-registry.js";
 import { browserService } from "./browser-service.js";
 import { normalizeSessionId, readSessionGraphEdges } from "./relation-graph.js";
-import type { SessionManager } from "./session-manager.js";
+import type { SessionManager, SessionMessage } from "./session-manager.js";
 import type { AgentRecord } from "./types.js";
 
 /**
@@ -36,7 +36,41 @@ export interface AgentRelations {
 }
 
 const AGENT_REF = /&ses_[a-z0-9]+/gi;
-const BROWSER_REF = /brw_[a-z0-9]+/gi;
+/**
+ * 浏览器实例 id 形如 `brw_774a11dc-766`（randomUUID 前 12 位 = 8 位 hex + "-" + 3 位 hex）。
+ * 字符类必须把连字符吃进去，否则只能截出 `brw_774a11dc`，与 registry 里的真实 id 永远对不上
+ * —— 表现就是「Agent 明明用过浏览器，窗口标签栏里却没有浏览器标签」。
+ */
+const BROWSER_REF = /brw_[0-9a-z]+(?:-[0-9a-z]+)*/gi;
+
+/**
+ * 引用 id 可能出现的任意文本：正文、思考、以及工具调用的参数/结果。
+ * 只看 `message.content` 会漏 —— 实测 `browse_navigate` 这类工具的 browser_id 只写在
+ * `tool_calls[].args` 里（browse_create 的返回写在 `tool_calls[].result`），
+ * 于是「Agent 明明用过浏览器，窗口标签栏里却没有浏览器标签」。
+ * 递归取值同时对 camelCase（toolCalls）与磁盘上的 snake_case（tool_calls）免疫。
+ */
+const MAX_REF_SCAN_CHARS = 200_000;
+
+function collectRefText(message: SessionMessage): string {
+  const parts: string[] = [];
+  const push = (value: unknown, depth = 0): void => {
+    if (value == null || depth > 4) return;
+    if (typeof value === "string") {
+      if (value) parts.push(value.length > MAX_REF_SCAN_CHARS ? value.slice(0, MAX_REF_SCAN_CHARS) : value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) push(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const item of Object.values(value as Record<string, unknown>)) push(item, depth + 1);
+    }
+  };
+  push(message);
+  return parts.join("\n");
+}
 
 const recency = (value: string | undefined): number => {
   const t = value ? Date.parse(value) : NaN;
@@ -83,11 +117,11 @@ export async function buildAgentRelations(options: {
   try {
     const messages = await sessionManager.getMessages(self.sessionId, null);
     for (const message of messages) {
-      const content = message.content ?? "";
-      for (const ref of content.match(AGENT_REF) ?? []) {
+      const text = collectRefText(message);
+      for (const ref of text.match(AGENT_REF) ?? []) {
         addAgentChild(bySession.get(normalizeSessionId(ref.slice(1))), "session");
       }
-      for (const ref of content.match(BROWSER_REF) ?? []) browserRefs.add(ref.toLowerCase());
+      for (const ref of text.match(BROWSER_REF) ?? []) browserRefs.add(ref.toLowerCase());
     }
   } catch {
     /* 会话读不到就退化为图谱 + 台账，不影响主流程 */

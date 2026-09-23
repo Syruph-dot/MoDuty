@@ -20,6 +20,7 @@ export function chatToSnake(payload: ChatResponse): Record<string, unknown> {
     matched_skills: payload.matchedSkills,
     skill_reasons: payload.skillReasons,
     session_id: payload.sessionId ?? null,
+    model: payload.model ?? null,
   };
 }
 

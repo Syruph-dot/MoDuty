@@ -48,6 +48,11 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
   // 让 Agent 核心能解析 &tile_<agentId> 别名 → 其绑定的 session
   agent.agentRegistry = registry;
   const machine = new AgentStateMachine();
+  // 启动复位：跨进程不成立的状态一律归零。
+  // error / waiting_approval / requiring_input / completed 都是「上一个进程里的结论」——
+  // 重启后没有东西在跑、没有审批在等、没有问题在等答，留着只会让磁贴一直显示错误/挂起。
+  // （值日生交付后落到 error，重启后仍然红着，就是这个状态被写进了 agents.json。）
+  void resetStickyAgentStates(registry);
   const server = createServer(createMomokaHttpHandler(agent, { registry, machine, workspaces }));
   return {
     agent,
@@ -70,6 +75,29 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
 }
 
 /** 监听一个端口；被占用则递增 basePort，最多 maxTries 次。成功后把端口写到 portFile（如果指定） */
+/**
+ * 跨进程不成立的状态：进程重启后一律回到 idle。
+ * 幂等，失败只告警——启动复位不该拦住服务起来。
+ */
+const STICKY_AGENT_STATES: ReadonlySet<string> = new Set([
+  "error",
+  "waiting_approval",
+  "requiring_input",
+  "completed",
+]);
+
+async function resetStickyAgentStates(registry: AgentRegistry): Promise<void> {
+  try {
+    const agents = await registry.listAgents();
+    for (const record of agents) {
+      if (!STICKY_AGENT_STATES.has(record.state)) continue;
+      await registry.updateAgentState(record.id, "idle").catch(() => undefined);
+    }
+  } catch (error) {
+    console.warn(`警告: 启动复位 Agent 状态失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 function listenWithFallback(
   server: ReturnType<typeof createServer>,
   basePort: number,

@@ -23,6 +23,8 @@ export interface StoredMessage {
   contextOnly?: boolean;
   /** 模型思考过程（上游 delta.reasoning / reasoning_content 累积）。落盘是为了重开窗口还能看 */
   reasoning?: string;
+  /** 产出这条消息时实际使用的模型名（消息头展示用） */
+  model?: string;
   /** 兼容旧字段：允许任意额外键 */
   [key: string]: unknown;
 }
@@ -110,6 +112,7 @@ export function messageFromDisk(raw: Record<string, unknown>): StoredMessage {
     // 仅上下文注入（界面不渲染，模型仍看得到）：读盘必须保留，否则前端拿不到标记
     ...(raw.contextOnly === true || raw.context_only === true ? { contextOnly: true } : {}),
     ...(typeof raw.reasoning === "string" && raw.reasoning ? { reasoning: raw.reasoning } : {}),
+    ...(typeof raw.model === "string" && raw.model ? { model: raw.model } : {}),
   };
 }
 

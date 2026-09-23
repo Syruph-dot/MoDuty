@@ -34,6 +34,8 @@ export interface ModelRunResult {
   toolCalls?: ToolCall[];
   /** 本轮 run 的代表性 usage（多轮工具调用取 prompt tokens 峰值轮） */
   usage?: ModelUsage;
+  /** 本轮实际使用的模型名（写入消息，供消息头展示） */
+  model?: string;
 }
 
 export interface ModelClient {
@@ -332,6 +334,8 @@ export interface ChatResponse {
   matchedSkills: string[];
   skillReasons: Array<{ name: string; score: number; reasons: string[] }>;
   sessionId?: string | null;
+  /** 本轮实际使用的模型名（消息头展示用） */
+  model?: string;
 }
 
 export interface JudgeRequest {

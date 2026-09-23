@@ -337,6 +337,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           return {
             output: roundResult.content,
             toolCalls,
+            model,
             ...(usagePeak ? { usage: usagePeak } : {}),
           };
         }

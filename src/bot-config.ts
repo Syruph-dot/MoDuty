@@ -45,11 +45,20 @@ export interface BotDefaultTarget {
   sessionId?: string;
 }
 
+/** 某渠道最后一次收到的会话位置（主动推送用：重启后仍知道该往哪里发） */
+export interface BotLastChat {
+  chatId: string;
+  replyToMessageId?: string;
+  contextToken?: string;
+}
+
 export interface BotsFile {
   version: 1;
   feishu: FeishuBotSettings;
   wechat: WechatBotSettings;
   defaultTarget: BotDefaultTarget;
+  /** 上次对话位置：没有它，「交付通知」这类无人触发的推送就只能等用户先说话 */
+  lastChat?: { feishu?: BotLastChat; wechat?: BotLastChat };
 }
 
 /** HTTP 响应里的脱敏形态（永不返回 appSecret / botToken 明文） */
@@ -121,6 +130,24 @@ function normalize(raw: unknown): BotsFile {
     kind: target.kind === "session" && sessionId ? "session" : "dispatcher",
     ...(sessionId ? { sessionId } : {}),
   };
+
+  const lastChat = (file.lastChat ?? {}) as Record<string, unknown>;
+  const pickChat = (value: unknown): BotLastChat | undefined => {
+    const item = (value ?? {}) as Record<string, unknown>;
+    const chatId = text(item.chatId);
+    if (!chatId) return undefined;
+    return {
+      chatId,
+      ...(text(item.replyToMessageId) ? { replyToMessageId: text(item.replyToMessageId) } : {}),
+      ...(typeof item.contextToken === "string" && item.contextToken ? { contextToken: item.contextToken } : {}),
+    };
+  };
+  const feishuChat = pickChat(lastChat.feishu);
+  const wechatChat = pickChat(lastChat.wechat);
+  base.lastChat = {
+    ...(feishuChat ? { feishu: feishuChat } : {}),
+    ...(wechatChat ? { wechat: wechatChat } : {}),
+  };
   return base;
 }
 
@@ -142,6 +169,7 @@ export async function saveBotConfig(patch: {
   feishu?: Partial<FeishuBotSettings>;
   wechat?: Partial<WechatBotSettings>;
   defaultTarget?: Partial<BotDefaultTarget>;
+  lastChat?: { feishu?: BotLastChat; wechat?: BotLastChat };
 }): Promise<BotsFile> {
   const current = await loadBotConfig();
   const next = normalize({
@@ -149,6 +177,7 @@ export async function saveBotConfig(patch: {
     feishu: { ...current.feishu, ...(patch.feishu ?? {}) },
     wechat: { ...current.wechat, ...(patch.wechat ?? {}) },
     defaultTarget: { ...current.defaultTarget, ...(patch.defaultTarget ?? {}) },
+    ...(patch.lastChat ? { lastChat: patch.lastChat } : {}),
   });
   if (next.defaultTarget.kind === "session" && !next.defaultTarget.sessionId) {
     next.defaultTarget = { kind: "dispatcher" };

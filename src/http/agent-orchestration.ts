@@ -92,8 +92,16 @@ export async function driveAgentTurn(
       },
       signal: opts.signal,
     });
-    const hasPendingApproval = await checkHasPendingApproval(deps.workspaces, record);
-    const hasPendingQuestion = await checkHasPendingQuestion(deps.registry, record);
+    // 收尾查询（审批/提问）只是「要不要停在等待态」的判断题：它自己失败不该把整轮判成 error，
+    // 否则 agent 会在任务其实跑完的情况下显示红色错误态（2026-09-23 值日生判读轮遇到过）。
+    const hasPendingApproval = await checkHasPendingApproval(deps.workspaces, record).catch((error: unknown) => {
+      console.warn("[orchestration] 检查待审批失败（按无处理）:", error);
+      return false;
+    });
+    const hasPendingQuestion = await checkHasPendingQuestion(deps.registry, record).catch((error: unknown) => {
+      console.warn("[orchestration] 检查待答问题失败（按无处理）:", error);
+      return false;
+    });
     let held: DriveTurnResult["held"];
     if (hasPendingApproval) held = "approval";
     else if (hasPendingQuestion) held = "question";
@@ -738,6 +746,12 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
       `【判读留痕】${entry.id}：判定可交付，已上报老师。${policy.verdict === "delivered_with_warnings" ? `（${policy.reason}）` : ""}${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
     );
     broadcastDispatchVerdict(deps, { entry, verdict: "deliver", note: input.note });
+    void notifyBotsOfDelivery(
+      deps,
+      entry,
+      input.note,
+      policy.verdict === "delivered_with_warnings" ? policy.reason : undefined,
+    );
     await reflectVerdict(deps, entry, "deliver", input.note);
     return policy.verdict === "delivered_with_warnings"
       ? `判定已提交：带警告交付。${policy.reason}；已上报老师。`
@@ -774,6 +788,69 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
   );
   broadcastDispatchVerdict(deps, { entry: updated ?? entry, verdict: "continue", note: input.note });
   return `判定已提交：继续（${updated?.continueCount ?? 1}/${DISPATCH_MAX_CONTINUE}）。已向执行者下发返工指令。`;
+}
+
+/**
+ * 交付时也要通知手机。
+ *
+ * 桌面的通知走 SSE（broadcastDispatchVerdict），手机（微信/飞书）只能靠机器人主动推：
+ * 原实现里 deliver 只广播给桌面，老师不在电脑前就完全不知道任务已经交付。
+ */
+async function notifyBotsOfDelivery(
+  deps: OrchestrationDeps,
+  entry: DispatchRecord,
+  note?: string,
+  warning?: string,
+): Promise<void> {
+  try {
+    const target = await deps.registry.getAgent(entry.targetAgentId);
+    // 老师在手机上要看的是「结果」，不是「已完成」：执行者会话的收尾答复就是结果本身。
+    const answer = condenseAnswer(await lastExecutorAnswer(deps, entry.targetSessionId));
+    const headline = (entry.askExcerpt || entry.task).replace(/\s+/gu, " ").trim();
+    const lines = [
+      `${warning ? "⚠️ 已交付（带警告）" : "✅ 已交付"}：${headline.slice(0, 60)}${headline.length > 60 ? "…" : ""}`,
+    ];
+    if (answer) lines.push("", answer);
+    lines.push(
+      "",
+      `承办：${target ? `${target.name}（${target.id}）` : entry.targetAgentId}`,
+      ...(warning ? [`警告：${warning.slice(0, 200)}`] : []),
+      ...(note?.trim() && !answer ? [`备注：${note.trim().slice(0, 200)}`] : []),
+      `台账：${entry.id}`,
+    );
+    const { botManager } = await import("../bot/manager.js");
+    await botManager.notify(lines.join("\n"));
+  } catch (error) {
+    console.error("[bot] 交付通知推送失败（不影响交付）:", error);
+  }
+}
+
+/** 执行者会话里最后一次「有实质内容」的收尾答复——手机上要看到的结果正文 */
+async function lastExecutorAnswer(deps: OrchestrationDeps, sessionId: string): Promise<string> {
+  try {
+    const messages = await deps.agent.sessionManager.getMessages(sessionId);
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (message?.role !== "agent") continue;
+      const text = (message.content ?? "").trim();
+      if (text.length >= 40) return text;
+    }
+  } catch (error) {
+    console.warn("[bot] 读取执行者收尾答复失败（只发通知）:", error);
+  }
+  return "";
+}
+
+/**
+ * 手机上不必看执行者的过程叙述：有 markdown 标题就从第一个标题开始取
+ * （例：“我来核查…检索…报告已落盘。## 结论（先行）…” → 只留“## 结论”往后）。
+ * 不截断：投递层会拆成多条消息发完。
+ */
+function condenseAnswer(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const heading = trimmed.search(/^#{2,4}\s/mu);
+  return heading > 0 ? trimmed.slice(heading).trim() : trimmed;
 }
 
 /** 判读结论广播（A6 桌面通知的数据源；system 留痕消息负责会话内记录） */

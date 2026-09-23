@@ -25,6 +25,8 @@ export default function DutyGirl() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const agents = useAgentsStore((state) => state.agents);
   const openDuty = useDialogStore((state) => state.openDuty);
+  /* 整页（设置/值日生/记忆）占屏时磁贴墙在退场，此时磁贴里的立绘没必要继续渲染 —— 暂停 ticker */
+  const pageOpen = useDialogStore((state) => state.settingsOpen || state.dutyOpen || state.memoryOpen);
   const chat = useDutyChat(agentId);
 
   /*
@@ -143,7 +145,7 @@ export default function DutyGirl() {
     <div className="duty-girl" ref={rootRef}>
       <button type="button" className="duty-girl__hit" onClick={toggle} aria-label="打开值日生对话框">
         <span className="duty-girl__portrait" aria-hidden="true">
-          <DutyPortrait />
+          <DutyPortrait paused={pageOpen} />
         </span>
         <span className="duty-girl__badge">值日生</span>
       </button>

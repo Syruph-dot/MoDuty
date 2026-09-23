@@ -27,6 +27,46 @@ const PAT_DRIVER_SMOOTH = 14;
 const GAZE_MAX_X = 10;
 const GAZE_MAX_Y = 6;
 
+/**
+ * 角色「可见部分」的宽高比缓存。
+ *
+ * 整页容器（`.duty-screen__portrait`）靠 `aspect-ratio: var(--duty-portrait-aspect)` 正好包住角色，
+ * 而这个比例只能由本文件 fit() 量出来。若首帧只能用兜底值、等量完再改写，容器高度就会在
+ * **打开瞬间（浮入缓动进行中）跳一次**，并连带触发 canvas 重建 —— 左侧立绘看起来就是闪一下。
+ * 所以量到的比例同时记进模块级与 localStorage，整页首帧直接拿；兜底值取实测比例。
+ */
+const ASPECT_FALLBACK = 0.6504;
+const ASPECT_STORAGE_KEY = "momoka:duty:portrait-aspect";
+
+function readStoredAspect(): number | null {
+  try {
+    const raw = window.localStorage.getItem(ASPECT_STORAGE_KEY);
+    if (!raw) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0.2 && value < 5 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+let cachedAspect: number | null = readStoredAspect();
+
+/** 当前可用的立绘宽高比：量过用实测值，没量过用兜底值。供整页容器首帧使用。 */
+export function dutyPortraitAspect(): number {
+  return cachedAspect ?? ASPECT_FALLBACK;
+}
+
+function rememberAspect(aspect: number): void {
+  if (!Number.isFinite(aspect) || aspect <= 0.2 || aspect >= 5) return;
+  if (cachedAspect !== null && Math.abs(cachedAspect - aspect) < 0.001) return;
+  cachedAspect = aspect;
+  try {
+    window.localStorage.setItem(ASPECT_STORAGE_KEY, String(aspect));
+  } catch {
+    /* localStorage 不可写时只保留内存缓存。 */
+  }
+}
+
 type DutyMood = "idle" | "pat";
 
 interface Reaction {
@@ -107,9 +147,20 @@ function visibleBounds(skeleton: any, yMax?: number): { x: number; y: number; wi
   return Number.isFinite(minX) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
 }
 
-export default function DutyPortrait() {
+export default function DutyPortrait({ paused = false }: { paused?: boolean }) {
   const hostRef = useRef<HTMLSpanElement | null>(null);
+  const appRef = useRef<any>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   const [failed, setFailed] = useState(false);
+
+  /** 整页/设置页占屏时暂停磁贴里的立绘：同一时刻只留一个 Spine 在跑，少一份持续渲染 */
+  useEffect(() => {
+    const app = appRef.current;
+    if (!app?.ticker) return;
+    if (paused) app.ticker.stop();
+    else app.ticker.start();
+  }, [paused]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -160,6 +211,16 @@ export default function DutyPortrait() {
       return self.width >= 2 && self.height >= 2 ? self : box.getBoundingClientRect();
     };
 
+    /**
+     * 取景：按当前骨架的可见上半身铺满容器宽度、下缘对齐。
+     *
+     * 关键在「比例只汇报一次」：Spine 的可见边界会随 idle 动画里头发/衣摆的摆动而变，
+     * 若每次 fit 都把新比例写回容器，就成了
+     * 「写变量 → 容器高度变 → ResizeObserver → resize/fit → 又写变量」的反馈循环：
+     * Chromium 会持续报 ResizeObserver loop，容器高度一直抖，肉眼看到的就是立绘在闪 / 抽动。
+     * 比例是骨架几何属性，取第一次（idle 第 0 帧、UI slot 已隐藏）的值就够准，之后锁住。
+     */
+    let aspectReported = false;
     const fit = () => {
       if (!app || !spine || !stage) return;
       const full = visibleBounds(spine.skeleton);
@@ -171,21 +232,52 @@ export default function DutyPortrait() {
       stage.x = -band.x * scale;
       stage.y = app.screen.height - (band.y + band.height) * scale;
       charHeightPx = band.height * scale;
+
+      if (aspectReported) return;
+      aspectReported = true;
+      // 取 4 位小数：容器变量、模块缓存、localStorage 用同一份值，首帧高度就和量出来的完全一致
+      const aspect = Number((band.width / band.height).toFixed(4));
+      // 磁贴里也得记：只要磁贴的立绘量过一次，整页首帧就能用正确比例（不跳变）。
+      rememberAspect(aspect);
       /*
        * 整页的容器高度是排版决定的（`.duty-screen__portrait`），可能比角色高一大截，
        * 于是立绘贴着底部、头顶上方留白。把角色可见部分的真实比例汇报给容器（CSS 变量），
        * 让它按角色大小收缩；磁贴容器是满格，不使用这个变量。
        */
       if (!tileAnchored) {
-        box.style.setProperty("--duty-portrait-aspect", (band.width / band.height).toFixed(4));
+        box.style.setProperty("--duty-portrait-aspect", aspect.toFixed(4));
       }
     };
 
+    /**
+     * 尺寸同步：**只有真的变了才 resize**。
+     *
+     * 给 canvas 赋 width/height（即使和当前值相同）会清空画布内容，要等下一帧 ticker 才重绘；
+     * 打开瞬间 rAF / 150ms / ResizeObserver 会连着调好几次，于是每调一次就白闪一帧。
+     * 尺寸没变只重算取景；真变了则 resize 后立刻补渲一帧，避免留下空白帧。
+     */
     const resize = () => {
       if (!app || disposed) return;
       const rect = measure();
-      app.renderer.resize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height)));
+      const width = Math.max(1, Math.round(rect.width));
+      const height = Math.max(1, Math.round(rect.height));
+      const screen = app.screen;
+      /*
+       * 容差 2px：容器高度会被 aspect-ratio 反算、滚动条出现与否之类的亚像素布局带着抖 1~2px，
+       * 而给 canvas 赋 width/height 会清空画布、要等下一帧才重绘 —— 为 1px 抖动重建一次不划算。
+       * canvas 的显示尺寸本来就由 CSS（100%）拉伸，renderer 差 1~2px 看不出来。
+       */
+      if (screen && Math.abs(screen.width - width) < 2 && Math.abs(screen.height - height) < 2) {
+        fit();
+        return;
+      }
+      app.renderer.resize(width, height);
       fit();
+      try {
+        app.renderer.render(app.stage);
+      } catch {
+        /* 首次 resize 时 stage 可能还没挂上，交给 ticker。 */
+      }
     };
 
     let lastOverrideTime = performance.now();
@@ -306,7 +398,12 @@ export default function DutyPortrait() {
         view.style.display = "block";
         view.style.width = "100%";
         view.style.height = "100%";
+        // 先藏起来：Spine 解析完、取景算好之前不露空白画布，就绪后淡入（避免“先空后实”的突变）。
+        // 过渡属性在挂载时就写死：reveal 同帧改 transition + opacity 不会触发过渡。
+        view.style.opacity = "0";
+        view.style.transition = "opacity 200ms ease";
         host.appendChild(view);
+        appRef.current = app;
 
         app.loader.add("momoka", SPINE_URL);
         app.loader.load((_loader: unknown, resources: Record<string, any>) => {
@@ -349,7 +446,17 @@ export default function DutyPortrait() {
           hideUiSlots(spine.skeleton);
           spine.skeleton.updateWorldTransform();
           fit();
-          window.requestAnimationFrame(resize);
+          if (pausedRef.current) app.ticker.stop();
+          const reveal = () => {
+            if (disposed) return;
+            view.style.opacity = "1";
+          };
+          window.requestAnimationFrame(() => {
+            resize();
+            reveal();
+          });
+          // rAF 在内嵌 WebView / 后台标签里可能不派发：定时兜底，别让立绘一直藏着
+          window.setTimeout(reveal, 300);
           window.setTimeout(resize, 150);
 
           stateListener = { complete: onStateComplete };
@@ -387,6 +494,7 @@ export default function DutyPortrait() {
       } catch {
         /* Ignore renderer teardown races. */
       }
+      appRef.current = null;
     };
   }, []);
 

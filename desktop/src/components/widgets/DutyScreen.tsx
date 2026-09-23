@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 import { useDispatchLedger, usePendingQuestions } from "../../hooks/useDutyData";
 import { resolveDutyAgentId } from "../../lib/dutyAgent";
@@ -7,7 +8,7 @@ import { useDialogStore } from "../../state/dialogStore";
 import type { Agent, DispatchView } from "../../types";
 import QuestionCard from "../ui/QuestionCard";
 import { DutyChatPanel, useDutyChat } from "./DutyChat";
-import DutyPortrait from "./DutyPortrait";
+import DutyPortrait, { dutyPortraitAspect } from "./DutyPortrait";
 
 /**
  * 值日生页（DutyScreen）—— 与设置页同构的整页视图（z-index 300，左右浮入浮出）。
@@ -169,6 +170,16 @@ export default function DutyScreen() {
   }, [agents]);
   const dutyAgentId = dutyAgent?.id ?? null;
 
+  /**
+   * 立绘容器的高度基准（宽高比）。只在挂载时取一次：
+   * 缓存值会随立绘实测微调（0.6504 vs 0.65014 这种量级），若让它跟着重渲染改写，
+   * 容器高度就会在页面停稳后被推着微动 —— 没有必要，首帧值已经足够准。
+   */
+  const portraitStyle = useMemo(
+    () => ({ "--duty-portrait-aspect": String(dutyPortraitAspect()) }) as CSSProperties,
+    [],
+  );
+
   const chat = useDutyChat(open ? dutyAgentId : null);
   const ledger = useDispatchLedger(open ? dutyAgentId : null);
   const questions = usePendingQuestions(open ? dutyAgentId : null);
@@ -294,7 +305,8 @@ export default function DutyScreen() {
 
       <div className="duty-screen__body">
         <aside className="duty-screen__aside">
-          <div className="duty-screen__portrait duty-girl__portrait">
+          {/* 高度用缓存/实测比例首帧就位：等立绘量完再改会让 aside 在浮入缓动中跳一次 */}
+          <div className="duty-screen__portrait duty-girl__portrait" style={portraitStyle}>
             <DutyPortrait />
           </div>
           <section className="duty-screen__todo" aria-label="待老师拍板">

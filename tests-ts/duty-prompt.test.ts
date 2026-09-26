@@ -3,10 +3,9 @@ import assert from "node:assert/strict";
 
 import { buildTurnModeBlock, resolveTurnMode } from "../src/turn-mode.ts";
 import { buildDispatchSnapshot } from "../src/dispatch-snapshot.ts";
-import { foldLedgerTraces, isLedgerTraceMessage } from "../src/context.ts";
 import type { DispatchRecord } from "../src/dispatch-ledger.ts";
 
-/** 值日生提示词工程：轮次模式块 / 台账快照 / 留痕折叠 */
+/** 值日生提示词工程：轮次模式块 / 台账快照 */
 
 function record(over: Partial<DispatchRecord> = {}): DispatchRecord {
   return {
@@ -105,49 +104,6 @@ describe("dispatch snapshot", () => {
     assert.match(text, /派发 09-21 17:08/);
     // 已结单：一行结论 + 原话主题（不复述整段）
     assert.match(text, /dsp_done_9 .*deliver .*老师原话：研究一下别人给我的资产/);
-  });
-});
-
-describe("ledger trace folding", () => {
-  it("识别留痕消息", () => {
-    assert.equal(isLedgerTraceMessage({ role: "system", content: "【判读留痕】dsp_x：…" }), true);
-    assert.equal(isLedgerTraceMessage({ role: "system", content: "【自动派发】老师已确认…" }), true);
-    assert.equal(isLedgerTraceMessage({ role: "user", content: "【判读留痕】x" }), false);
-    assert.equal(isLedgerTraceMessage({ role: "system", content: "普通系统消息" }), false);
-  });
-
-  it("少量留痕原样返回，不折腾历史形状", () => {
-    const messages = [
-      { role: "user", content: "帮我写短文" },
-      { role: "system", content: "【判读留痕】dsp_a：判定可交付" },
-    ];
-    assert.equal(foldLedgerTraces(messages), messages);
-  });
-
-  it("多条留痕折叠成按 dsp 归并的一块，最近两条保留原文", () => {
-    const messages = [
-      { role: "user", content: "任务一" },
-      { role: "system", content: "【自动派发】老师已确认复用，实际派发给 A（台账 dsp_a）。" },
-      { role: "assistant", content: "已交给「A」处理。" },
-      { role: "system", content: "【判读留痕】dsp_a：判定可交付，已上报老师。备注：可交付" },
-      { role: "user", content: "再做一件" },
-      { role: "system", content: "【判读留痕】dsp_b：判定继续返工（1/3），已向执行者下发指令。" },
-      { role: "system", content: "【判读留痕】dsp_c：判定可交付，已上报老师。" },
-    ];
-    const folded = foldLedgerTraces(messages);
-    const text = folded.map((m) => m.content).join("\n");
-    // 折叠块存在，且旧的 dsp_a 两条被归并成一行
-    assert.match(text, /【台账留痕·历史已折叠 2 条】/);
-    assert.match(text, /- dsp_a（2 条）：/);
-    // 最近两条（dsp_b/dsp_c）保留原文，未进折叠块
-    assert.ok(!text.includes("- dsp_b"), "最近留痕不该被折叠成摘要行");
-    // 折叠块插在第一条被折叠留痕的位置（即 user「任务一」之后）
-    const firstUser = folded.findIndex((m) => m.content === "任务一");
-    const foldBlock = folded.findIndex((m) => m.content.startsWith("【台账留痕"));
-    assert.equal(foldBlock, firstUser + 1);
-    // 对话内容一条不丢
-    assert.ok(text.includes("再做一件"));
-    assert.ok(text.includes("已交给「A」处理。"));
   });
 });
 

@@ -68,20 +68,6 @@ const CRITERIA_ROUTES: Array<{ checkId: string; pattern: RegExp }> = [
   { checkId: "citationsPresent", pattern: /(引用|来源|出处|标注|链接)/u },
 ];
 
-const FUZZY_ARTIFACT_PATTERN = /([A-Za-z]:[\\/][^\s，。；;"']+|[\w./-]+\.(?:md|txt|json|csv|xlsx|docx|pdf|png|js|ts|py|html))/giu;
-
-/** 从验收标准文本里猜出可能的产物路径（只在 artifacts 为空时兜底） */
-export function guessArtifactPaths(criteria: string[]): string[] {
-  const found = new Set<string>();
-  for (const line of criteria) {
-    for (const match of line.matchAll(FUZZY_ARTIFACT_PATTERN)) {
-      const value = match[0]?.trim();
-      if (value && value.length <= 260) found.add(value);
-    }
-  }
-  return [...found];
-}
-
 /** 解析测试输出：出现 not ok / fail N(>0) / N failed 即判失败 */
 export function parseTestOutcome(output: string): { ran: boolean; ok: boolean; detail: string } {
   const text = output.trim();
@@ -167,7 +153,9 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerificationRe
   const criteria = input.acceptanceCriteria.map((line) => String(line).trim()).filter(Boolean);
 
   // 1) 产物存在
-  const artifacts = input.artifacts.length > 0 ? input.artifacts : guessArtifactPaths(criteria);
+  const artifacts = input.artifacts;
+  const requiresArtifactEvidence = criteria.some((line) => CRITERIA_ROUTES
+    .some((route) => route.checkId === "artifactsExist" && route.pattern.test(line)));
   if (artifacts.length > 0) {
     const missing: string[] = [];
     const empty: string[] = [];
@@ -185,6 +173,13 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerificationRe
         : [missing.length > 0 ? `缺失：${missing.join("、")}` : "", empty.length > 0 ? `空文件：${empty.join("、")}` : ""].filter(Boolean).join("；"),
       sourceRefs: artifacts,
     });
+  } else if (requiresArtifactEvidence) {
+    checks.push({
+      id: "artifactsExist",
+      label: "产物存在且非空",
+      ok: false,
+      detail: "验收标准要求检查产物，但计划没有声明产物路径；必须补充明确路径后才能核验。",
+    });
   }
 
   // 2) 测试结果
@@ -201,7 +196,9 @@ export async function verifyStep(input: VerifyStepInput): Promise<VerificationRe
 
   // 4) 引用齐备
   if (input.requireCitations) {
-    checks.push(await checkCitations(artifacts.length > 0 ? artifacts : [], input.io));
+    checks.push(artifacts.length > 0
+      ? await checkCitations(artifacts, input.io)
+      : { id: "citationsPresent", label: "引用齐备", ok: false, detail: "要求引用核验，但未声明任何产物路径。" });
   }
 
   // 5) 危险遗留状态

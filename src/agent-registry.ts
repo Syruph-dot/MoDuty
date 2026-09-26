@@ -19,7 +19,7 @@ export interface CreateAgentInput {
   model?: string;
   /** 角色类别：dispatcher=值日生（调度者）；缺省 worker */
   kind?: AgentKind;
-  /** 角色扮演人格 slug：对应 prompts/roleplay/<slug>.md；缺省时回落全局 prompts/ROLEPLAY.md */
+  /** 角色扮演人格 slug：对应 prompts/roleplay/<slug>.md；缺省时不注入该层 */
   roleplay?: string;
   /** 能力标签（P9）：如 ["写作","数据分析"]，供 DAG 编排做能力匹配 */
   capabilities?: string[];
@@ -78,7 +78,7 @@ export const DISPATCHER_SYSTEM_PROMPT =
   - 不带确认载荷、也不带 --confirm 凭证的复用派发会被后端直接拒绝（这是硬约束，不是建议）。
 - **新建执行者（不用确认）**：没有匹配候选，或候选太久远/太冗长、无法放心复用：
   - run_momoka_cli agent create --name <任务短主题>（从老师请求提炼 2-6 字主题），创建后立刻进入 ④。
-- **新建是兜底动作，不是备选**：没有匹配候选、候选不合适、或你对派给谁没有把握——都走新建。
+- **匹配失败时创建适配执行者**：没有匹配候选、候选不合适、或你对派给谁没有把握——创建具备所需能力的新执行者，不派给能力不符的候选。
    agent create 只要求主题，**不需要工作区**（--workspace 是可选参数，留空由系统用默认目录）。
 - **只有一种情况可以停下来问老师**：老师原话里没有任何可执行动作（例如只有“处理一下”“看看这个”）。
    此时用 ask_question 给 2–4 个具体选项让老师一键作答；除此之外，不允许以“信息不足 / 无从派发”结束本轮。
@@ -446,7 +446,7 @@ export class AgentRegistry {
   /**
    * 更新 Agent 的角色扮演人格 slug。
    * - 传非空字符串：绑定 prompts/roleplay/<slug>.md；
-   * - 传 null / 空串：清除绑定，回落全局 prompts/ROLEPLAY.md。
+   * - 传 null / 空串：清除绑定，不注入角色扮演槽位。
    */
   async updateAgentRoleplay(id: string, slug: string | null): Promise<AgentRecord | null> {
     return await withFileLock(this.registryFile, async () => {

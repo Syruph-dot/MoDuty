@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { dailyApi } from "../../lib/api";
+import { dailyApi, DailyApiError } from "../../lib/api";
 
 /**
  * DailyWidget —— 日报 Widget（Phase 1 完整版）
@@ -116,8 +116,11 @@ export default function DailyWidget() {
       } else {
         setDailyEntries([]);
       }
-    } catch {
+    } catch (loadError) {
       setDailyEntries([]);
+      if (!(loadError instanceof DailyApiError && loadError.status === 404)) {
+        setError(loadError instanceof Error ? loadError.message : "加载日报失败");
+      }
     }
     setView("timeline");
   };

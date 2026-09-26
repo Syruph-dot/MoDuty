@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteJson } from "./write-queue.js";
+import { buildTurns, type StoredMessage } from "./serialization.js";
 
 const META_FILE = path.join(process.cwd(), "memory", ".daily-gen-meta.json");
 
@@ -15,15 +16,20 @@ export interface ChangedSessionsResult {
     name: string;
     goal: string;
     createdAt: string;
+    lastMessageAt: string;
+    changedTurnRanges: Array<[number, number]>;
+    snippet: string;
+    snippetTruncated: boolean;
   }>;
   changedSessions: Array<{
     id: string;
     name: string;
     goal: string;
     lastMessageAt: string;
-    /** 基于 messageCount 差分推算的新增 turn 区间（1-based 闭区间） */
+    /** 按实际对话 Turn 索引推算的变更区间（1-based 闭区间） */
     changedTurnRanges: Array<[number, number]>;
     snippet: string;             // 最近新增内容片段（用于 LLM 定位）
+    snippetTruncated: boolean;
   }>;
 }
 
@@ -32,8 +38,11 @@ export async function readDailyGenMeta(): Promise<DailyGenMeta> {
   try {
     const content = await readFile(META_FILE, "utf8");
     return JSON.parse(content) as DailyGenMeta;
-  } catch {
-    return { lastGenAt: null, updatedAt: new Date().toISOString() };
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { lastGenAt: null, updatedAt: new Date().toISOString() };
+    }
+    throw error;
   }
 }
 
@@ -78,7 +87,7 @@ export async function getChangedSessionsSince(
     messageCount: number;
     lastMessageAt: string;
     folderPath: string;
-  }>>; getMessages: (id: string, limit: number | null) => Promise<Array<{ role: string; content: string; timestamp: string }>>; },
+  }>>; getStoredMessages: (id: string) => Promise<StoredMessage[]>; },
 ): Promise<ChangedSessionsResult> {
   const sinceTime = new Date(since).getTime();
   const sessions = await sessionManager.listSessions();
@@ -89,42 +98,39 @@ export async function getChangedSessionsSince(
   for (const session of sessions) {
     const createdTime = new Date(session.createdAt).getTime();
     const lastMsgTime = new Date(session.lastMessageAt).getTime();
+    const isNewSession = createdTime > sinceTime;
+    const isChangedSession = lastMsgTime > sinceTime;
+    if (!isNewSession && !isChangedSession) continue;
 
-    if (createdTime > sinceTime) {
+    const messages = await sessionManager.getStoredMessages(session.id);
+    const visibleMessages = messages.filter((message) => !message.contextOnly);
+    const changedMessages = visibleMessages.filter((message) => new Date(message.timestamp).getTime() > sinceTime);
+    const turns = buildTurns(visibleMessages);
+    const changedTurnIndices = turns
+      .filter((turn) => [turn.userMessage.timestamp, turn.agentMessage?.timestamp]
+        .some((timestamp) => timestamp && new Date(timestamp).getTime() > sinceTime))
+      .map((turn) => turn.index);
+    const changedTurnRanges = turnIndicesToRanges(changedTurnIndices);
+    const rawSnippet = changedMessages
+      .map((message) => `[${message.timestamp}] ${message.role}: ${message.content}`)
+      .join("\n---\n");
+    const rawSnippetCharacters = Array.from(rawSnippet);
+    const snippet = rawSnippetCharacters.slice(0, 500).join("");
+    const snippetTruncated = rawSnippetCharacters.length > 500;
+
+    if (isNewSession) {
       // 新建会话
       newSessions.push({
         id: session.id,
         name: session.name,
         goal: session.goal,
         createdAt: session.createdAt,
+        lastMessageAt: session.lastMessageAt,
+        changedTurnRanges,
+        snippet,
+        snippetTruncated,
       });
-    } else if (lastMsgTime > sinceTime) {
-      // 变更会话：需要推算新增 turn 区间
-      // 策略：读取完整消息列表，找出 timestamp > since 的连续区间
-      const messages = await sessionManager.getMessages(session.id, null);
-      const changedTurnRanges: Array<[number, number]> = [];
-      let rangeStart = -1;
-
-      messages.forEach((msg, idx) => {
-        const msgTime = new Date(msg.timestamp).getTime();
-        if (msgTime > sinceTime) {
-          if (rangeStart === -1) rangeStart = idx + 1; // 1-based
-        } else if (rangeStart !== -1) {
-          changedTurnRanges.push([rangeStart, idx]);
-          rangeStart = -1;
-        }
-      });
-      if (rangeStart !== -1) {
-        changedTurnRanges.push([rangeStart, messages.length]);
-      }
-
-      // 取最近新增内容作为 snippet（最多 500 字符）
-      const newMessages = messages.filter((m) => new Date(m.timestamp).getTime() > sinceTime);
-      const snippet = newMessages
-        .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
-        .join("\n---\n")
-        .slice(0, 500);
-
+    } else if (isChangedSession) {
       changedSessions.push({
         id: session.id,
         name: session.name,
@@ -132,9 +138,21 @@ export async function getChangedSessionsSince(
         lastMessageAt: session.lastMessageAt,
         changedTurnRanges,
         snippet,
+        snippetTruncated,
       });
     }
   }
 
   return { newSessions, changedSessions };
+}
+
+function turnIndicesToRanges(indices: number[]): Array<[number, number]> {
+  const sorted = [...new Set(indices)].sort((left, right) => left - right);
+  const ranges: Array<[number, number]> = [];
+  for (const index of sorted) {
+    const previous = ranges[ranges.length - 1];
+    if (previous && index === previous[1] + 1) previous[1] = index;
+    else ranges.push([index, index]);
+  }
+  return ranges;
 }

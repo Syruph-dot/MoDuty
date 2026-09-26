@@ -68,8 +68,8 @@ export class ExperienceMemoryService {
     try {
       await access(file);
       return "exists";
-    } catch {
-      // Keep the source event eligible until a safe narrative is ready to write.
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
     }
 
     const prompt = formatExperienceInput({ ...event, evidence });
@@ -91,7 +91,8 @@ export class ExperienceMemoryService {
       outputTokenLimit,
     });
     const narrative = result.output.trim();
-    if (!narrative || narrative === "NO_EXPERIENCE") return "skipped";
+    if (!narrative) throw new Error("工作经验模型返回空正文；未写入记忆文档。");
+    if (narrative === "NO_EXPERIENCE") return "skipped";
     if (containsSensitiveTraceContent(narrative)) throw new Error("生成内容包含疑似秘密；未写入工作经验文档。");
     if (!/^#\s+\S/mu.test(narrative)) throw new Error("生成内容不是可读 Markdown 叙事；未写入工作经验文档。");
 
@@ -107,7 +108,8 @@ export class ExperienceMemoryService {
       try {
         await access(file);
         return "exists";
-      } catch {
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
         await atomicWrite(file, document);
         return "created";
       }
@@ -121,8 +123,9 @@ export class ExperienceMemoryService {
         .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
         .map((entry) => entry.name)
         .sort((left, right) => right.localeCompare(left));
-    } catch {
-      return [];
+    } catch (error) {
+      if (isNotFound(error)) return [];
+      throw error;
     }
     const needle = query.trim().toLocaleLowerCase();
     const items: ExperienceListItem[] = [];
@@ -130,11 +133,17 @@ export class ExperienceMemoryService {
       const id = name.slice(0, -3);
       if (!/^[A-Za-z0-9_-]{1,120}$/u.test(id)) continue;
       const file = this.fileFor(id);
-      const content = await readFile(file, "utf8").catch(() => "");
-      if (!content || (needle && !content.toLocaleLowerCase().includes(needle))) continue;
+      let content: string;
+      try {
+        content = await readFile(file, "utf8");
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        throw error;
+      }
+      if (needle && !content.toLocaleLowerCase().includes(needle)) continue;
       const title = content.match(/^#\s+(.+)$/mu)?.[1]?.trim() ?? name;
       const preview = content.split(/\r?\n/u).find((line) => line.trim() && !line.startsWith("#"))?.trim() ?? "";
-      const updatedAt = await stat(file).then((result) => result.mtime.toISOString()).catch(() => "");
+      const updatedAt = (await stat(file)).mtime.toISOString();
       items.push({ id, title, preview, updatedAt });
     }
     return items;
@@ -151,8 +160,9 @@ export class ExperienceMemoryService {
         updatedAt: fileStat.mtime.toISOString(),
         content,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
     }
   }
 
@@ -164,8 +174,9 @@ export class ExperienceMemoryService {
         await access(file);
         await atomicWrite(file, content.endsWith("\n") ? content : `${content}\n`);
       });
-    } catch {
-      return null;
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
     }
     return await this.get(id);
   }
@@ -198,4 +209,8 @@ function formatExperienceInput(event: ExperienceEvent): string {
     "Use only this event's incremental evidence; do not infer or request the rest of the session transcript.",
     evidence,
   ].join("\n\n");
+}
+
+function isNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }

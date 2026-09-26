@@ -18,6 +18,7 @@ export interface StoredToolCall {
 }
 
 export interface StoredMessageLike {
+  id?: string;
   role: string;
   content: string;
   timestamp: string;
@@ -120,58 +121,37 @@ export function deduplicateAndMergeMessages(
   options: DedupOptions = {},
 ): StoredMessageLike[] {
   const { mergeStreaming = true, filterEmptyAgent = true } = options;
-
-  const seen = new Map<string, StoredMessageLike>();
-  for (const msg of messages) {
-    if (msg.id) {
-      seen.set(msg.id, msg);
-    }
-  }
-  let deduped = Array.from(seen.values());
-
-  // Merge streaming intermediate states
   const byId = new Map<string, StoredMessageLike[]>();
-  for (const msg of deduped) {
-    if (!msg.id) continue;
-    const arr = byId.get(msg.id) ?? [];
-    arr.push(msg);
-    byId.set(msg.id, arr);
-  }
-
-  const merged = new Map<string, StoredMessageLike>();
-  for (const [id, arr] of byId) {
-    if (arr.length === 1) {
-      merged.set(id, arr[0]);
+  const withoutId: StoredMessageLike[] = [];
+  for (const msg of messages) {
+    if (!msg.id) {
+      withoutId.push(msg);
       continue;
     }
-    const final = arr.find((m) => m.status && m.status !== "streaming");
-    const streaming = arr.find((m) => m.status === "streaming");
-    if (final) {
-      const mergedMsg = { ...final };
-      if (streaming) {
-        if (streaming.content && (!final.content || final.content.length < streaming.content.length)) {
-          mergedMsg.content = streaming.content;
-        }
-        if (streaming.toolCalls && streaming.toolCalls.length > (final.toolCalls?.length ?? 0)) {
-          mergedMsg.toolCalls = streaming.toolCalls;
-        }
-      } else if (streaming) {
-        merged.set(id, streaming);
-      } else {
-        merged.set(id, arr[arr.length - 1]);
-      }
-    }
-    // Simplified: take last non-streaming or last
-    const finalMsg = arr.filter((m) => m.status && m.status !== "streaming").pop() ?? arr[arr.length - 1];
-    merged.set(id, finalMsg);
+    const group = byId.get(msg.id) ?? [];
+    group.push(msg);
+    byId.set(msg.id, group);
   }
+  const deduped = [
+    ...withoutId,
+    ...Array.from(byId.values(), (group) => {
+      const final = [...group].reverse().find((message) => message.status && message.status !== "streaming");
+      if (!mergeStreaming || !final) return final ?? group[group.length - 1]!;
+      const streaming = [...group].reverse().find((message) => message.status === "streaming");
+      if (!streaming) return final;
 
-  deduped = Array.from(merged.values());
+      const merged = { ...final };
+      if (streaming.content.length > merged.content.length) merged.content = streaming.content;
+      if ((streaming.toolCalls?.length ?? 0) > (merged.toolCalls?.length ?? 0)) merged.toolCalls = streaming.toolCalls;
+      if ((streaming.segments?.length ?? 0) > (merged.segments?.length ?? 0)) merged.segments = streaming.segments;
+      if ((streaming.timeline?.length ?? 0) > (merged.timeline?.length ?? 0)) merged.timeline = streaming.timeline;
+      return merged;
+    }),
+  ];
 
-  // Filter empty agent messages
-  deduped = deduped.filter((m) => !(m.role === "agent" && !m.content && !m.toolCalls?.length));
-
-  return deduped;
+  return filterEmptyAgent
+    ? deduped.filter((message) => !(message.role === "agent" && !message.content && !message.toolCalls?.length))
+    : deduped;
 }
 
 export function restoreSessionHistory(

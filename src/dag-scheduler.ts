@@ -13,7 +13,7 @@
  * 4. 产物冲突：两个步声明了同一个 artifact（含目录前缀关系）时**串行化**——后者不进本轮调度；
  * 5. 依赖失败传播：前置 failed/skipped → 后继 skipped（带原因），不会被误派；
  * 6. 返工上限用尽 → 升级（escalated），由上层交给人/值日生，不静默丢弃；
- * 7. 能力匹配：步声明 `capability`，在候选执行者里挑具备该能力的；都没有则回落（返回 undefined）。
+ * 7. 能力匹配：步声明 `capability` 时只选择声明该能力的空闲执行者；没有匹配项就标记不可调度。
  */
 
 export type DagStepStatus = "pending" | "ready" | "running" | "done" | "failed" | "skipped" | "blocked";
@@ -38,7 +38,7 @@ export interface DagPlan {
 export interface ExecutorCandidate {
   id: string;
   name?: string;
-  /** 缺省视为「无声明能力」——只在没有更强候选时才可能被选中 */
+  /** 缺省视为「无声明能力」；不能满足显式 capability 要求 */
   capabilities?: string[];
   /** 该执行者当前是否已有在跑的任务（有则不再并发给它，避免同一 Agent 自我竞争） */
   busy?: boolean;
@@ -101,8 +101,8 @@ export function conflictingArtifacts(candidate: DagStep, running: DagStep[]): st
 }
 
 /**
- * 能力匹配选执行者：优先「声明了该能力且不忙」的候选；都没有则回落不忙的任意候选（reason 会写明回落原因）。
- * 步没有声明 capability 时，直接选第一个不忙的候选。
+ * 只选择满足显式 owner/capability 约束的空闲执行者；不把约束失败降级到其它候选。
+ * 步没有声明 owner 或 capability 时，选择第一个不忙的候选。
  */
 export function pickExecutor(
   step: DagStep,
@@ -110,15 +110,16 @@ export function pickExecutor(
 ): { agentId: string; reason: string } | undefined {
   const idle = candidates.filter((candidate) => !candidate.busy);
   if (idle.length === 0) return undefined;
-  // 已绑定的 owner 优先（计划里指定过谁做）
+  // 显式 owner 是硬约束；不可用时留给上层呈现不可调度状态。
   if (step.ownerAgentId) {
     const owner = idle.find((candidate) => candidate.id === step.ownerAgentId);
     if (owner) return { agentId: owner.id, reason: "沿用计划里指定的 owner" };
+    return undefined;
   }
   if (step.capability) {
     const matched = idle.find((candidate) => (candidate.capabilities ?? []).includes(String(step.capability)));
     if (matched) return { agentId: matched.id, reason: `能力匹配 ${step.capability}` };
-    return { agentId: idle[0]!.id, reason: `没有声明「${step.capability}」的执行者，回落到空闲执行者` };
+    return undefined;
   }
   return { agentId: idle[0]!.id, reason: "无能力要求，取空闲执行者" };
 }
@@ -179,7 +180,12 @@ export function schedulePlan(
 
     const executor = pickExecutor(step, candidates);
     if (!executor) {
-      unschedulable.push({ stepId: step.id, reason: "没有空闲执行者" });
+      const reason = step.ownerAgentId
+        ? `指定执行者 ${step.ownerAgentId} 不可用`
+        : step.capability
+          ? `没有空闲执行者声明所需能力「${step.capability}」`
+          : "没有空闲执行者";
+      unschedulable.push({ stepId: step.id, reason });
       continue;
     }
 

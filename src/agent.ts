@@ -9,7 +9,6 @@ import { extractFromJudgment } from "./memory-extract.js";
 import { formatRecallLines, recallDigest } from "./memory-retrieval.js";
 import { appendDeadLetter, classifyRunFailure, withRetry } from "./run-checkpoint.js";
 import {
-  QUIET_TURN_FALLBACK,
   buildEmptyContinuationNote,
   buildQuietTurnNudge,
 } from "./empty-response.js";
@@ -47,8 +46,7 @@ interface MomokaAgentOptions {
   projectRoot?: string;
   modelClient: ModelClient;
   /**
-   * 标题预生成专用模型（设置页“低消费/廉价档” low tier）。
-   * 未配置或调用失败时回落到 modelClient，不阻断首轮对话。
+   * 标题专用模型（设置页“低消费/廉价档” low tier）；缺失或调用失败时首轮显式报错。
    */
   titleModelClient?: ModelClient;
   agentRegistry?: AgentRegistry;
@@ -61,8 +59,8 @@ const makeId = (prefix: string) => `${prefix}_${crypto.randomUUID().replace(/-/g
  * 角色扮演槽位：说明段 + 标记，由 buildSystemPrompt 统一追加在 system **最末**。
  *
  * - 人格文本不再需要自带标记（旧写法若残留会被剥离），worker 与值日生一视同仁；
- * - 内容来源按 Agent 分身的 prompts/roleplay/<slug>.md 优先，回落到全局 prompts/ROLEPLAY.md；
- * - 两处都没有内容时，整块（含说明段与标记）不追加，system 逐字节回落到未接线行为；
+ * - 配置 roleplay slug 时只读取对应的 prompts/roleplay/<slug>.md，缺失或为空时报错；
+ * - 未配置 slug 时不注入角色扮演区块；
  * - 放在 system 最末，是为了让改人格只失效这一层，前面的职责层与平台规则层仍可命中前缀缓存。
  */
 const ROLEPLAY_SLOT_START = "<!-- roleplay:start -->";
@@ -191,9 +189,7 @@ export class MomokaAgentCore implements MomokaAgent {
       customRole = DISPATCHER_SYSTEM_PROMPT;
     }
     let personaText = input.agentPersona?.trim();
-    if (!personaText) {
-      try { personaText = (await loadSettings()).agentPersona?.trim() ?? ""; } catch { /* settings 读取失败回落默认 */ }
-    }
+    if (!personaText) personaText = (await loadSettings()).agentPersona?.trim() ?? "";
     // 人格层：自定义 role（≠默认占位）优先；否则 Settings 默认人格；再否则内置默认
     const persona = (customRole && customRole !== DEFAULT_SYSTEM_PROMPT)
       ? customRole
@@ -201,8 +197,8 @@ export class MomokaAgentCore implements MomokaAgent {
     // 兼容旧写法：人格文本里残留的槽位标记一律剥离（槽位改由运行时统一追加在最末）
     const personaClean = persona.replace(ROLEPLAY_SLOT_START, "").replace(ROLEPLAY_SLOT_END, "");
     // 平台规则层（恒定附加）
-    let rules = "";
-    try { rules = await readFile(path.join(this.projectRoot, "prompts", "SYSTEM_RULES.md"), "utf8"); } catch { /* fallback */ }
+    const rules = await readFile(path.join(this.projectRoot, "prompts", "SYSTEM_RULES.md"), "utf8");
+    if (!rules.trim()) throw new Error("Required prompt is empty: prompts/SYSTEM_RULES.md");
     let prompt = personaClean;
     if (rules.trim()) prompt += `\n\n${rules.trim()}`;
     // 角色扮演槽位（system 最末）：只影响称呼与语气。
@@ -222,24 +218,17 @@ export class MomokaAgentCore implements MomokaAgent {
   }
 
   /**
-   * 读取角色扮演文本：prompts/roleplay/<slug>.md（按 Agent 分身）优先，
-   * 回落到全局 prompts/ROLEPLAY.md；都没有则返回空串。
-   * slug 先归一化小写，再走白名单校验（小写字母/数字/连字符），顺带挡掉路径穿越。
+   * 读取明确配置的 prompts/roleplay/<slug>.md。未配置角色扮演时不注入该层；
+   * 已配置的提示词不存在或为空时显式失败，不改用另一份提示词。
    */
   private async loadRoleplayText(roleplaySlug?: string | null): Promise<string> {
     const slug = (roleplaySlug ?? "").trim().toLowerCase();
-    const candidates: string[] = [];
-    if (/^[a-z0-9][a-z0-9-]*$/u.test(slug)) {
-      candidates.push(path.join(this.projectRoot, "prompts", "roleplay", `${slug}.md`));
-    }
-    candidates.push(path.join(this.projectRoot, "prompts", "ROLEPLAY.md"));
-    for (const file of candidates) {
-      try {
-        const text = (await readFile(file, "utf8")).trim();
-        if (text) return text;
-      } catch { /* 该候选不存在或不可读：试下一个 */ }
-    }
-    return "";
+    if (!slug) return "";
+    if (!/^[a-z0-9][a-z0-9-]*$/u.test(slug)) throw new Error(`Invalid roleplay prompt slug: ${slug}`);
+    const file = path.join(this.projectRoot, "prompts", "roleplay", `${slug}.md`);
+    const text = (await readFile(file, "utf8")).trim();
+    if (!text) throw new Error(`Configured roleplay prompt is empty: ${file}`);
+    return text;
   }
 
   /**
@@ -726,18 +715,16 @@ ${ref.message.content}`;
         }).catch(() => undefined);
         continuationNote = buildQuietTurnNudge(quietRounds, MAX_QUIET_TURN_ROUNDS);
       }
+      if (turnMode === "chat" && !result.output.trim()) {
+        throw new MomokaHttpError(502, "工具调用后仍返回空响应，未生成最终答复。");
+      }
     } catch (error) {
       // 收尾标记：主动停止→stopped，其他异常→error（原异常继续抛给路由层）
       if (sessionId && streamingMessage) {
         const isAbort = error instanceof Error && error.name === "AbortError";
-        // 空响应时补一句可读说明：否则会话里只留一条空消息，调度者/用户都看不出发生了什么
-        const isEmptyResponse = error instanceof MomokaHttpError && error.message.includes("空响应");
         await this.sessionManager
           .finishStreamingMessage(sessionId, streamingMessage.id, {
             status: isAbort ? "stopped" : "error",
-            ...(isEmptyResponse
-            ? { content: `（本轮无任何输出：上游连续 ${retryAttempts + 1} 次只回空流，已停止重试。消息保留，可直接重发或换个模型）` }
-            : {}),
           })
           .catch(() => undefined);
       }
@@ -766,14 +753,6 @@ ${ref.message.content}`;
         segments.push(segmentBuf);
         segmentBuf = "";
         segmentHasText = false;
-      }
-      // 聊天轮整轮没写出正文（只跑了工具/空回）：把兜底文案当一次 token 事件发出去——
-      // 只写会话内容的话，手机/CLI 这类流式消费者看不到（它们收的是 SSE 的 token 事件）。
-      if (turnMode === "chat" && !result.output.trim()) {
-        onEvent({ type: "token", text: QUIET_TURN_FALLBACK });
-        segmentBuf += QUIET_TURN_FALLBACK;
-        segmentHasText = true;
-        result = { ...result, output: QUIET_TURN_FALLBACK };
       }
       await this.sessionManager.finishStreamingMessage(sessionId, streamingMessage.id, {
         outputId,
@@ -920,7 +899,7 @@ ${ref.message.content}`;
     const actualModel = result.model ?? agent.model;
     const settings = await loadSettings();
     const defaultEntry = settings.modelPool.find((entry) => entry.id === settings.tierDefaults.high && entry.enabled);
-    const configuredWindow = defaultEntry?.model.toLowerCase() === actualModel?.toLowerCase()
+    const configuredWindow = defaultEntry && defaultEntry.model.toLowerCase() === actualModel?.toLowerCase()
       ? defaultEntry.contextWindow
       : settings.modelPool.find((entry) => entry.model.toLowerCase() === actualModel?.toLowerCase())?.contextWindow;
     await registry.updateContextStats(agent.id, buildContextStats(result.usage, actualModel, configuredWindow));
@@ -951,8 +930,7 @@ ${ref.message.content}`;
 
   /**
    * 根据首条用户消息自动生成会话标题（2-8 字），供会话名与 autoName Agent 名字复用。
-   * 优先使用设置页“低消费/廉价档”（low tier）模型；未配置或失败时回落主模型；
-   * 再失败则回落到首条消息截取。
+   * 只使用配置的标题模型；配置缺失、调用失败或输出长度不合要求时显式失败。
    */
   private async generateTitle(message: string): Promise<string> {
     const prompt = `请为以下用户消息生成一个 2-8 字的简短标题，只输出标题本身，不要任何解释或标点：
@@ -970,23 +948,15 @@ ${message}`;
       onEvent: undefined,
       signal: undefined,
     };
-    const cheapClient = this.options.titleModelClient;
-    if (cheapClient && cheapClient !== this.options.modelClient) {
-      try {
-        const { output } = await cheapClient.run(prompt, context);
-        const title = output.trim().slice(0, 12);
-        if (title) return title;
-      } catch {
-        // 廉价档未配置 / 调用失败：回落主模型
-      }
+    const titleClient = this.options.titleModelClient;
+    if (!titleClient) throw new Error("标题模型客户端未配置");
+    const { output } = await titleClient.run(prompt, context);
+    const title = output.trim();
+    const characterCount = Array.from(title).length;
+    if (characterCount < 2 || characterCount > 8) {
+      throw new Error(`标题模型输出长度不合要求：收到 ${characterCount} 个字符，要求 2-8 个。`);
     }
-    try {
-      const { output } = await this.options.modelClient.run(prompt, context);
-      const title = output.trim().slice(0, 12);
-      return title || message.slice(0, 8);
-    } catch {
-      return message.slice(0, 8);
-    }
+    return title;
   }
 
   async createSession(goal: string, folderPath: string) {

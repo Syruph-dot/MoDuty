@@ -171,7 +171,8 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
         <button type="button" className={panel === "experiences" ? "is-active" : ""} onClick={() => setPanel("experiences")}>工作经验</button>
       </nav>
 
-      {panel === "memories" ? <div className="memory-screen__filters">
+      {panel === "memories" ? (
+      <div className="memory-screen__filters">
         <label className="memory-screen__filter">
           <span>归属</span>
           <select className="memory-screen__select" value={scope} onChange={(event) => setScope(event.target.value)} aria-label="按归属筛选">

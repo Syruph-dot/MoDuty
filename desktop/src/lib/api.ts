@@ -58,13 +58,6 @@ export function setApiBaseForTests(base: string): void {
   _apiBasePromise = Promise.resolve(base);
 }
 
-/** 已弃用的同步兜底值：仅用于日志/UI 提示；不要用于实际 fetch。 */
-export const apiBaseHint = (() => {
-  if (readEnvBase()) return readEnvBase();
-  if (inTauri()) return "tauri://(await port)";
-  return "(vite dev proxy)";
-})();
-
 async function jsonOrThrow(res: Response, label: string): Promise<unknown> {
   if (!res.ok) {
     throw new Error(`${label} failed: ${res.status} ${res.statusText}`);
@@ -350,7 +343,16 @@ export interface DailyMeta {
 }
 
 export interface ChangedSessionsResult {
-  newSessions: Array<{ id: string; name: string; goal: string; createdAt: string }>;
+  newSessions: Array<{
+    id: string;
+    name: string;
+    goal: string;
+    createdAt: string;
+    lastMessageAt: string;
+    changedTurnRanges: Array<[number, number]>;
+    snippet: string;
+    snippetTruncated: boolean;
+  }>;
   changedSessions: Array<{
     id: string;
     name: string;
@@ -358,7 +360,15 @@ export interface ChangedSessionsResult {
     lastMessageAt: string;
     changedTurnRanges: Array<[number, number]>;
     snippet: string;
+    snippetTruncated: boolean;
   }>;
+}
+
+export class DailyApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "DailyApiError";
+  }
 }
 
 export interface DailyGenerateResult {
@@ -390,7 +400,7 @@ async function dailyRequest<T>(path: string, options: RequestInit = {}): Promise
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Daily API ${res.status}: ${text.slice(0, 200)}`);
+    throw new DailyApiError(res.status, `Daily API ${res.status}: ${text.slice(0, 200)}`);
   }
   return res.json() as Promise<T>;
 }
@@ -419,7 +429,7 @@ export const dailyApi = {
 
   /** 获取指定日期的日报内容 (Markdown 文本) */
   getDaily: (date: string) =>
-    dailyRequest<string>(`/api/daily/entries?date=${encodeURIComponent(date)}`).catch(() => ""),
+    dailyRequest<string>(`/api/daily/entries?date=${encodeURIComponent(date)}`),
 };
 // ===== 远程机器人（手机操控 MoDuty）=====
 

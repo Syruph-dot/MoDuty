@@ -179,6 +179,11 @@ async function generateDailyReport(
       matchedSkills: [],
       requestKind: "chat",
     });
+    const requiredSections = ["# ", "## 凌晨", "## 上午", "## 下午", "## 晚上"];
+    const missingSections = requiredSections.filter((section) => !result.output.includes(section));
+    if (missingSections.length > 0) {
+      throw new Error(`日报模型输出缺少必需章节：${missingSections.join(", ")}；未写入日报文件。`);
+    }
 
     // 保存生成结果到 daily 存储
     await saveDailyReport(genAt, result.output);
@@ -195,54 +200,48 @@ async function loadDailyPromptTemplate(): Promise<string> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const templatePath = path.join(process.cwd(), "prompts", "daily-generation.md");
-  try {
-    return await fs.readFile(templatePath, "utf8");
-  } catch {
-    // 内置默认模板
-    return `# 日报生成指令
-
-你是专业的日报生成助手。根据提供的会话变更数据，生成结构化的日报。
-
-## 输入数据
-- since: {since}（上次日报生成开始时间）
-- newSessions: 新建的会话列表
-- changedSessions: 发生变更的会话列表，含变更 turn 区间与内容片段
-
-## 输出格式（Markdown）
-### {date} 日报
-
-#### 上午 (08:00-12:00)
-- **会话名称** (&ses_xxx): 一句话摘要。变更位置：turns X-Y
-
-#### 下午 (14:00-18:00)
-...
-
-#### 晚上 (20:00-24:00)
-...
-
-## 要求
-1. 按时段分组（凌晨/上午/下午/晚上），按会话最后消息时间归属
-2. 每条必须包含会话链接 &ses_xxx
-3. 变更会话必须标注变更 turn 区间
-4. 语言简洁专业，避免冗余`;
-  }
+  const template = await fs.readFile(templatePath, "utf8");
+  if (!template.trim()) throw new Error(`日报提示词为空：${templatePath}`);
+  return template;
 }
 
 function buildDailyPrompt(template: string, since: string, changed: Awaited<ReturnType<typeof getChangedSessionsSince>>): string {
   const date = new Date().toLocaleDateString("zh-CN");
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const requiredPlaceholders = ["{since}", "{date}", "{timezone}", "{newSessions}", "{changedSessions}"];
+  const missingPlaceholders = requiredPlaceholders.filter((placeholder) => !template.includes(placeholder));
+  if (missingPlaceholders.length > 0) {
+    throw new Error(`日报提示词缺少必需占位符：${missingPlaceholders.join(", ")}`);
+  }
   const newSessionsText = changed.newSessions.length > 0
-    ? changed.newSessions.map((s) => `- **${s.name}** (&ses_${s.id}): ${s.goal}`).join("\n")
+    ? changed.newSessions.map((s) => {
+        const ranges = s.changedTurnRanges.map(([from, to]) => `turns ${from}-${to}`).join(", ") || "未知";
+        return [
+          `- **${s.name}** (&ses_${s.id})`,
+          `  目标：${s.goal || "未提供"}`,
+          `  创建时间：${s.createdAt}`,
+          `  最后消息时间：${s.lastMessageAt || "未知"}`,
+          `  变更 Turns：${ranges}`,
+          `  新增内容摘录：${s.snippet || "无可用文本摘录"}${s.snippetTruncated ? "（摘录已达长度上限，未展示部分未知）" : ""}`,
+        ].join("\n");
+      }).join("\n")
     : "无";
   const changedSessionsText = changed.changedSessions.length > 0
     ? changed.changedSessions.map((s) => {
-        const ranges = s.changedTurnRanges.map(([from, to]) => `turns ${from}-${to}`).join(", ");
-        return `- **${s.name}** (&ses_${s.id}): ${s.snippet.split("\n")[0]}。变更位置：${ranges}`;
+        const ranges = s.changedTurnRanges.map(([from, to]) => `turns ${from}-${to}`).join(", ") || "未知";
+        return [
+          `- **${s.name}** (&ses_${s.id})`,
+          `  最后消息时间：${s.lastMessageAt || "未知"}`,
+          `  变更 Turns：${ranges}`,
+          `  新增内容摘录：${s.snippet || "无可用文本摘录"}${s.snippetTruncated ? "（摘录已达长度上限，未展示部分未知）" : ""}`,
+        ].join("\n");
       }).join("\n")
     : "无";
 
   return template
     .replace(/{since}/g, since)
     .replace(/{date}/g, date)
+    .replace(/{timezone}/g, timeZone)
     .replace(/{newSessions}/g, newSessionsText)
     .replace(/{changedSessions}/g, changedSessionsText);
 }

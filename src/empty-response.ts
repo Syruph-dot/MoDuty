@@ -44,12 +44,6 @@ export function buildQuietTurnNudge(round: number, maxRounds: number): string {
 }
 
 /**
- * 续跑都用完了还是没开口时的兼容性说明（写进会话，不让老师面对空白）
- */
-export const QUIET_TURN_FALLBACK =
-  "（本轮没有生成回复：上游只返回了工具调用/空流。可以再说一遍，或换个模型重试。）";
-
-/**
  * 真的什么都没有时的续跑提示。
  *
  * 延续同一个 transcript 往下做，而不是重发一遍任务——Proma 在 pi-agent-adapter 里

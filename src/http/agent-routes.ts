@@ -63,7 +63,7 @@ export async function handleAgentRoutes(
     const name = String(body.name ?? "").trim();
     const role = String(body.system ?? body.role ?? "").trim();
     const workspaceDir = String(body.workspace_dir ?? "").trim();
-    // 角色扮演人格 slug（可选）：对应 prompts/roleplay/<slug>.md，缺省则回落全局 prompts/ROLEPLAY.md
+    // 角色扮演人格 slug（可选）：设置后必须有对应 prompts/roleplay/<slug>.md 文件，否则首轮明确报错
     const roleplay = String(body.roleplay ?? "").trim();
     const kind = body.kind === "dispatcher" || body.kind === "worker" ? (body.kind as "dispatcher" | "worker") : undefined;
     // 值日生唯一化：dispatcher（或重名"值日生"）已存在时复用现有记录，不创建第二个
@@ -210,12 +210,7 @@ export async function handleAgentRoutes(
           "system",
           `【自动派发失败】${reason.slice(0, 200)}。请按老师的选择手动完成派发。`,
         );
-        // 失败回落：恢复旧续跑路径，让值日生自行处理
-        void driveQuestionAnswered(deps, record).catch((err: unknown) => {
-          console.error("[question] 自动派发失败回落续跑异常:", err);
-        });
-        json(response, 200, { success: true, question: set, autoDispatched: false });
-        return true;
+        throw new MomokaHttpError(502, `自动派发失败；答案已记录，请显式处理后重试：${reason}`);
       }
     }
 

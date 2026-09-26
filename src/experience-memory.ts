@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { estimateTokens } from "./context.js";
@@ -168,16 +168,6 @@ export class ExperienceMemoryService {
       return null;
     }
     return await this.get(id);
-  }
-
-  async delete(id: string): Promise<boolean> {
-    const file = this.fileFor(id);
-    try {
-      await withFileLock(file, () => unlink(file));
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   private fileFor(id: string): string {

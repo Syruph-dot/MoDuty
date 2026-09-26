@@ -63,6 +63,14 @@ export class ExperienceMemoryService {
   async capture(event: ExperienceEvent): Promise<"created" | "exists" | "skipped"> {
     const evidence = event.evidence.filter((item) => item.content.trim());
     if (evidence.length === 0 || evidence.some((item) => containsSensitiveTraceContent(item.content))) return "skipped";
+    const id = makeExperienceId(event);
+    const file = this.fileFor(id);
+    try {
+      await access(file);
+      return "exists";
+    } catch {
+      // Keep the source event eligible until a safe narrative is ready to write.
+    }
 
     const prompt = formatExperienceInput({ ...event, evidence });
     if (containsSensitiveTraceContent(prompt)) return "skipped";
@@ -87,7 +95,6 @@ export class ExperienceMemoryService {
     if (containsSensitiveTraceContent(narrative)) throw new Error("生成内容包含疑似秘密；未写入工作经验文档。");
     if (!/^#\s+\S/mu.test(narrative)) throw new Error("生成内容不是可读 Markdown 叙事；未写入工作经验文档。");
 
-    const id = makeExperienceId(event);
     const references = [...new Set([
       ...event.references,
       `事件 ${event.kind}: ${event.id}`,
@@ -95,7 +102,6 @@ export class ExperienceMemoryService {
       ...evidence.flatMap((item) => item.id ? [`${item.label} &${item.id}`] : []),
     ])];
     const document = `${narrative}\n\n## 来源\n${references.length ? references.map((reference) => `- ${reference}`).join("\n") : "- 来源 ID 未提供"}\n`;
-    const file = this.fileFor(id);
     await mkdir(this.directory, { recursive: true });
     return await withFileLock(file, async () => {
       try {

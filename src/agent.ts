@@ -759,6 +759,7 @@ ${ref.message.content}`;
     await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
     let completedAgentMessageId: string | undefined;
+    let completedAt: string | undefined;
     if (sessionId && streamingMessage) {
       // 归档最后一段文本（若存在）
       if (segmentHasText) {
@@ -781,8 +782,11 @@ ${ref.message.content}`;
         timeline,
       });
       completedAgentMessageId = streamingMessage.id;
+      completedAt = streamingMessage.timestamp;
     } else if (sessionId) {
-      completedAgentMessageId = (await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [], ...(result.model ? { model: result.model } : {}) })).id;
+      const completedMessage = await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [], ...(result.model ? { model: result.model } : {}) });
+      completedAgentMessageId = completedMessage.id;
+      completedAt = completedMessage.timestamp;
     }
     const completedToolCalls = result.toolCalls ?? [];
     if (sessionId && !request.transient && completedToolCalls.length > 0) {
@@ -795,6 +799,7 @@ ${ref.message.content}`;
         topic,
         sessionId,
         references: [`output_id: ${outputId}`, ...dispatchRefs.map((id) => `dispatch_id: ${id}`), ...runtimeRefs.map((id) => `runtime_reference: ${id}`)],
+        ...(completedAt ? { occurredAt: completedAt } : {}),
         evidence: [
           { label: "本轮用户目标", ...(userMessageId ? { id: userMessageId } : {}), content: message },
           ...(eventRuntimeContext.trim() ? [{ label: "本轮任务背景与召回的操作知识", content: eventRuntimeContext }] : []),

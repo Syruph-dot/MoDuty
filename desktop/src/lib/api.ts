@@ -184,6 +184,7 @@ export interface ModelPoolEntryView {
   baseUrl: string;
   apiKey?: string;
   model: string;
+  contextWindow?: number;
   enabled: boolean;
 }
 
@@ -362,8 +363,20 @@ export interface ChangedSessionsResult {
 
 export interface DailyGenerateResult {
   runId: string;
-  status: string;
+  status: "generating";
   message: string;
+  generatedAt: string;
+  reportDate: string;
+  since: string;
+}
+
+export interface DailyRunStatus {
+  runId: string;
+  status: "generating" | "completed" | "failed";
+  generatedAt: string;
+  reportDate: string;
+  since: string;
+  error?: string;
 }
 
 async function dailyRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -399,6 +412,10 @@ export const dailyApi = {
       method: "POST",
       body: JSON.stringify({ since, modelTier }),
     }),
+
+  /** 查询日报后台生成任务状态 */
+  getRunStatus: (runId: string) =>
+    dailyRequest<DailyRunStatus>(`/api/daily/runs/${encodeURIComponent(runId)}`),
 
   /** 获取指定日期的日报内容 (Markdown 文本) */
   getDaily: (date: string) =>

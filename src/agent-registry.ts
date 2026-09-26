@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { SessionManager } from "./session-manager.js";
 import { modelContextWindow } from "./context-stats.js";
+import { loadSettings } from "./settings-store.js";
 import { DispatchLedger, type DispatchRecord } from "./dispatch-ledger.js";
 import { QuestionStore, type QuestionAnswer, type QuestionDispatchAction, type QuestionItem, type QuestionSet } from "./question-store.js";
 import { atomicWriteJson, withFileLock } from "./write-queue.js";
@@ -289,6 +290,9 @@ export class AgentRegistry {
     await mkdir(workspaceDir, { recursive: true });
     const session = await this.sessions.createSession(name, workspaceDir);
     const now = new Date().toISOString();
+    const configuredWindow = input.model
+      ? (await loadSettings()).modelPool.find((entry) => entry.model.toLowerCase() === input.model?.trim().toLowerCase())?.contextWindow
+      : undefined;
     const record: AgentRecord = {
       id,
       name,
@@ -303,7 +307,7 @@ export class AgentRegistry {
       state: "idle",
       contextStats: {
         promptTokens: 0,
-        contextWindow: modelContextWindow(input.model),
+        contextWindow: modelContextWindow(input.model, configuredWindow),
         cachedTokens: null,
         updatedAt: now,
       },

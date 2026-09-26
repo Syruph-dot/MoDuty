@@ -104,6 +104,8 @@ export interface ModelRunContext {
   onEvent?: (event: StreamEvent) => void;
   /** 外部取消信号（客户端断开/超时） */
   signal?: AbortSignal;
+  /** 单次调用输出 token 上限；缺省使用 MOMOKA_MAX_TOKENS/全局默认值。 */
+  outputTokenLimit?: number;
   /** 会话检索工具所需的会话管理器（引用资源句柄 &ses_ / &tile_） */
   sessionManager?: SessionManager;
   /** tile→session 解析所需的 Agent 注册表（&tile_<agentId> 别名） */

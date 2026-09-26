@@ -72,6 +72,36 @@ export async function handleMemoryRoutes(
     return true;
   }
 
+  if (url.pathname === "/api/memory/experiences" && request.method === "GET") {
+    const experiences = await ctx.agent.experienceMemory.list(url.searchParams.get("q") ?? "");
+    json(response, 200, { total: experiences.length, experiences });
+    return true;
+  }
+
+  const experienceMatch = url.pathname.match(/^\/api\/memory\/experiences\/([A-Za-z0-9_-]+)$/u);
+  if (experienceMatch) {
+    const id = decodeURIComponent(experienceMatch[1] ?? "");
+    if (request.method === "GET") {
+      const experience = await ctx.agent.experienceMemory.get(id);
+      if (!experience) throw new MomokaHttpError(404, "Unknown work experience");
+      json(response, 200, { experience });
+      return true;
+    }
+    if (request.method === "PUT") {
+      const body = await readJsonBody(request);
+      if (typeof body.content !== "string") throw new MomokaHttpError(400, "content must be Markdown text");
+      const experience = await ctx.agent.experienceMemory.update(id, body.content);
+      if (!experience) throw new MomokaHttpError(404, "Unknown work experience");
+      json(response, 200, { experience });
+      return true;
+    }
+    if (request.method === "DELETE") {
+      if (!await ctx.agent.experienceMemory.delete(id)) throw new MomokaHttpError(404, "Unknown work experience");
+      json(response, 200, { success: true });
+      return true;
+    }
+  }
+
   const sourcesMatch = url.pathname.match(/^\/api\/memory\/([^/]+)\/sources$/u);
   if (sourcesMatch && request.method === "GET") {
     const found = await store.findEntryById(decodeURIComponent(sourcesMatch[1] ?? ""));

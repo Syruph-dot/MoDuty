@@ -29,6 +29,8 @@ export interface ModelPoolEntry {
   apiKey?: string;
   /** 该条目使用的模型名 */
   model: string;
+  /** 上下文窗口（tokens）；未设置时按模型名自动推断 */
+  contextWindow?: number;
   /** 是否启用（停用条目不可被 high/low/exact 解析使用） */
   enabled: boolean;
 }
@@ -88,6 +90,9 @@ function normalizeEntry(raw: unknown): ModelPoolEntry | null {
     baseUrl,
     apiKey: typeof obj.apiKey === "string" ? obj.apiKey : undefined,
     model,
+    ...(typeof obj.contextWindow === "number" && Number.isSafeInteger(obj.contextWindow) && obj.contextWindow > 0
+      ? { contextWindow: obj.contextWindow }
+      : {}),
     enabled: obj.enabled !== false,
   };
 }

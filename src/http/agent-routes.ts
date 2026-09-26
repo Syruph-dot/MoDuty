@@ -12,6 +12,7 @@ import { ensureAgents, requireAgent, type RouteContext } from "./route-context.j
 import { driveAgentTurn, driveQuestionAnswered, handleDispatchBridge, orchestrationOf } from "./agent-orchestration.js";
 import { abortChatStreamByAgent, registerChatStream, unregisterChatStream } from "./chat-streams.js";
 import { agentToSnake, chatToSnake } from "./serialization.js";
+import { CompactHandoffError } from "../compact-handoff.js";
 
 /**
  * Agent 轨道路由（MOMOKA Agent Desktop）：注册表 CRUD、消息读取、
@@ -93,6 +94,27 @@ export async function handleAgentRoutes(
     const runtime = ensureAgents(ctx);
     const record = await requireAgent(runtime.registry, decodeURIComponent(agentMessagesMatch[1] ?? ""));
     json(response, 200, { messages: await agent.sessionManager.getMessages(record.sessionId) });
+    return true;
+  }
+
+  const compactMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/compact$/u);
+  if (compactMatch && (request.method === "GET" || request.method === "POST")) {
+    const runtime = ensureAgents(ctx);
+    const record = await requireAgent(runtime.registry, decodeURIComponent(compactMatch[1] ?? ""));
+    if (request.method === "GET") {
+      json(response, 200, { checkpoint: await agent.getCompactHandoff(record.sessionId) });
+      return true;
+    }
+    if (record.state === "running") {
+      throw new MomokaHttpError(409, "Agent 正在执行；请等当前完整 Turn 结束后再 Compact。");
+    }
+    try {
+      const result = await agent.compactSession(record.sessionId);
+      json(response, 200, result);
+    } catch (error) {
+      if (error instanceof CompactHandoffError) throw new MomokaHttpError(409, error.message);
+      throw error;
+    }
     return true;
   }
 

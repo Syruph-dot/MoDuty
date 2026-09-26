@@ -34,6 +34,17 @@ export interface MemoryListFilters {
   q?: string;
 }
 
+export interface WorkExperienceView {
+  id: string;
+  title: string;
+  preview: string;
+  updatedAt: string;
+}
+
+export interface WorkExperienceDocument extends WorkExperienceView {
+  content: string;
+}
+
 export async function listMemories(filters: MemoryListFilters = {}): Promise<MemoryView[]> {
   const base = await awaitApiBase();
   const params = new URLSearchParams();
@@ -75,4 +86,41 @@ export async function deleteMemory(id: string): Promise<void> {
   const base = await awaitApiBase();
   const response = await fetch(`${base}/api/memory/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!response.ok) throw new Error(`删除记忆失败：HTTP ${response.status}`);
+}
+
+export async function listWorkExperiences(query = ""): Promise<WorkExperienceView[]> {
+  const base = await awaitApiBase();
+  const params = new URLSearchParams();
+  if (query.trim()) params.set("q", query.trim());
+  const queryString = params.toString();
+  const response = await fetch(`${base}/api/memory/experiences${queryString ? `?${queryString}` : ""}`);
+  if (!response.ok) throw new Error(`加载工作经验失败：HTTP ${response.status}`);
+  const body = (await response.json()) as { experiences?: WorkExperienceView[] };
+  return body.experiences ?? [];
+}
+
+export async function getWorkExperience(id: string): Promise<WorkExperienceDocument> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/memory/experiences/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(`读取工作经验失败：HTTP ${response.status}`);
+  const body = (await response.json()) as { experience: WorkExperienceDocument };
+  return body.experience;
+}
+
+export async function updateWorkExperience(id: string, content: string): Promise<WorkExperienceDocument> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/memory/experiences/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok) throw new Error(`保存工作经验失败：HTTP ${response.status}`);
+  const body = (await response.json()) as { experience: WorkExperienceDocument };
+  return body.experience;
+}
+
+export async function deleteWorkExperience(id: string): Promise<void> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/memory/experiences/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`删除工作经验失败：HTTP ${response.status}`);
 }

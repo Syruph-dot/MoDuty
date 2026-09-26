@@ -1,8 +1,28 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readDailyGenMeta, markDailyGenStart, getChangedSessionsSince } from "../daily-meta.js";
+import { readDailyGenMeta, markDailyGenStart, markDailyGenComplete, restoreDailyGenStart, getChangedSessionsSince } from "../daily-meta.js";
 import type { RouteContext } from "./route-context.js";
 import { json, readJsonBody, corsHeaders } from "./http-utils.js";
 import { createOpenAICompatibleModelClient } from "../model-client.js";
+
+interface DailyRunStatus {
+  runId: string;
+  status: "generating" | "completed" | "failed";
+  generatedAt: string;
+  reportDate: string;
+  since: string;
+  error?: string;
+}
+
+const dailyRuns = new Map<string, DailyRunStatus>();
+
+function storeDailyRun(run: DailyRunStatus): void {
+  dailyRuns.set(run.runId, run);
+  while (dailyRuns.size > 100) {
+    const oldest = dailyRuns.keys().next().value as string | undefined;
+    if (!oldest) break;
+    dailyRuns.delete(oldest);
+  }
+}
 
 /**
  * 日报相关路由：
@@ -52,6 +72,17 @@ export async function handleDailyRoutes(
     return true;
   }
 
+  const dailyRunMatch = url.pathname.match(/^\/api\/daily\/runs\/([A-Za-z0-9_-]+)$/u);
+  if (dailyRunMatch && request.method === "GET") {
+    const run = dailyRuns.get(dailyRunMatch[1] ?? "");
+    if (!run) {
+      json(response, 404, { error: "日报生成任务不存在或已过期" });
+      return true;
+    }
+    json(response, 200, run);
+    return true;
+  }
+
   // GET /api/daily/entries?date=YYYY-MM-DD
   if (url.pathname === "/api/daily/entries" && request.method === "GET") {
     const date = url.searchParams.get("date");
@@ -81,22 +112,39 @@ export async function handleDailyRoutes(
     const body = await readJsonBody(request);
     const { since, modelTier } = body as { since?: string; modelTier?: "high" | "low" | "exact" };
 
-    if (!since) {
-      json(response, 400, { error: "缺少 since 参数" });
+    if (!since || !Number.isFinite(new Date(since).getTime())) {
+      json(response, 400, { error: "since 必须是有效的 ISO 时间戳" });
       return true;
     }
-
-    // 标记新一轮生成开始
-    const newGenAt = await markDailyGenStart();
 
     // 获取变更会话
     const changed = await getChangedSessionsSince(since, sessionManager);
 
+    // 记录本轮触发时间；后续日报仍按显式 since 快照生成。
+    const newGenAt = await markDailyGenStart();
+
     // 启动异步生成
     const runId = `daily_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    void generateDailyReport(runId, since, newGenAt, changed, modelTier ?? "low");
+    const run: DailyRunStatus = {
+      runId,
+      status: "generating",
+      generatedAt: newGenAt,
+      reportDate: newGenAt.slice(0, 10),
+      since,
+    };
+    storeDailyRun(run);
+    void generateDailyReport(runId, since, newGenAt, changed, modelTier ?? "low").then(() => {
+      storeDailyRun({ ...run, status: "completed" });
+    }).catch(async (error: unknown) => {
+      await restoreDailyGenStart(newGenAt, since).catch(() => undefined);
+      storeDailyRun({
+        ...run,
+        status: "failed",
+        error: error instanceof Error ? error.message : "日报生成失败",
+      });
+    });
 
-    json(response, 202, { runId, status: "generating", message: "日报生成已启动，请轮询状态" });
+    json(response, 202, { ...run, message: "日报生成已启动，可查询任务状态" });
     return true;
   }
 
@@ -134,10 +182,12 @@ async function generateDailyReport(
 
     // 保存生成结果到 daily 存储
     await saveDailyReport(genAt, result.output);
+    await markDailyGenComplete();
 
     console.log(`[DailyGen] ${runId} completed`);
   } catch (error) {
     console.error(`[DailyGen] ${runId} failed:`, error);
+    throw error;
   }
 }
 

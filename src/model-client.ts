@@ -323,6 +323,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           stream,
           enableTools,
           toolSpecs: context.tools,
+          outputTokenLimit: context.outputTokenLimit,
           onDelta: (text) => context.onEvent?.({ type: "token", text }),
           onReasoning: (text) => context.onEvent?.({ type: "reasoning", text }),
         });
@@ -441,9 +442,12 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
 }
 
 /** 单次模型调用的输出预算（含 thinking）。默认 16384，可用 MOMOKA_MAX_TOKENS 覆盖 */
-function maxOutputTokens(): number {
+function maxOutputTokens(override?: number): number {
   const raw = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
-  return Number.isFinite(raw) && raw >= 256 ? Math.floor(raw) : 16_384;
+  const configured = Number.isFinite(raw) && raw >= 256 ? Math.floor(raw) : 16_384;
+  return typeof override === "number" && Number.isFinite(override) && override >= 256
+    ? Math.min(configured, Math.floor(override))
+    : configured;
 }
 
 async function callModelRound(options: {
@@ -455,19 +459,20 @@ async function callModelRound(options: {
   signal?: AbortSignal;
   stream: boolean;
   enableTools: boolean;
+  outputTokenLimit?: number;
   /** 本轮允许模型调用的工具表（context.tools；缺省用全量 TOOL_SPECS） */
   toolSpecs?: readonly unknown[];
   onDelta: (text: string) => void;
   onReasoning: (text: string) => void;
 }): Promise<ModelRoundResult> {
-  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, enableTools, toolSpecs, onDelta, onReasoning } = options;
+  const { fetchImpl, baseUrl, apiKey, model, messages, signal, stream, enableTools, toolSpecs, outputTokenLimit, onDelta, onReasoning } = options;
   const payload: Record<string, unknown> = {
     model,
     messages,
     // 必须显式给输出预算：thinking 计入 completion_tokens，默认预算很容易被长思考吃光，
     // 于是 finish_reason=length、正文为空——2026-09-22 实测：模型思考 1 万字符、正文 0 字，
     // 表现成「工具轮之后不说话 / 机器人只回『（期间调用了 N 个工具）』」。
-    max_tokens: maxOutputTokens(),
+    max_tokens: maxOutputTokens(outputTokenLimit),
   };
   if (enableTools) {
     payload.tools = toolSpecs ?? TOOL_SPECS;

@@ -55,6 +55,13 @@ export async function markDailyGenComplete(): Promise<void> {
   await writeDailyGenMeta({ ...meta, updatedAt: new Date().toISOString() });
 }
 
+/** Restore the previous checkpoint when a generation fails before producing a report. */
+export async function restoreDailyGenStart(expectedStart: string, previousStart: string): Promise<void> {
+  const meta = await readDailyGenMeta();
+  if (meta.lastGenAt !== expectedStart) return;
+  await writeDailyGenMeta({ lastGenAt: previousStart, updatedAt: new Date().toISOString() });
+}
+
 /**
  * 获取自指定时间以来的新建/变更会话
  * @param since ISO 时间戳（上次日报生成开始时间）

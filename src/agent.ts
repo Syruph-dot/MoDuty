@@ -16,22 +16,31 @@ import {
 import { buildTaskInputBlock } from "./dispatch-fidelity.js";
 import { PlanStore } from "./plan-store.js";
 import { SessionManager, type SessionMessage } from "./session-manager.js";
+import {
+  buildCompactHandoff,
+  CompactHandoffError,
+  formatMessagesForHandoff,
+  type BuildCompactHandoffResult,
+  type CompactHandoffCheckpoint,
+  COMPACT_HANDOFF_SYSTEM_PROMPT,
+} from "./compact-handoff.js";
 import { MomokaHttpError } from "./http-error.js";
 import type { AgentRegistry } from "./agent-registry.js";
 import { describeSelfBlock } from "./agent-identity.js";
 import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
-import { executeApprovedToolCall, toolSpecsForKind } from "./tools.js";
-import { buildBoundedHistoryMessages, foldLedgerTraces } from "./context.js";
-import { buildContextStats } from "./context-stats.js";
+import { executeApprovedToolCall, TOOL_SPECS, toolSpecsForKind } from "./tools.js";
+import { estimateTokens, formatMessages } from "./context.js";
+import { buildContextStats, modelContextWindow } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { buildTurnModeBlock, resolveTurnMode } from "./turn-mode.js";
 import { buildDispatchSnapshot } from "./dispatch-snapshot.js";
-import { appendTraceEvent, createRunTrace } from "./trace.js";
+import { appendTraceEvent, containsSensitiveTraceContent, createRunTrace } from "./trace.js";
 import { saveRunSnapshot } from "./snapshot.js";
 import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as persistSandboxFlag } from "./settings.js";
 import { loadSettings } from "./settings-store.js";
+import { ExperienceMemoryService, type ExperienceEvent } from "./experience-memory.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunContext, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
 interface MomokaAgentOptions {
@@ -115,6 +124,7 @@ const DEFAULT_AGENT_PERSONA = `# 文件助手
 export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
   readonly memoryStore: MemoryStore;
+  readonly experienceMemory: ExperienceMemoryService;
   /** 计划存储：把「要做什么」持久化（P1） */
   readonly plans: PlanStore;
   readonly sessionManager: SessionManager;
@@ -126,6 +136,7 @@ export class MomokaAgentCore implements MomokaAgent {
     initSettings(this.projectRoot);
     const paths = defaultPaths(this.projectRoot);
     this.memoryStore = new MemoryStore(paths.dataDir, { index: new IndexStore(paths.dataDir) });
+    this.experienceMemory = new ExperienceMemoryService(paths.dataDir, options.modelClient);
     this.plans = new PlanStore(paths.dataDir);
     this.sessionManager = new SessionManager(paths.dataDir);
     this.workspaces = options.workspaceManager ?? new WorkspaceManager();
@@ -383,11 +394,106 @@ ${ref.message.content}`;
     return await withSessionLock(request.sessionId ?? null, () => this.runChat(request));
   }
 
+  /** Compact older complete turns into a sidecar handoff; never mutate messages.json. */
+  async compactSession(sessionId: string): Promise<BuildCompactHandoffResult> {
+    return await withSessionLock(sessionId, async () => {
+      const session = await this.sessionManager.getSession(sessionId);
+      if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
+      const messages = await this.sessionManager.getStoredMessages(sessionId);
+      const previous = await this.sessionManager.getCompactHandoff(sessionId);
+      const { model, contextWindow } = await this.configuredContextWindow();
+      const dynamicContext = await this.buildTurnContext({
+        workDir: session.folderPath,
+        topic: session.goal || session.name,
+        sessionId,
+      });
+      const agentRecord = this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
+      const activePlans = await this.plans.listPlans({ status: "active", limit: 100 });
+      const relevantPlans = agentRecord
+        ? activePlans.filter((plan) => plan.dispatcherId === agentRecord.id || plan.steps.some((step) => step.ownerAgentId === agentRecord.id)).slice(0, 3)
+        : [];
+      const planContext = relevantPlans.map((plan) => [
+        `计划 ${plan.id}：${plan.goal}（${plan.status}）`,
+        ...plan.steps.map((step) => `- ${step.id} ${step.status}：${step.title}${step.acceptanceCriteria.length ? `；验收：${step.acceptanceCriteria.join(" / ")}` : ""}`),
+      ].join("\n")).join("\n\n");
+      const runtimeContext = [dynamicContext, planContext ? `## Active Plan State\n${planContext}` : ""].filter(Boolean).join("\n\n");
+
+      const result = await buildCompactHandoff({
+        sessionId,
+        messages,
+        previous,
+        contextWindow,
+        model,
+        runtimeContext,
+        idFactory: () => makeId("cmp"),
+        summarize: async (input, outputTokenLimit) => {
+          let response: ModelRunResult;
+          try {
+            response = await this.options.modelClient.run(input, {
+              systemPrompt: COMPACT_HANDOFF_SYSTEM_PROMPT,
+              topic: "Compact Handoff",
+              workDir: session.folderPath,
+              matchedSkills: [],
+              requestKind: "continuation",
+              tools: [],
+              outputTokenLimit,
+            });
+          } catch {
+            throw new CompactHandoffError("Compact model call failed; the transcript and previous checkpoint were left unchanged.");
+          }
+          if (containsSensitiveTraceContent(response.output)) {
+            throw new CompactHandoffError("The generated handoff contains secret-like content; no checkpoint was saved.");
+          }
+          return response.output;
+        },
+      });
+      await this.sessionManager.saveCompactHandoff(result.checkpoint);
+      return result;
+    });
+  }
+
+  async getCompactHandoff(sessionId: string): Promise<CompactHandoffCheckpoint | null> {
+    const session = await this.sessionManager.getSession(sessionId);
+    if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
+    return await this.sessionManager.getCompactHandoff(sessionId);
+  }
+
+  private async configuredContextWindow(): Promise<{ model: string; contextWindow: number }> {
+    const settings = await loadSettings();
+    const entry = settings.modelPool.find((item) => item.id === settings.tierDefaults.high && item.enabled);
+    const model = entry?.model || process.env.MOMOKA_MODEL || "unknown";
+    return { model, contextWindow: modelContextWindow(model, entry?.contextWindow) };
+  }
+
+  private assertPromptFits(input: {
+    systemPrompt: string;
+    historyMessages: Array<{ role: string; content: string }>;
+    input: string;
+    tools?: readonly unknown[];
+    contextWindow: number;
+    outputTokenLimit: number;
+  }): void {
+    const toolSpecs = input.tools ?? TOOL_SPECS;
+    const estimate = estimateTokens(input.systemPrompt)
+      + estimateTokens(formatMessages(input.historyMessages))
+      + estimateTokens(input.input)
+      + estimateTokens(JSON.stringify(toolSpecs));
+    const safetyReserve = Math.ceil(input.contextWindow * 0.08);
+    const inputLimit = input.contextWindow - input.outputTokenLimit - safetyReserve;
+    if (estimate > inputLimit) {
+      throw new MomokaHttpError(
+        413,
+        `完整的 Compact Handoff、Turns、当前 User Input、系统提示和工具规格估算为 ${estimate} tokens，超出本模型可用输入预算 ${Math.max(0, inputLimit)}。历史未被裁剪；请先点击会话卡片上的 Compact 按钮。`,
+      );
+    }
+  }
+
   private async runChat(request: ChatRequest): Promise<ChatResponse> {
     const message = request.message.trim();
     const runId = makeId("run");
     const outputId = request.outputId?.trim() || makeId("out");
     const sessionId = request.sessionId ?? null;
+    let userMessageId: string | undefined;
     let workDir = request.workDir;
     // 会话历史：角色分离的消息数组（只追加，保证前缀稳定）；不再压平成一段文本
     let historyMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
@@ -396,7 +502,7 @@ ${ref.message.content}`;
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       workDir = session.folderPath;
       if (!request.transient) {
-        await this.sessionManager.addMessage(sessionId, "user", message);
+        userMessageId = (await this.sessionManager.addMessage(sessionId, "user", message)).id;
         // 自动生成标题：若是首条用户消息（messageCount 从 0 变 1），生成标题并更新会话
         const updatedSession = await this.sessionManager.getSession(sessionId);
         if (updatedSession && updatedSession.messageCount === 1) {
@@ -406,21 +512,26 @@ ${ref.message.content}`;
           await this.applyAutoAgentName(sessionId, title);
         }
       }
-      // transient（系统注入）不落历史：历史取全量；普通消息：历史排除刚写入的这条
-      const stored = await this.sessionManager.getMessages(sessionId, null);
-      // 系统唤醒轮（判读/停转）不注历史：唤醒消息自包含 + 台账快照已给状态，
-      // 历史在这里只有噪声与 token 成本（实测判读轮由此省下 ≤4k tokens）。
+      const stored = await this.sessionManager.getStoredMessages(sessionId);
+      // The latest user message is passed separately as this run's actual input.
+      // Compact only changes the prompt projection; it never edits the transcript.
       const forHistory = request.transient ? stored : stored.slice(0, -1);
-      // 头部固定保留「最早两条」只对任务型会话有意义（那两条通常是原始任务）；
-      // 值日生是长命会话，头部是她诞生时的招呼语，纯噪声且占预算 → 头部清零，预算全给尾部。
-      const headMessages = (await this.isDispatcherSession(sessionId)) ? 0 : 2;
-      historyMessages =
-        resolveTurnMode(request) === "chat"
-          ? (buildBoundedHistoryMessages(foldLedgerTraces(forHistory), { headMessages }).messages as Array<{
-              role: "system" | "user" | "assistant";
-              content: string;
-            }>)
-          : [];
+      if (resolveTurnMode(request) === "chat") {
+        const compact = await this.sessionManager.getCompactHandoff(sessionId);
+        let activeTurns = forHistory;
+        if (compact) {
+          const boundary = forHistory.findIndex((item) => item.id === compact.coveredThroughMessageId);
+          if (boundary < 0) {
+            throw new MomokaHttpError(409, "Compact Handoff 与原始会话边界不匹配；为保护完整历史，本轮未发送。请检查会话恢复状态。");
+          }
+          historyMessages.push({ role: "system", content: `## Compact Handoff\n${compact.handoff}` });
+          activeTurns = forHistory.slice(boundary + 1);
+        }
+        historyMessages.push(...activeTurns.map((item) => ({
+          role: item.role === "user" ? "user" as const : item.role === "system" ? "system" as const : "assistant" as const,
+          content: formatMessagesForHandoff([item]),
+        })));
+      }
     }
     // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
     const expandedMessage = await this.expandMessageRefs(message);
@@ -502,10 +613,12 @@ ${ref.message.content}`;
     };
     let result: ModelRunResult;
     let retryAttempts = 0;
+    let eventRuntimeContext = "";
     // 轮次模式提到 try 外：成功收尾时要判断「这一轮是不是有人在等回复」
     const turnMode = resolveTurnMode(request);
     try {
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath });
+      eventRuntimeContext = turnContext;
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
       // L1 当前请求锚：尾部这一段就是本次唯一权威的要求；历史里出现过的任务文本都只是背景。
@@ -520,6 +633,12 @@ ${ref.message.content}`;
         .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
       const tools = await this.toolsForSession(sessionId);
+      const { contextWindow } = await this.configuredContextWindow();
+      const configuredOutputLimit = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
+      const outputTokenLimit = Math.min(
+        Number.isFinite(configuredOutputLimit) && configuredOutputLimit >= 256 ? Math.floor(configuredOutputLimit) : 16_384,
+        Math.max(256, Math.floor(contextWindow * 0.2)),
+      );
       // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；
       // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
       let quietRounds = 0;
@@ -537,9 +656,11 @@ ${ref.message.content}`;
             async (attempt) => {
             // 空响应续跑：第 2 次起追加续跑提示（同一 transcript 往下做，不重发任务）
             const attemptPrompt = continuationNote ? `${prompt}\n\n${continuationNote}` : prompt;
+            this.assertPromptFits({ systemPrompt, historyMessages, input: attemptPrompt, tools, contextWindow, outputTokenLimit });
             const runResult = await this.options.modelClient.run(attemptPrompt, {
               systemPrompt, topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
               tools,
+              outputTokenLimit,
               historyMessages,
               onEvent, signal: request.signal,
               sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
@@ -637,6 +758,7 @@ ${ref.message.content}`;
     await this.recordRunUsage(result, sessionId);
     await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });
+    let completedAgentMessageId: string | undefined;
     if (sessionId && streamingMessage) {
       // 归档最后一段文本（若存在）
       if (segmentHasText) {
@@ -658,8 +780,31 @@ ${ref.message.content}`;
         segments,
         timeline,
       });
+      completedAgentMessageId = streamingMessage.id;
     } else if (sessionId) {
-      await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [], ...(result.model ? { model: result.model } : {}) });
+      completedAgentMessageId = (await this.sessionManager.addMessage(sessionId, "agent", result.output, { outputId, toolCalls: result.toolCalls ?? [], ...(result.model ? { model: result.model } : {}) })).id;
+    }
+    const completedToolCalls = result.toolCalls ?? [];
+    if (sessionId && !request.transient && completedToolCalls.length > 0) {
+      const isDispatchResult = completedToolCalls.some((call) => call.tool === "run_momoka_cli");
+      const dispatchRefs = completedToolCalls.flatMap((call) => [...`${call.args}\n${call.result}`.matchAll(/dsp_[A-Za-z0-9_-]+/gu)].map((match) => match[0]));
+      const runtimeRefs = [...eventRuntimeContext.matchAll(/\b(?:mem|dsp|ses|msg)_[A-Za-z0-9_-]+\b/gu)].map((match) => match[0]);
+      this.captureExperience({
+        kind: isDispatchResult ? "dispatch_result" : "agent_completed",
+        id: outputId,
+        topic,
+        sessionId,
+        references: [`output_id: ${outputId}`, ...dispatchRefs.map((id) => `dispatch_id: ${id}`), ...runtimeRefs.map((id) => `runtime_reference: ${id}`)],
+        evidence: [
+          { label: "本轮用户目标", ...(userMessageId ? { id: userMessageId } : {}), content: message },
+          ...(eventRuntimeContext.trim() ? [{ label: "本轮任务背景与召回的操作知识", content: eventRuntimeContext }] : []),
+          { label: "Agent 完成结果", ...(completedAgentMessageId ? { id: completedAgentMessageId } : {}), content: result.output },
+          ...completedToolCalls.map((call) => ({
+            label: `工具 ${call.tool} 的参数与结果`,
+            content: JSON.stringify(call),
+          })),
+        ],
+      });
     }
     await saveRunSnapshot({ runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
       await appendTraceEvent(tracePath, "snapshot_failed", { message: error instanceof Error ? error.message : String(error) });
@@ -688,6 +833,24 @@ ${ref.message.content}`;
     } else {
       await this.memoryStore.promoteToLongTerm(judgment, promoteScope);
     }
+    this.captureExperience({
+      kind: "user_feedback",
+      id: `${judgment.outputId}-${judgment.timestamp}`,
+      topic: judgment.topic,
+      sessionId: output.sessionId,
+      references: [`output_id: ${judgment.outputId}`, `feedback_score: ${judgment.score}`],
+      evidence: [
+        {
+          label: "用户评分与明确反馈",
+          content: [`评分：${judgment.score}/7`, judgment.comment ? `反馈：${judgment.comment}` : "反馈文字：无", judgment.quote ? `被评价原文：${judgment.quote}` : ""].filter(Boolean).join("\n"),
+        },
+        {
+          label: "原任务与被评价输出",
+          content: `原任务：${output.prompt}\n\nAgent 输出：${output.response}`,
+        },
+      ],
+      occurredAt: judgment.timestamp,
+    });
     const label = LIKERT_LABELS[request.score] ?? "";
     const reflection = analyzeJudgment({ score: request.score, label, annotatedText: judgment.context, topic: judgment.topic, userComment: judgment.comment });
     const base: JudgeResponse = { runId: makeId("run"), outputId: request.outputId, score: request.score, label, analysis: reflection.summary, reflection, annotatedText: judgment.context, comment: judgment.comment, preferenceUpdate: { updated: false, promoted: [] }, evolutionProposals: [] };
@@ -749,7 +912,20 @@ ${ref.message.content}`;
     if (!registry || !sessionId || !result.usage?.promptTokens) return;
     const agent = (await registry.listAgents()).find((candidate) => candidate.sessionId === sessionId);
     if (!agent) return;
-    await registry.updateContextStats(agent.id, buildContextStats(result.usage, agent.model));
+    const actualModel = result.model ?? agent.model;
+    const settings = await loadSettings();
+    const defaultEntry = settings.modelPool.find((entry) => entry.id === settings.tierDefaults.high && entry.enabled);
+    const configuredWindow = defaultEntry?.model.toLowerCase() === actualModel?.toLowerCase()
+      ? defaultEntry.contextWindow
+      : settings.modelPool.find((entry) => entry.model.toLowerCase() === actualModel?.toLowerCase())?.contextWindow;
+    await registry.updateContextStats(agent.id, buildContextStats(result.usage, actualModel, configuredWindow));
+  }
+  private captureExperience(event: ExperienceEvent): void {
+    void this.experienceMemory.capture(event).then((result) => {
+      if (result === "created") console.log(`[ExperienceMemory] captured ${event.kind} ${event.id}`);
+    }).catch((error: unknown) => {
+      console.warn(`[ExperienceMemory] skipped ${event.kind} ${event.id}:`, error instanceof Error ? error.message : String(error));
+    });
   }
 
   /**

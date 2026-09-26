@@ -33,9 +33,12 @@ function envWindow(): number | null {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
 }
 
-export function modelContextWindow(model: string | undefined): number {
+export function modelContextWindow(model: string | undefined, configuredWindow?: number): number {
   const override = envWindow();
   if (override !== null) return override;
+  if (typeof configuredWindow === "number" && Number.isSafeInteger(configuredWindow) && configuredWindow > 0) {
+    return configuredWindow;
+  }
   const key = (model ?? "").toLowerCase();
   for (const [prefix, windowSize] of Object.entries(WINDOW_BY_MODEL_PREFIX)) {
     if (key.startsWith(prefix)) return windowSize;
@@ -63,10 +66,15 @@ export function normalizeUsage(raw: unknown): ModelUsage | undefined {
 }
 
 /** 组装 Agent 的上下文统计（窗口按模型，cached 未知为 null） */
-export function buildContextStats(usage: ModelUsage, model: string | undefined, now = new Date()): ContextStats {
+export function buildContextStats(
+  usage: ModelUsage,
+  model: string | undefined,
+  configuredWindow?: number,
+  now = new Date(),
+): ContextStats {
   return {
     promptTokens: usage.promptTokens ?? 0,
-    contextWindow: modelContextWindow(model),
+    contextWindow: modelContextWindow(model, configuredWindow),
     cachedTokens: usage.cachedTokens ?? null,
     updatedAt: now.toISOString(),
   };

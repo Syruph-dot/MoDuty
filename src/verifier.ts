@@ -8,7 +8,7 @@
  * - 纯逻辑 + 依赖注入的 IO（`VerifyIo`），因此可以在不碰文件系统的前提下测；
  * - 验收标准与检查器的对应关系是**显式映射**（关键词表），映射不上的标准不会被静默忽略，
  *   而是记入 `unmappedCriteria` 并把结论降级为 `warn`，交给人看；
- * - `applyVerdictPolicy` 是唯一的策略出口：客观检查失败时不允许直接交付，除非返工已到上限。
+ * - `applyVerdictPolicy` 是唯一的策略出口：没有客观验收通过证据时，不允许交付。
  */
 
 export interface VerifyIo {
@@ -253,32 +253,43 @@ export interface VerdictPolicyInput {
 }
 
 export interface VerdictPolicyResult {
-  /** 允许执行的原判定 */
+  /** 只有 deliver 通过客观验收时放行；continue 作为明确的返工请求放行 */
   allow: boolean;
-  /** 被改写后的判定（拦下交付时可能降级为带警告交付） */
-  verdict: "deliver" | "continue" | "delivered_with_warnings";
+  /** 被策略接受的判定；blocked 表示必须由人工处理，不能以低质量结果收尾 */
+  verdict: "deliver" | "continue" | "blocked";
   reason: string;
 }
 
 /**
  * 唯一的策略出口：
  * - 请求 continue：永远放行（返工不需要客观证据）；
- * - 请求 deliver 且无验收报告：放行（没有计划步可验收时不能凭空拦）；
- * - 请求 deliver 且报告 fail：拦下；若返工已达上限，降级为「带警告交付」并说明；
- * - warn/pass：放行。
+ * - 请求 deliver：必须有完整且通过的客观验收报告；
+ * - 无报告、验收失败或验收标准未映射：阻止交付；达到返工上限也不降低门槛。
  */
 export function applyVerdictPolicy(input: VerdictPolicyInput): VerdictPolicyResult {
   if (input.requested === "continue") {
     return { allow: true, verdict: "continue", reason: "返工不需要客观证据" };
   }
   const report = input.report;
-  if (!report) return { allow: true, verdict: "deliver", reason: "该派发没有绑定的计划步，跳过客观验收" };
-  if (report.verdict !== "fail") {
-    return { allow: true, verdict: "deliver", reason: report.verdict === "pass" ? "客观验收通过" : "客观验收无失败项（有需人工判断项）" };
+  if (!report) {
+    return { allow: false, verdict: "blocked", reason: "没有绑定计划步或客观验收报告，不能确认交付质量" };
+  }
+  if (report.verdict === "pass" && report.failures.length === 0 && report.unmappedCriteria.length === 0) {
+    return { allow: true, verdict: "deliver", reason: "客观验收通过" };
+  }
+  if (report.unmappedCriteria.length > 0 || report.verdict === "warn") {
+    return {
+      allow: false,
+      verdict: "blocked",
+      reason: `存在未覆盖的验收标准，需补充可核验标准：${report.unmappedCriteria.join("；") || "验收结论为 warn"}`,
+    };
   }
   const reachedLimit = (input.continueCount ?? 0) >= (input.maxContinue ?? 3);
-  if (reachedLimit) {
-    return { allow: true, verdict: "delivered_with_warnings", reason: "返工已达上限，带客观验收失败项交付（已在留痕中标注）" };
-  }
-  return { allow: false, verdict: "continue", reason: "客观验收未通过，需先补齐或修正验收标准" };
+  return {
+    allow: false,
+    verdict: "blocked",
+    reason: reachedLimit
+      ? `已达到返工上限 ${input.maxContinue ?? 3} 次，但客观验收仍未通过；必须保留未交付状态并由人工处理。`
+      : "客观验收未通过，不能交付；需修复失败项并重新核验。",
+  };
 }

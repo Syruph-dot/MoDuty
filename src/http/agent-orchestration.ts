@@ -722,46 +722,44 @@ async function handleDispatchVerdict(deps: OrchestrationDeps, input: DispatchBri
     if (!policy.allow) {
       if (verification.planId && verification.stepId) {
         await deps.agent.plans.updateStep(verification.planId, verification.stepId, {
-          evidence: { kind: "verification", summary: `验收未通过：${(verification.report?.failures ?? []).join("；").slice(0, 800)}`, sourceRefs: [`dispatch:${entry.id}`] },
-        }).catch(() => null);
+          evidence: {
+            kind: "verification",
+            summary: (verification.report?.evidence ?? policy.reason).slice(0, 1500),
+            sourceRefs: [`dispatch:${entry.id}`],
+          },
+        });
       }
       return [
-        "【已拦截】客观验收未通过，不能直接判交付：",
+        `【已拦截】${policy.reason}`,
         ...(verification.report?.failures ?? ["（验收报告缺失，但策略判定不允许交付）"]).map((line) => `- ${line}`),
+        ...(verification.report?.unmappedCriteria ?? []).map((line) => `- 未映射验收标准：${line}`),
         "",
-        "处理方式：先 continue 让执行者补齐；或修正该计划步的 acceptance_criteria（PATCH /api/plans/:id/steps/:stepId）后再交付。",
+        "派发仍保持未交付。修复产物、补齐可核验的验收标准并重新核验后，才可提交 deliver。返工上限不会降低验收门槛。",
       ].join("\n");
     }
     // 验收证据落回计划步（通过也留痕，便于回溯当时凭什么判交付）
     if (verification.report && verification.planId && verification.stepId) {
       await deps.agent.plans.updateStep(verification.planId, verification.stepId, {
         evidence: { kind: "verification", summary: verification.report.evidence.slice(0, 1500), sourceRefs: [`dispatch:${entry.id}`] },
-      }).catch(() => null);
+      });
     }
 
     await deps.registry.dispatches.markDone(entry.id, "deliver");
     await deps.agent.sessionManager.addMessage(
       entry.dispatcherSessionId,
       "system",
-      `【判读留痕】${entry.id}：判定可交付，已上报老师。${policy.verdict === "delivered_with_warnings" ? `（${policy.reason}）` : ""}${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
+      `【判读留痕】${entry.id}：判定可交付，已上报老师。${input.note ? `备注：${input.note.slice(0, 120)}` : ""}`,
     );
     broadcastDispatchVerdict(deps, { entry, verdict: "deliver", note: input.note });
-    void notifyBotsOfDelivery(
-      deps,
-      entry,
-      input.note,
-      policy.verdict === "delivered_with_warnings" ? policy.reason : undefined,
-    );
+    void notifyBotsOfDelivery(deps, entry, input.note);
     await reflectVerdict(deps, entry, "deliver", input.note);
-    return policy.verdict === "delivered_with_warnings"
-      ? `判定已提交：带警告交付。${policy.reason}；已上报老师。`
-      : "判定已提交：交付。系统已上报老师（桌面通知）。";
+    return "判定已提交：交付。系统已上报老师（桌面通知）。";
   }
 
   if ((entry.continueCount ?? 0) >= DISPATCH_MAX_CONTINUE) {
     return [
       `【已拦截】条目 ${entry.id} 已继续 ${DISPATCH_MAX_CONTINUE} 次，达到返工上限。`,
-      `请改用 run_momoka_cli dispatch verdict ${entryId} deliver [备注] 收尾上报，备注说明已达返工上限与现状。`,
+      "该条目保持未交付状态；不能用 deliver 绕过验收。请修复验收失败项并补齐客观证据，或由人工处理该阻塞。",
     ].join("\n");
   }
   const updated = await deps.registry.dispatches.continueTracking(entry.id);
@@ -800,7 +798,6 @@ async function notifyBotsOfDelivery(
   deps: OrchestrationDeps,
   entry: DispatchRecord,
   note?: string,
-  warning?: string,
 ): Promise<void> {
   try {
     const target = await deps.registry.getAgent(entry.targetAgentId);
@@ -808,13 +805,12 @@ async function notifyBotsOfDelivery(
     const answer = condenseAnswer(await lastExecutorAnswer(deps, entry.targetSessionId));
     const headline = (entry.askExcerpt || entry.task).replace(/\s+/gu, " ").trim();
     const lines = [
-      `${warning ? "⚠️ 已交付（带警告）" : "✅ 已交付"}：${headline.slice(0, 60)}${headline.length > 60 ? "…" : ""}`,
+      `✅ 已交付：${headline.slice(0, 60)}${headline.length > 60 ? "…" : ""}`,
     ];
     if (answer) lines.push("", answer);
     lines.push(
       "",
       `承办：${target ? `${target.name}（${target.id}）` : entry.targetAgentId}`,
-      ...(warning ? [`警告：${warning.slice(0, 200)}`] : []),
       ...(note?.trim() && !answer ? [`备注：${note.trim().slice(0, 200)}`] : []),
       `台账：${entry.id}`,
     );

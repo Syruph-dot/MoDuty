@@ -14,6 +14,7 @@ import {
   turnsToTranscript,
   appendTurnToTranscript,
 } from "./serialization.js";
+import type { CompactHandoffCheckpoint } from "./compact-handoff.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -173,6 +174,26 @@ export class SessionManager {
   async getMessages(sessionId: string, limit: number | null = 200): Promise<SessionMessage[]> {
     const messages = await this.getStoredMessages(sessionId);
     return limit === null ? messages : messages.slice(-limit);
+  }
+
+  /** Read the latest handoff checkpoint without changing the canonical transcript. */
+  async getCompactHandoff(sessionId: string): Promise<CompactHandoffCheckpoint | null> {
+    if (!isSafeSessionId(sessionId)) return null;
+    try {
+      const parsed = JSON.parse(await readFile(this.compactHandoffPath(sessionId), "utf8")) as unknown;
+      return isCompactHandoffCheckpoint(parsed, sessionId) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a successful handoff atomically; callers write only after validation. */
+  async saveCompactHandoff(checkpoint: CompactHandoffCheckpoint): Promise<void> {
+    if (!isSafeSessionId(checkpoint.sessionId)) throw new Error("Invalid session id for compact handoff");
+    if (!isCompactHandoffCheckpoint(checkpoint, checkpoint.sessionId)) throw new Error("Invalid compact handoff checkpoint");
+    const file = this.compactHandoffPath(checkpoint.sessionId);
+    await mkdir(path.dirname(file), { recursive: true });
+    await withFileLock(file, () => atomicWriteJson(file, checkpoint));
   }
 
   /** 写入消息列表（幂等 upsert：同 id 只保留最新） */
@@ -795,6 +816,10 @@ export class SessionManager {
     return path.join(this.sessionsDir, sessionId, "messages.json");
   }
 
+  private compactHandoffPath(sessionId: string): string {
+    return path.join(this.sessionsDir, sessionId, "compact-handoff.json");
+  }
+
   private async writeSessions(sessions: SessionRecord[]): Promise<void> {
     await atomicWriteJson(this.sessionsFile, sessions.map(sessionToDisk));
   }
@@ -870,4 +895,25 @@ function deriveTopics(goal: string): string[] {
   if (!goal) return [];
   const cleaned = goal.replace(/[，。、；：！？,.!?;:\s]+/gu, " ").trim();
   return cleaned.split(" ").filter(Boolean).slice(0, 5);
+}
+
+function isSafeSessionId(sessionId: string): boolean {
+  return /^[A-Za-z0-9_-]+$/u.test(sessionId);
+}
+
+function isCompactHandoffCheckpoint(value: unknown, sessionId: string): value is CompactHandoffCheckpoint {
+  if (typeof value !== "object" || value === null) return false;
+  const raw = value as Record<string, unknown>;
+  return raw.version === 1
+    && raw.sessionId === sessionId
+    && typeof raw.id === "string"
+    && typeof raw.coveredThroughMessageId === "string"
+    && typeof raw.coveredTurnCount === "number"
+    && typeof raw.handoff === "string"
+    && Array.isArray(raw.sourceRefs)
+    && raw.sourceRefs.every((ref) => typeof ref === "string")
+    && typeof raw.promptVersion === "string"
+    && typeof raw.model === "string"
+    && typeof raw.createdAt === "string"
+    && (raw.previousCheckpointId === undefined || typeof raw.previousCheckpointId === "string");
 }

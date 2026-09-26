@@ -191,6 +191,97 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
+.agent-window__compact-btn {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(157, 190, 231, 0.28);
+  border-radius: 6px;
+  background: rgba(92, 126, 170, 0.14);
+  color: #dbe8fa;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-window__compact-btn:hover:not(:disabled) {
+  background: rgba(92, 126, 170, 0.28);
+}
+
+.agent-window__compact-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.agent-window__handoff {
+  margin: 8px 12px;
+  border: 1px solid rgba(157, 190, 231, 0.2);
+  background: rgba(92, 126, 170, 0.09);
+  color: #dbe8fa;
+}
+
+.agent-window__handoff-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-window__handoff-content {
+  padding: 0 11px 11px;
+}
+
+.agent-window__handoff-meta {
+  margin-bottom: 8px;
+  color: #9eacc2;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.agent-window__handoff-text {
+  max-height: 280px;
+  overflow: auto;
+  color: #e6ebf5;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-window__compact-error {
+  margin: 8px 12px;
+  padding: 9px 11px;
+  border-left: 3px solid #e08888;
+  background: rgba(172, 67, 67, 0.14);
+  color: #ffd0d0;
+  font-size: 12px;
+}
+
+.agent-window__compact-boundary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 24px;
+  color: #a9bfdc;
+  font-size: 10px;
+  text-align: center;
+}
+
+.agent-window__compact-boundary > span:first-child,
+.agent-window__compact-boundary > span:last-child {
+  flex: 1;
+  height: 1px;
+  background: rgba(157, 190, 231, 0.22);
+}
+
 .agent-window__export-menu {
   position: absolute;
   top: calc(100% + 4px);

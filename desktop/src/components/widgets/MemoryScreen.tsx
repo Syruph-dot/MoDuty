@@ -5,9 +5,14 @@ import {
   listMemories,
   patchMemory,
   supersedeMemory,
+  listWorkExperiences,
+  getWorkExperience,
+  updateWorkExperience,
   type MemoryStatusView,
   type MemoryTypeView,
   type MemoryView,
+  type WorkExperienceDocument,
+  type WorkExperienceView,
 } from "../../lib/memoryApi";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -34,7 +39,12 @@ const SCOPES = ["", "user", "project", "agent", "session"];
  * 因为它是「检视与治理」而不是日常操作，不需要常驻占位。
  */
 export default function MemoryScreen({ onClose }: { onClose: () => void }) {
+  const [panel, setPanel] = useState<"memories" | "experiences">("memories");
   const [memories, setMemories] = useState<MemoryView[]>([]);
+  const [experiences, setExperiences] = useState<WorkExperienceView[]>([]);
+  const [selectedExperience, setSelectedExperience] = useState<WorkExperienceDocument | null>(null);
+  const [experienceDraft, setExperienceDraft] = useState("");
+  const [editingExperience, setEditingExperience] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scope, setScope] = useState("");
@@ -56,9 +66,22 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
     }
   }, [scope, type, status, keyword]);
 
+  const loadExperiences = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setExperiences(await listWorkExperiences(keyword));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLoading(false);
+    }
+  }, [keyword]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (panel === "memories") void load();
+    else void loadExperiences();
+  }, [panel, load, loadExperiences]);
 
   const stats = useMemo(() => {
     const byStatus = new Map<string, number>();
@@ -103,14 +126,39 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const openExperience = async (experience: WorkExperienceView) => {
+    try {
+      const document = await getWorkExperience(experience.id);
+      setSelectedExperience(document);
+      setExperienceDraft(document.content);
+      setEditingExperience(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const saveExperience = async () => {
+    if (!selectedExperience) return;
+    try {
+      const updated = await updateWorkExperience(selectedExperience.id, experienceDraft);
+      setSelectedExperience(updated);
+      setExperienceDraft(updated.content);
+      setExperiences((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setEditingExperience(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
   return (
     <section className="memory-screen" aria-label="记忆面板">
       <header className="memory-screen__header">
         <div className="memory-screen__identity">
-          <h2 className="memory-screen__title">记忆</h2>
+          <h2 className="memory-screen__title">{panel === "memories" ? "记忆" : "工作经验"}</h2>
           <span className="memory-screen__subtitle">
-            共 {stats.total} 条
-            {stats.byStatus.size > 0 ? ` · ${[...stats.byStatus.entries()].map(([key, count]) => `${STATUS_LABELS[key] ?? key} ${count}`).join(" / ")}` : ""}
+            {panel === "memories"
+              ? `共 ${stats.total} 条${stats.byStatus.size > 0 ? ` · ${[...stats.byStatus.entries()].map(([key, count]) => `${STATUS_LABELS[key] ?? key} ${count}`).join(" / ")}` : ""}`
+              : `共 ${experiences.length} 篇 · 可编辑 Markdown · 复盘与操作知识`}
           </span>
         </div>
         <button type="button" className="btn btn--ghost btn--sm" onClick={onClose} aria-label="关闭记忆面板">
@@ -118,7 +166,12 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
         </button>
       </header>
 
-      <div className="memory-screen__filters">
+      <nav className="memory-screen__tabs" aria-label="记忆类别">
+        <button type="button" className={panel === "memories" ? "is-active" : ""} onClick={() => setPanel("memories")}>长期记忆</button>
+        <button type="button" className={panel === "experiences" ? "is-active" : ""} onClick={() => setPanel("experiences")}>工作经验</button>
+      </nav>
+
+      {panel === "memories" ? <div className="memory-screen__filters">
         <label className="memory-screen__filter">
           <span>归属</span>
           <select className="memory-screen__select" value={scope} onChange={(event) => setScope(event.target.value)} aria-label="按归属筛选">
@@ -156,12 +209,13 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
           ⟳ 刷新
         </button>
       </div>
+      ) : null}
 
       {error ? <p className="memory-screen__error" role="alert">{error}</p> : null}
       {loading ? <p className="memory-screen__empty">读取中…</p> : null}
-      {!loading && memories.length === 0 ? <p className="memory-screen__empty">没有匹配的记忆。</p> : null}
+      {panel === "memories" && !loading && memories.length === 0 ? <p className="memory-screen__empty">没有匹配的记忆。</p> : null}
 
-      <ul className="memory-screen__list">
+      {panel === "memories" ? <ul className="memory-screen__list">
         {memories.map((memory) => (
           <li key={memory.id} className={`memory-card memory-card--${memory.status}`} data-memory-id={memory.id}>
             <div className="memory-card__head">
@@ -230,6 +284,75 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
           </li>
         ))}
       </ul>
+      : (
+        <div className="memory-screen__experience-layout">
+          <aside className="memory-screen__experience-sidebar" aria-label="工作经验列表">
+            <div className="memory-screen__experience-tools">
+              <input
+                className="memory-screen__search"
+                value={keyword}
+                placeholder="搜索复盘与资产知识…"
+                onChange={(event) => setKeyword(event.target.value)}
+                aria-label="搜索工作经验"
+              />
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => void loadExperiences()} aria-label="刷新工作经验">
+                ⟳
+              </button>
+            </div>
+            {experiences.length === 0 && !loading ? <p className="memory-screen__empty">还没有工作经验。Agent 完成带工具证据的工作、派发结果或用户反馈后，会按增量生成复盘。</p> : null}
+            <ul className="memory-screen__experience-list">
+              {experiences.map((experience) => (
+                <li key={experience.id}>
+                  <button
+                    type="button"
+                    className={`memory-screen__experience-item${selectedExperience?.id === experience.id ? " is-active" : ""}`}
+                    onClick={() => void openExperience(experience)}
+                  >
+                    <strong>{experience.title}</strong>
+                    <span>{experience.preview}</span>
+                    <small>{new Date(experience.updatedAt).toLocaleString("zh-CN")}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </aside>
+          <article className="memory-screen__experience-detail">
+            {selectedExperience ? (
+              <>
+                <header className="memory-screen__experience-header">
+                  <div>
+                    <h3>{selectedExperience.title}</h3>
+                    <small>更新于 {new Date(selectedExperience.updatedAt).toLocaleString("zh-CN")}</small>
+                  </div>
+                  <div className="memory-screen__experience-actions">
+                    {editingExperience ? (
+                      <>
+                        <button type="button" className="btn btn--primary btn--sm" onClick={() => void saveExperience()}>保存</button>
+                        <button type="button" className="btn btn--ghost btn--sm" onClick={() => { setExperienceDraft(selectedExperience.content); setEditingExperience(false); }}>取消</button>
+                      </>
+                    ) : (
+                      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setEditingExperience(true)}>编辑 Markdown</button>
+                    )}
+                  </div>
+                </header>
+                {editingExperience ? (
+                  <textarea
+                    className="memory-screen__experience-editor"
+                    value={experienceDraft}
+                    onChange={(event) => setExperienceDraft(event.target.value)}
+                    aria-label="编辑工作经验 Markdown"
+                    spellCheck={false}
+                  />
+                ) : (
+                  <pre className="memory-screen__experience-content">{selectedExperience.content}</pre>
+                )}
+              </>
+            ) : (
+              <p className="memory-screen__empty">选择一篇工作经验，查看复盘、证据来源和操作知识。</p>
+            )}
+          </article>
+        </div>
+      )}
     </section>
   );
 }

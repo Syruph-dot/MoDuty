@@ -21,13 +21,21 @@ export default function DailyWidget() {
   const [dailyEntries, setDailyEntries] = useState<DailyEntry[]>([]);
   const [generating, setGenerating] = useState(false);
   const [lastGenAt, setLastGenAt] = useState<string | null>(null);
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const [generationSince, setGenerationSince] = useState<string | null>(null);
+  const [generationRunId, setGenerationRunId] = useState<string | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 从后端加载元数据
   useEffect(() => {
     dailyApi.getMeta().then((meta: { lastGenAt: string | null }) => {
       setLastGenAt(meta.lastGenAt);
-    }).catch(() => undefined);
+      setMetaLoaded(true);
+    }).catch((loadError: unknown) => {
+      setError(loadError instanceof Error ? loadError.message : "无法读取日报生成记录");
+      setMetaLoaded(true);
+    });
   }, []);
 
   const daysInMonth = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
@@ -48,35 +56,47 @@ export default function DailyWidget() {
   }, [dailyDates]);
 
   const handleGenerate = async () => {
-    if (!selectedDate || !lastGenAt) return;
+    if (!selectedDate || !metaLoaded || generating) return;
+    const since = lastGenAt ?? new Date(`${selectedDate}T00:00:00`).toISOString();
     setGenerating(true);
+    setGenerationSince(since);
+    setGenerationRunId(null);
+    setGenerationStatus("正在提交日报生成任务…");
     setError(null);
     setView("generating");
     try {
-      await dailyApi.generate(lastGenAt, "low");
-      // 轮询检查生成结果（简化：每 2 秒检查一次本地存储的日报文件）
-      const checkResult = setInterval(async () => {
-        try {
-          const content = await dailyApi.getDaily(selectedDate);
-          if (content && content.trim()) {
-            clearInterval(checkResult);
-            setGenerating(false);
-            // 解析日报内容为 entries（简化：按时段分组）
-            setDailyEntries(parseDailyContent(content));
-            if (!dailyDates.includes(selectedDate)) {
-              setDailyDates((prev) => [...prev, selectedDate].sort());
-            }
-            setView("timeline");
-          }
-        } catch {
-          // 忽略轮询错误
-        }
-      }, 2000);
+      const started = await dailyApi.generate(since, "low");
+      setGenerationRunId(started.runId);
+      setGenerationStatus(`生成中 · 任务 ${started.runId}`);
+      setLastGenAt(started.generatedAt);
 
-      // 超时保护
-      setTimeout(() => clearInterval(checkResult), 60000);
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        const status = await dailyApi.getRunStatus(started.runId);
+        if (status.status === "generating") {
+          setGenerationStatus(`生成中 · 任务 ${status.runId} · 汇总自 ${new Date(status.since).toLocaleString("zh-CN")}`);
+          continue;
+        }
+        if (status.status === "failed") {
+          setLastGenAt(status.since);
+          throw new Error(status.error || `日报生成失败（任务 ${status.runId}）`);
+        }
+
+        const reportDate = status.reportDate;
+        const content = await dailyApi.getDaily(reportDate);
+        if (!content?.trim()) throw new Error(`任务 ${status.runId} 已完成，但 ${reportDate} 没有日报文件`);
+        setSelectedDate(reportDate);
+        setDailyEntries(parseDailyContent(content));
+        setDailyDates((prev) => prev.includes(reportDate) ? prev : [...prev, reportDate].sort());
+        setGenerationStatus(`已完成 · ${reportDate} · 汇总自 ${new Date(status.since).toLocaleString("zh-CN")}`);
+        setGenerating(false);
+        setView("timeline");
+        return;
+      }
+      throw new Error(`等待日报超时；任务 ${started.runId} 可能仍在后台运行，可稍后重新打开日报查看。`);
     } catch (e) {
       setGenerating(false);
+      setGenerationStatus(null);
       setError(e instanceof Error ? e.message : "生成失败");
       setView("timeline");
     }
@@ -86,6 +106,9 @@ export default function DailyWidget() {
     const dateStr = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     setSelectedDate(dateStr);
     setError(null);
+    setGenerationStatus(null);
+    setGenerationRunId(null);
+    setGenerationSince(null);
     try {
       const content = await dailyApi.getDaily(dateStr);
       if (content) {
@@ -184,11 +207,15 @@ export default function DailyWidget() {
         <h3>{selectedDate} 的日报</h3>
       </div>
       {error && <div className="daily-widget__error">{error}</div>}
+      {generationStatus ? <p className="daily-widget__hint">{generationStatus}</p> : null}
       {dailyEntries.length === 0 ? (
         <div className="daily-widget__empty">
-          <p>暂无日报内容</p>
-          <button onClick={handleGenerate} disabled={generating || !lastGenAt}>
-            {generating ? "生成中…" : lastGenAt ? "生成日报" : "无上次生成记录，请先点击生成"}
+        <p>暂无日报内容</p>
+          <p className="daily-widget__hint">
+            汇总起点：{lastGenAt ? new Date(lastGenAt).toLocaleString("zh-CN") : selectedDate ? `${selectedDate} 00:00（首次生成）` : "选择日期后确定"}
+          </p>
+          <button onClick={handleGenerate} disabled={generating || !metaLoaded || !selectedDate}>
+            {generating ? "生成中…" : lastGenAt ? "生成日报" : "首次生成日报"}
           </button>
         </div>
       ) : (
@@ -215,7 +242,9 @@ export default function DailyWidget() {
     <div className="daily-widget__generating" role="status" aria-live="polite">
       <div className="daily-widget__spinner" aria-hidden="true" />
       <p>正在生成 {selectedDate} 的日报…</p>
-      <p className="daily-widget__hint">调用低成本模型分析会话变更，预计 10-30 秒</p>
+      {generationSince ? <p className="daily-widget__hint">汇总起点：{new Date(generationSince).toLocaleString("zh-CN")}</p> : null}
+      {generationRunId ? <p className="daily-widget__hint">任务：{generationRunId}</p> : null}
+      <p className="daily-widget__hint">{generationStatus ?? "调用低成本模型分析会话变更"}</p>
     </div>
   );
 

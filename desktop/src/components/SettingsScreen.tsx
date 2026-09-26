@@ -461,6 +461,27 @@ export default function SettingsScreen() {
                     <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>拉取到 {models.length} 个模型，可在上方输入框选择</div>
                   ) : null}
                 </label>
+                <label className="settings-field">
+                  <span className="settings-field__label">上下文窗口（tokens，可留空自动识别）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={draft.contextWindow ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      const contextWindow = value === "" ? undefined : Number(value);
+                      setDraft({
+                        ...draft,
+                        contextWindow: contextWindow !== undefined && Number.isSafeInteger(contextWindow) && contextWindow > 0
+                          ? contextWindow
+                          : undefined,
+                      });
+                    }}
+                    placeholder="自动识别（如 131072）"
+                  />
+                  <small style={{ fontSize: 11, opacity: 0.65 }}>用于上下文占用与 Compact 预算；留空时根据模型名推断。</small>
+                </label>
                 <div className="settings-actions__right" style={{ justifyContent: "flex-end", marginTop: 8 }}>
                   <button type="button" className="settings-btn" onClick={closeDraft}>取消</button>
                   <button type="button" className="settings-btn settings-btn--primary" onClick={saveDraft}>应用</button>

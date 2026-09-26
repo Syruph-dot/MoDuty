@@ -165,3 +165,128 @@
   resize: vertical;
   line-height: 1.5;
 }
+
+.memory-screen__tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.memory-screen__tabs button {
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #aebbd0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memory-screen__tabs button.is-active {
+  border-bottom-color: #9ec2ff;
+  color: #e8edf7;
+}
+
+.memory-screen__experience-layout {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 16px;
+  min-height: 0;
+}
+
+.memory-screen__experience-sidebar {
+  display: flex;
+  flex: 0 0 320px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  max-width: 38%;
+}
+
+.memory-screen__experience-tools,
+.memory-screen__experience-header,
+.memory-screen__experience-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memory-screen__experience-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 4px 8px 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.memory-screen__experience-list li { min-width: 0; }
+
+.memory-screen__experience-item {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(10, 14, 24, 0.55);
+  color: #e8edf7;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memory-screen__experience-item.is-active { border-color: rgba(158, 194, 255, 0.5); }
+.memory-screen__experience-item span { overflow: hidden; color: #aebbd0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.memory-screen__experience-item small { color: #8190a7; font-size: 10px; }
+
+.memory-screen__experience-detail {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(10, 14, 24, 0.4);
+}
+
+.memory-screen__experience-header {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.memory-screen__experience-header h3 { margin: 0 0 4px; font-size: 16px; font-weight: 500; }
+.memory-screen__experience-header small { color: #94a2b8; font-size: 10px; }
+
+.memory-screen__experience-content,
+.memory-screen__experience-editor {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 2px 4px;
+  box-sizing: border-box;
+  overflow: auto;
+  border: 0;
+  background: transparent;
+  color: #e8edf7;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.memory-screen__experience-editor { resize: none; }
+
+@media (max-width: 720px) {
+  .memory-screen__experience-layout { flex-direction: column; }
+  .memory-screen__experience-sidebar { flex: 0 0 35%; max-width: none; }
+  .memory-screen__experience-detail { flex: 1 1 65%; }
+}

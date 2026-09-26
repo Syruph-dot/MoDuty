@@ -92,7 +92,15 @@ interface DisplayMessage {
   };
 }
 
- 
+interface CompactHandoffView {
+  id: string;
+  coveredThroughMessageId: string;
+  coveredTurnCount: number;
+  handoff: string;
+  sourceRefs: string[];
+  createdAt: string;
+}
+
 
 /** 消息头：模型名 + 时间（对齐 Proma 的 MessageHeader；用户消息不显示） */
 function MessageMeta({ message }: { message: DisplayMessage }): React.ReactElement | null {
@@ -370,6 +378,10 @@ export default function AgentWindow({
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [compactCheckpoint, setCompactCheckpoint] = useState<CompactHandoffView | null>(null);
+  const [compactBusy, setCompactBusy] = useState(false);
+  const [compactError, setCompactError] = useState<string | null>(null);
+  const [handoffExpanded, setHandoffExpanded] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -405,6 +417,40 @@ export default function AgentWindow({
   const { relations } = useAgentRelations(embedded || subject.kind !== "agent" ? null : subject.id, agents.length);
   /** 会话导出菜单开关（JSON/MD/TXT） */
   const [exportOpen, setExportOpen] = useState(false);
+
+  const loadCompactHandoff = async (): Promise<void> => {
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/compact`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { checkpoint: CompactHandoffView | null };
+      setCompactCheckpoint(data.checkpoint);
+    } catch {
+      // The chat history remains usable when this optional lookup fails.
+    }
+  };
+
+  const compactConversation = async (): Promise<void> => {
+    if (compactBusy || streaming) return;
+    setCompactBusy(true);
+    setCompactError(null);
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/compact`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as {
+        checkpoint?: CompactHandoffView;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || `Compact 失败（HTTP ${res.status}）`);
+      if (!data.checkpoint) throw new Error("Compact 返回中没有 handoff checkpoint");
+      setCompactCheckpoint(data.checkpoint);
+      setHandoffExpanded(true);
+    } catch (error) {
+      setCompactError(error instanceof Error ? error.message : "Compact 失败");
+    } finally {
+      setCompactBusy(false);
+    }
+  };
 
   /** 下载会话记录：GET /api/sessions/:id/export?format=… → Blob → 浏览器下载 */
   const exportSession = async (format: "json" | "md" | "txt"): Promise<void> => {
@@ -694,6 +740,7 @@ export default function AgentWindow({
         return [];
       }
       const data = (await res.json()) as { messages: StoredMessage[] };
+      void loadCompactHandoff();
       // 落盘消息 → 展示消息：按 timeline 还原工具卡片与文本段的真实交错顺序
       // （关闭重开 / onDone 全量重建时与实时 SSE 渲染保持一致；已完成工具默认折叠）
       const restored: DisplayMessage[] = [];
@@ -708,7 +755,8 @@ export default function AgentWindow({
             content: message.content,
             status: message.status,
             timestamp: message.timestamp,
-            ...(isUser && message.id ? { messageId: message.id, userEditable: true } : {}),
+            ...(message.id ? { messageId: message.id } : {}),
+            ...(isUser ? { userEditable: true } : {}),
           });
           return;
         }
@@ -1207,43 +1255,6 @@ export default function AgentWindow({
     return `${Math.floor(s / 60)}m ${s % 60}s`;
   };
 
-  /** 计算上下文分隔线位置（基于 token 预算，与后端 buildBoundedHistory 逻辑一致） */
-  const calculateContextDivider = (msgs: DisplayMessage[]): { dividerIndex: number; headCount: number; tailCount: number; omittedCount: number } => {
-    const BUDGET_TOKENS = 4000;
-    const HEAD_MESSAGES = 2;
-    const MAX_MSG_CHARS = 4000;
-
-    const estimateTokens = (text: string): number => {
-      let cjk = 0, other = 0;
-      for (const ch of text) {
-        if (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch)) cjk += 1;
-        else other += 1;
-      }
-      return Math.ceil(cjk * 1.2 + other / 3.5);
-    };
-
-    const formatMsgs = (msgs: Array<{ role: string; content: string }>) =>
-      msgs.map(m => `[${m.role}]\n${m.content}`).join("\n\n");
-
-    const headCount = Math.min(2, msgs.length);
-    const head = msgs.slice(0, headCount);
-    const headText = formatMsgs(head.map(m => ({ role: m.role, content: m.content })));
-    let remaining = 4000 - headText.split("").reduce((acc, ch) => acc + (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch) ? 1.2 : 1/3.5), 0);
-
-    let tailCount = 0;
-    let used = 0;
-    for (let i = msgs.length - 1; i >= headCount; i--) {
-      const content = msgs[i].content;
-      const tokens = content.split("").reduce((acc, ch) => acc + (/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/u.test(ch) ? 1.2 : 1/3.5), 0);
-      if (used + tokens > remaining && tailCount > 0) break;
-      used += tokens;
-      tailCount++;
-    }
-    const omitted = Math.max(0, msgs.length - headCount - tailCount);
-    const dividerIndex = headCount + (msgs.length - headCount - tailCount);
-    return { dividerIndex, headCount, tailCount, omittedCount: omitted };
-  };
-
   /* ---------------- 标签页条：首标签（返回/自身）+ 当前对象 + 出边子项 ---------------- */
 
   const labelOf = (kind: "agent" | "browser", id: string): string =>
@@ -1359,6 +1370,19 @@ export default function AgentWindow({
           >
             <IconSearch />
           </button>
+          {!embedded && subject.kind === "agent" && subject.id === agent.id ? (
+            <button
+              type="button"
+              className="agent-window__compact-btn"
+              aria-label="Compact 会话并生成任务交接摘要"
+              title="整理较早的完整对话轮次；原始会话记录保留"
+              disabled={streaming || agent.state === "running" || compactBusy || messages.length === 0}
+              onClick={() => void compactConversation()}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              {compactBusy ? "整理中…" : "Compact"}
+            </button>
+          ) : null}
           <div className="agent-window__export">
             <button
               type="button"
@@ -1494,25 +1518,37 @@ export default function AgentWindow({
       {/* 消息区包一层定位容器：导航条要相对「消息区」定位，否则会盖到顶部工具栏上 */}
       <div className="agent-window__body">
       <div className="agent-window__list" ref={listRef} aria-live="polite" onMouseUp={captureQuote}>
+        {compactCheckpoint ? (
+          <section className="agent-window__handoff" aria-label="Compact Handoff 状态">
+            <button
+              type="button"
+              className="agent-window__handoff-toggle"
+              aria-expanded={handoffExpanded}
+              onClick={() => setHandoffExpanded((expanded) => !expanded)}
+            >
+              <span>任务交接摘要 · 已覆盖 {compactCheckpoint.coveredTurnCount} 轮</span>
+              <span>{handoffExpanded ? "收起" : "展开"}</span>
+            </button>
+            {handoffExpanded ? (
+              <div className="agent-window__handoff-content">
+                <div className="agent-window__handoff-meta">
+                  边界 {compactCheckpoint.coveredThroughMessageId} · 来源 {compactCheckpoint.sourceRefs.length} 条 · {new Date(compactCheckpoint.createdAt).toLocaleString("zh-CN")}
+                </div>
+                <div className="agent-window__handoff-text">{compactCheckpoint.handoff}</div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+        {compactError ? <div className="agent-window__compact-error" role="alert">{compactError}</div> : null}
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (
           (() => {
-            const { dividerIndex, headCount, tailCount, omittedCount } = calculateContextDivider(messages);
             const rendered: React.ReactNode[] = [];
+            const boundaryIndex = compactCheckpoint
+              ? messages.reduce((last, message, index) => message.messageId === compactCheckpoint.coveredThroughMessageId ? index : last, -1)
+              : -1;
             messages.forEach((message, index) => {
-              // Insert divider before the omitted section
-              if (index === headCount && omittedCount > 0) {
-                rendered.push(
-                  <div key="context-divider" className="agent-window__context-divider" role="separator" aria-label="上下文分隔线">
-                    <span className="agent-window__divider-line" />
-                    <span className="agent-window__divider-label">
-                      📍 上下文边界：前 {headCount} 条 + 后 {messages.length - headCount - omittedCount} 条 · 省略 {omittedCount} 条
-                    </span>
-                    <span className="agent-window__divider-line" />
-                  </div>
-                );
-              }
               rendered.push(
                 <MessageItem
                   key={message.key}
@@ -1532,6 +1568,15 @@ export default function AgentWindow({
                   onQuestionAnswered={onQuestionAnswered}
                 />,
               );
+              if (index === boundaryIndex) {
+                rendered.push(
+                  <div key="compact-boundary" className="agent-window__compact-boundary" role="separator">
+                    <span />
+                    <span>Compact Handoff 覆盖到此处；上方原始会话仍完整保留</span>
+                    <span />
+                  </div>,
+                );
+              }
             });
             return rendered;
           })()

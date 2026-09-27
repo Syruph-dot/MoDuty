@@ -43,4 +43,4 @@ _Avoid_: Compact Handoff、长期用户偏好、整段原始对话。
 
 ## Flagged ambiguities
 
-- 速查条目的删除是否保留独立审计留痕，以及生成失败口径待确认。
+- “浓缩信息”曾可能指 Compact Handoff 或跨会话背景材料；已明确后者称为“会话速查条目”，两者分别维护。

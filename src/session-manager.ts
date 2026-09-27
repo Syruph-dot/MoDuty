@@ -145,7 +145,7 @@ export class SessionManager {
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    return await withFileLock(this.sessionsFile, async () => {
+    const deleted = await withFileLock(this.sessionsFile, async () => {
       const sessions = await this.listSessions();
       const filtered = sessions.filter((session) => session.id !== sessionId);
       if (filtered.length === sessions.length) {
@@ -155,6 +155,17 @@ export class SessionManager {
       await rm(path.dirname(this.messagesPath(sessionId)), { recursive: true, force: true });
       return true;
     });
+    if (deleted) await this.refreshGraphAfterWrite(sessionId);
+    return deleted;
+  }
+
+  private async refreshGraphAfterWrite(sessionId: string): Promise<void> {
+    try {
+      await refreshSessionGraph(this.sessionsDir, sessionId, this);
+    } catch (error) {
+      // JSON is the source of truth. The next graph read will rebuild after a failed projection write.
+      console.warn("[session-graph] SQLite update failed; graph marked for rebuild:", error);
+    }
   }
 
   /** 读取原始消息列表（内存态 StoredMessage） */
@@ -206,7 +217,6 @@ export class SessionManager {
     const deduped = Array.from(seen.values());
     const filePath = this.messagesPath(sessionId);
     await atomicWriteJson(filePath, deduped.map(messageToDisk));
-    refreshSessionGraph(this.sessionsDir, sessionId, this);
   }
 
   /** 追加消息（非流式）：幂等 upsert + 更新会话元数据 + 增量 transcript */
@@ -810,6 +820,9 @@ export class SessionManager {
       const updated = sessions.map((session) => session.id === sessionId ? { ...session, ...updates } : session);
       await this.writeSessions(updated);
     });
+    if ("messageCount" in updates || "lastMessageAt" in updates || "name" in updates || "goal" in updates || "draft" in updates) {
+      await this.refreshGraphAfterWrite(sessionId);
+    }
   }
 
   private messagesPath(sessionId: string): string {

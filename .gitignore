@@ -31,6 +31,7 @@ memory/.agents/
 memory/.dispatches.json
 memory/.questions.json
 memory/.legacy
+memory/session-graph.db*
 
 
 # Runtime logs & build outputs (local only)

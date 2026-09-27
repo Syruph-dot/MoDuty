@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
  * - 边：仅 ampersand (&) 引用关系 (有向)
  * - 交互：拖拽固定、缩放平移、悬停高亮、点击跳转会话
  * - 优化：连通分量拆分仿真、Canvas 就绪（节点 >300 可切换）
- * - 数据：从 /api/graph/sessions 实时加载（持久化文件提取 &ses_xxx 链接）
+ * - 数据：从 /api/graph/sessions 加载 SQLite 会话关系图
  */
 
 interface GraphNode {

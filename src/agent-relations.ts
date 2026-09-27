@@ -8,13 +8,12 @@ import type { AgentRecord } from "./types.js";
  * 窗口标签页条的数据源：某个 Agent 的「出边（下属）/ 入边（上级）」。
  *
  * 关系判定（与用户拍板一致：下属 = 出边，上级 = 入边）：
- *   - 出边（下属）：本会话消息里的 `&ses_…` 引用（最新、直接） ∪ 持久化会话图的出边
+ *   - 出边（下属）：SQLite 会话图的 `&ses_…` 出边
  *     ∪ 台账里「我派发过的人」（dispatcherId = 我）。浏览器子项 = 本会话消息里出现过的
  *     `brw_…`（工具调用参数里的 browser_id），再用浏览器 registry 校验是否还活着。
  *   - 入边（上级）：会话图的入边（谁引用了我） ∪ 台账里「谁派发了我」。
  *
- * 为什么三个来源要合并：会话图是增量落盘的（只有显式 `&ses_` 引用才有边，实测全库仅 4 条），
- * 台账则覆盖派发链（实测有数据）。三者并集才既有语义又当下可用；重复项按 id 去重并记来源。
+ * 会话引用统一从可重建的 SQLite 图读取；台账覆盖派发链，浏览器引用仍从消息提取。
  */
 
 /** 关联对象（标签页用） */
@@ -35,7 +34,6 @@ export interface AgentRelations {
   children: RelationRef[];
 }
 
-const AGENT_REF = /&ses_[a-z0-9]+/gi;
 /**
  * 浏览器实例 id 形如 `brw_774a11dc-766`（randomUUID 前 12 位 = 8 位 hex + "-" + 3 位 hex）。
  * 字符类必须把连字符吃进去，否则只能截出 `brw_774a11dc`，与 registry 里的真实 id 永远对不上
@@ -112,25 +110,22 @@ export async function buildAgentRelations(options: {
     });
   };
 
-  // ① 本会话消息里的引用（&ses_ → Agent；brw_ → 浏览器）
+  // ① 浏览器引用仍从本会话消息提取；会话引用统一由 SQLite 图提供
   const browserRefs = new Set<string>();
   try {
     const messages = await sessionManager.getMessages(self.sessionId, null);
     for (const message of messages) {
       const text = collectRefText(message);
-      for (const ref of text.match(AGENT_REF) ?? []) {
-        addAgentChild(bySession.get(normalizeSessionId(ref.slice(1))), "session");
-      }
       for (const ref of text.match(BROWSER_REF) ?? []) browserRefs.add(ref.toLowerCase());
     }
   } catch {
     /* 会话读不到就退化为图谱 + 台账，不影响主流程 */
   }
 
-  // ② 持久化会话图的出边/入边
+  // ② SQLite 会话图的出边/入边
   let graphParentSession: string | null = null;
   try {
-    const edges = await readSessionGraphEdges(sessionManager.sessionsDir);
+    const edges = await readSessionGraphEdges(sessionManager.sessionsDir, sessionManager);
     for (const target of edges.out.get(normalizeSessionId(self.sessionId)) ?? []) {
       addAgentChild(bySession.get(target), "graph");
     }

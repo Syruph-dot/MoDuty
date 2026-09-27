@@ -1,229 +1,266 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-interface GraphNode {
+import { withFileLock } from "./write-queue.js";
+
+export interface SessionGraphNode {
   id: string;
   name: string;
   goal: string;
-  type: "agent" | "session";
+  type: "session";
   updatedAt: string;
 }
 
-interface GraphLink {
+export interface SessionGraphLink {
   source: string;
   target: string;
   type: "references";
 }
 
-interface GraphData {
-  nodes: GraphNode[];
-  links: GraphLink[];
+export interface SessionGraphSnapshot {
+  nodes: SessionGraphNode[];
+  links: SessionGraphLink[];
 }
 
-const GRAPH_FILE = "memory/.session-graph.json";
-
-/**
- * 获取图谱文件路径
- */
-function getGraphFilePath(sessionsDir: string): string {
-  return path.join(sessionsDir, "..", ".session-graph.json");
-}
-
-/** 图谱文件路径（导出给「出边/入边」查询用，与写入端同一处逻辑） */
-export function sessionGraphPath(sessionsDir: string): string {
-  return getGraphFilePath(sessionsDir);
-}
-
-/**
- * 归一化会话 id。
- *
- * 图谱历史数据里 `target` 存的是剥掉 `ses_` 前缀的裸 hex（extractAmpersandRefs 的产物），
- * 而节点 id 带前缀——两边对不上，边基本等于废数据（查 in/out 都命中不了）。
- * 这里统一成带前缀的形式，并容忍旧数据。
- */
-export function normalizeSessionId(raw: string): string {
-  const value = raw.trim();
-  if (!value) return "";
-  return value.startsWith("ses_") ? value : `ses_${value}`;
-}
-
-/** 出边/入边（均已归一化 id；自环与指向不存在会话的边会被丢弃） */
 export interface SessionGraphEdges {
-  /** sessionId → 它引用的会话 ids（出边：它的下属） */
   out: Map<string, string[]>;
-  /** sessionId → 引用它的会话 ids（入边：它的上级） */
   in: Map<string, string[]>;
 }
 
-/** 读取持久化图谱的出边/入边。文件缺失/损坏时返回空表（不抛错） */
-export async function readSessionGraphEdges(sessionsDir: string): Promise<SessionGraphEdges> {
-  const out = new Map<string, string[]>();
-  const incoming = new Map<string, string[]>();
-  const graph = await readExistingGraph(sessionsDir);
-  const known = new Set(graph.nodes.map((node) => normalizeSessionId(node.id)));
-  for (const link of graph.links) {
-    const source = normalizeSessionId(link.source);
-    const target = normalizeSessionId(link.target);
-    if (!source || !target || source === target) continue;
-    if (!known.has(target)) continue;
-    const outs = out.get(source) ?? [];
-    if (!outs.includes(target)) outs.push(target);
-    out.set(source, outs);
-    const ins = incoming.get(target) ?? [];
-    if (!ins.includes(source)) ins.push(source);
-    incoming.set(target, ins);
-  }
-  return { out, in: incoming };
+interface GraphSession {
+  id: string;
+  name: string;
+  goal: string;
+  lastMessageAt: string;
 }
 
-/**
- * 读取现有图谱（不存在则返回空）
- */
-async function readExistingGraph(sessionsDir: string): Promise<GraphData> {
-  const filePath = getGraphFilePath(sessionsDir);
-  try {
-    const content = await readFile(filePath, "utf8");
-    return JSON.parse(content) as GraphData;
-  } catch {
-    return { nodes: [], links: [] };
-  }
+interface GraphMessage {
+  content: string;
+  [key: string]: unknown;
 }
 
-/**
- * 写入图谱（原子写入）
- */
-async function writeGraph(sessionsDir: string, graph: GraphData): Promise<void> {
-  const filePath = getGraphFilePath(sessionsDir);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(graph, null, 2), "utf8");
+export interface SessionGraphSource {
+  listSessions: () => Promise<GraphSession[]>;
+  getSession: (id: string) => Promise<GraphSession | null>;
+  getMessages: (id: string, limit: number | null) => Promise<GraphMessage[]>;
 }
 
-/**
- * 从会话消息中提取 ampersand 引用
- */
+interface SqliteStatement {
+  run: (...params: unknown[]) => unknown;
+  all: (...params: unknown[]) => unknown[];
+  get: (...params: unknown[]) => unknown;
+}
+
+interface SqliteDatabase {
+  exec: (sql: string) => void;
+  prepare: (sql: string) => SqliteStatement;
+  close: () => void;
+}
+
+const SCHEMA = [
+  "CREATE TABLE IF NOT EXISTS graph_meta (id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL, updated_at TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS graph_nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, goal TEXT NOT NULL, updated_at TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS graph_links (source TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL, PRIMARY KEY (source, target, type))",
+  "CREATE INDEX IF NOT EXISTS idx_graph_links_target ON graph_links(target)",
+];
+
+// The first read in each process reconciles the derived database with JSON.
+// A crash between a JSON write and its graph update cannot leave a stale graph indefinitely.
+const reconciled = new Set<string>();
+
+export function sessionGraphPath(sessionsDir: string): string {
+  return path.join(path.resolve(sessionsDir, ".."), "session-graph.db");
+}
+
+export function normalizeSessionId(raw: string): string {
+  const value = raw.trim().toLowerCase();
+  if (!value) return "";
+  return value.startsWith("ses_") ? value : "ses_" + value;
+}
+
+/** Keep the historical bare-id return contract used by export-session-circuit. */
 export function extractAmpersandRefs(content: string): Set<string> {
   const refs = new Set<string>();
-  const ampRefRegex = /&(ses_[a-z0-9]+|tile_[a-z0-9]+)/gi;
-  let match;
-  while ((match = ampRefRegex.exec(content)) !== null) {
-    const ref = match[1];
-    if (ref.startsWith("ses_")) {
-      refs.add(ref.slice(4));
-    }
-    // tile_ 引用暂不处理（需 agentRegistry 解析）
+  for (const match of content.matchAll(/&ses_([a-z0-9]+)/gi)) {
+    if (match[1]) refs.add(match[1].toLowerCase());
   }
   return refs;
 }
 
-/**
- * 增量刷新会话关系图
- * - 只更新指定 sessionId 的节点信息和其出边
- * - 入边由其他会话的刷新时更新（或定期全量重建）
- * - 复杂度：O(该会话消息数)，不遍历全量会话
- */
+async function withDatabase<T>(sessionsDir: string, use: (db: SqliteDatabase) => T): Promise<T> {
+  const file = sessionGraphPath(sessionsDir);
+  await mkdir(path.dirname(file), { recursive: true });
+  const mod = await import("node:sqlite");
+  const db = new mod.DatabaseSync(file) as unknown as SqliteDatabase;
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    for (const statement of SCHEMA) db.exec(statement);
+    return use(db);
+  } finally {
+    db.close();
+  }
+}
+
+function transaction<T>(db: SqliteDatabase, use: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const value = use();
+    db.exec("COMMIT");
+    return value;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function bumpGeneration(db: SqliteDatabase): void {
+  const now = new Date().toISOString();
+  db.prepare("INSERT OR IGNORE INTO graph_meta (id, generation, updated_at) VALUES (1, 0, ?)").run(now);
+  db.prepare("UPDATE graph_meta SET generation = generation + 1, updated_at = ? WHERE id = 1").run(now);
+}
+
+function referenceTargets(messages: GraphMessage[]): Set<string> {
+  const targets = new Set<string>();
+  const collect = (value: unknown, depth = 0): void => {
+    if (value == null || depth > 4) return;
+    if (typeof value === "string") {
+      // Match the existing relation view's bound for long tool results.
+      for (const raw of extractAmpersandRefs(value.slice(0, 200_000))) targets.add(normalizeSessionId(raw));
+    } else if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+    } else if (typeof value === "object") {
+      for (const item of Object.values(value as Record<string, unknown>)) collect(item, depth + 1);
+    }
+  };
+  for (const message of messages) {
+    collect(message);
+  }
+  return targets;
+}
+
+/** Replace one source session and all its outgoing links in a SQLite transaction. */
 export async function refreshSessionGraph(
   sessionsDir: string,
   sessionId: string,
-  sessionManager?: {
-    getSession: (id: string) => Promise<{ id: string; name: string; goal: string; lastMessageAt: string } | null>;
-    getMessages: (id: string, limit: number | null) => Promise<Array<{ role: string; content: string; timestamp: string }>>;
-  }
+  source: SessionGraphSource,
 ): Promise<void> {
-  // 如果没有 sessionManager，无法获取最新消息，跳过增量更新
-  if (!sessionManager) return;
-
-  const session = await sessionManager.getSession(sessionId);
-  if (!session) return;
-
-  // 读取现有图谱
-  const graph = await readExistingGraph(sessionsDir);
-
-  // 更新/添加节点
-  const nodeIndex = graph.nodes.findIndex((n) => n.id === sessionId);
-  const nodeData: GraphNode = {
-    id: sessionId,
-    name: session.name,
-    goal: session.goal,
-    type: "session",
-    updatedAt: session.lastMessageAt,
-  };
-
-  if (nodeIndex >= 0) {
-    graph.nodes[nodeIndex] = nodeData;
-  } else {
-    graph.nodes.push(nodeData);
+  const file = sessionGraphPath(sessionsDir);
+  try {
+    await withFileLock(file, async () => {
+      const session = await source.getSession(sessionId);
+      const targets = session ? referenceTargets(await source.getMessages(sessionId, null)) : new Set<string>();
+      await withDatabase(sessionsDir, (db) => transaction(db, () => {
+        if (session) {
+          db.prepare(
+            "INSERT INTO graph_nodes (id, name, goal, updated_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(id) DO UPDATE SET name = excluded.name, goal = excluded.goal, updated_at = excluded.updated_at",
+          ).run(session.id, session.name, session.goal, session.lastMessageAt);
+        } else {
+          db.prepare("DELETE FROM graph_nodes WHERE id = ?").run(sessionId);
+        }
+        db.prepare("DELETE FROM graph_links WHERE source = ?").run(sessionId);
+        if (session) {
+          const insert = db.prepare("INSERT OR IGNORE INTO graph_links (source, target, type) VALUES (?, ?, 'references')");
+          for (const target of targets) {
+            if (target !== sessionId) insert.run(sessionId, target);
+          }
+        }
+        bumpGeneration(db);
+      }));
+    });
+  } catch (error) {
+    reconciled.delete(file);
+    throw error;
   }
-
-  // 提取该会话最新的 ampersand 引用（读取所有消息）
-  const messages = await sessionManager.getMessages(sessionId, null);
-  const referencedIds = new Set<string>();
-  for (const msg of messages) {
-    const refs = extractAmpersandRefs(msg.content ?? "");
-    for (const ref of refs) referencedIds.add(ref);
-  }
-
-  // 移除该会话作为 source 的旧边
-  graph.links = graph.links.filter((l) => l.source !== sessionId);
-
-  // 添加新的出边（id 统一带 ses_ 前缀，和节点对齐）
-  for (const targetId of referencedIds) {
-    // 只创建指向已存在会话的边（目标会话可能还没在图中，但不阻塞）
-    graph.links.push({ source: sessionId, target: normalizeSessionId(targetId), type: "references" });
-  }
-
-  // 去重边
-  const linkSet = new Set<string>();
-  graph.links = graph.links.filter((l) => {
-    const key = `${l.source}->${l.target}`;
-    if (linkSet.has(key)) return false;
-    linkSet.add(key);
-    return true;
-  });
-
-  // 写回
-  await writeGraph(sessionsDir, graph);
 }
 
-/**
- * 全量重建图谱（用于定期修正、启动时初始化）
- * 遍历所有会话，构建完整图谱
- */
-export async function rebuildSessionGraph(
-  sessionsDir: string,
-  sessionManager: {
-    listSessions: () => Promise<Array<{ id: string; name: string; goal: string; lastMessageAt: string }>>;
-    getMessages: (id: string, limit: number | null) => Promise<Array<{ role: string; content: string; timestamp: string }>>;
-  }
-): Promise<void> {
-  const sessions = await sessionManager.listSessions();
-  const nodes: GraphNode[] = [];
-  const linkSet = new Set<string>();
-  const links: GraphLink[] = [];
-
-  for (const session of sessions) {
-    nodes.push({
-      id: session.id,
-      name: session.name,
-      goal: session.goal,
-      type: "session",
-      updatedAt: session.lastMessageAt,
-    });
-
-    const messages = await sessionManager.getMessages(session.id, null);
-    const referencedIds = new Set<string>();
-    for (const msg of messages) {
-      const refs = extractAmpersandRefs(msg.content ?? "");
-      for (const ref of refs) referencedIds.add(ref);
-    }
-
-    for (const targetId of referencedIds) {
-      const key = `${session.id}->${normalizeSessionId(targetId)}`;
-      if (!linkSet.has(key)) {
-        linkSet.add(key);
-        links.push({ source: session.id, target: normalizeSessionId(targetId), type: "references" });
+/** Atomically publish a full graph reconstructed from the JSON source. */
+export async function rebuildSessionGraph(sessionsDir: string, source: SessionGraphSource): Promise<void> {
+  const file = sessionGraphPath(sessionsDir);
+  try {
+    await withFileLock(file, async () => {
+      const sessions = await source.listSessions();
+      const targets = new Map<string, Set<string>>();
+      for (const session of sessions) {
+        targets.set(session.id, referenceTargets(await source.getMessages(session.id, null)));
       }
-    }
+      await withDatabase(sessionsDir, (db) => transaction(db, () => {
+        db.exec("DELETE FROM graph_links");
+        db.exec("DELETE FROM graph_nodes");
+        const insertNode = db.prepare("INSERT INTO graph_nodes (id, name, goal, updated_at) VALUES (?, ?, ?, ?)");
+        const insertLink = db.prepare("INSERT OR IGNORE INTO graph_links (source, target, type) VALUES (?, ?, 'references')");
+        for (const session of sessions) {
+          insertNode.run(session.id, session.name, session.goal, session.lastMessageAt);
+          for (const target of targets.get(session.id) ?? []) {
+            if (target !== session.id) insertLink.run(session.id, target);
+          }
+        }
+        bumpGeneration(db);
+      }));
+      reconciled.add(file);
+    });
+  } catch (error) {
+    reconciled.delete(file);
+    throw error;
   }
+}
 
-  await writeGraph(sessionsDir, { nodes, links });
+/** Readers see one committed generation. Dangling references remain stored for later recovery. */
+async function readCommittedGraph(sessionsDir: string): Promise<SessionGraphSnapshot | null> {
+  return await withDatabase(sessionsDir, (db) => {
+    db.exec("BEGIN");
+    try {
+      if (!db.prepare("SELECT generation FROM graph_meta WHERE id = 1").get()) {
+        db.exec("COMMIT");
+        return null;
+      }
+      const rows = db.prepare("SELECT id, name, goal, updated_at FROM graph_nodes ORDER BY id").all() as Array<{
+        id: string; name: string; goal: string; updated_at: string;
+      }>;
+      const edges = db.prepare(
+        "SELECT e.source, e.target FROM graph_links e " +
+        "JOIN graph_nodes s ON s.id = e.source JOIN graph_nodes t ON t.id = e.target " +
+        "WHERE e.type = 'references' ORDER BY e.source, e.target",
+      ).all() as Array<{ source: string; target: string }>;
+      const snapshot: SessionGraphSnapshot = {
+        nodes: rows.map((row) => ({ id: row.id, name: row.name, goal: row.goal, type: "session", updatedAt: row.updated_at })),
+        links: edges.map((row) => ({ source: row.source, target: row.target, type: "references" })),
+      };
+      db.exec("COMMIT");
+      return snapshot;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
+export async function readSessionGraph(
+  sessionsDir: string,
+  source: SessionGraphSource,
+): Promise<SessionGraphSnapshot> {
+  const file = sessionGraphPath(sessionsDir);
+  if (!reconciled.has(file)) await rebuildSessionGraph(sessionsDir, source);
+  const snapshot = await readCommittedGraph(sessionsDir);
+  if (snapshot) return snapshot;
+  // The derived database was removed while this process was running.
+  reconciled.delete(file);
+  await rebuildSessionGraph(sessionsDir, source);
+  const restored = await readCommittedGraph(sessionsDir);
+  if (!restored) throw new Error("Session graph rebuild produced no committed snapshot");
+  return restored;
+}
+
+export async function readSessionGraphEdges(
+  sessionsDir: string,
+  source: SessionGraphSource,
+): Promise<SessionGraphEdges> {
+  const { links } = await readSessionGraph(sessionsDir, source);
+  const out = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  for (const link of links) {
+    out.set(link.source, [...(out.get(link.source) ?? []), link.target]);
+    incoming.set(link.target, [...(incoming.get(link.target) ?? []), link.source]);
+  }
+  return { out, in: incoming };
 }

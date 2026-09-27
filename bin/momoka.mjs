@@ -48,12 +48,13 @@ function usage() {
   println("  momoka session list [--query <词>] [--limit <n>]");
   println("  momoka session chat <ses_id|关键词> <消息…>");
   println("  momoka session inspect <ses_<id>>");
+  println("  momoka session quickref list|get|add|update|delete|audit <ses_id> [entry_id] [--topic <主题>] [--content <正文>] [--sources <来源ID,...>] [--revision <n>]");
 }
 
 async function api(method, pathname, body) {
   const res = await fetch(`${BASE}${pathname}`, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
+    headers: { "x-momoka-client": "cli", ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -309,6 +310,46 @@ async function main() {
 
   if (cmd === "session") {
     const { named, positional } = parseArgs(argv, sub);
+    if (sub === "quickref") {
+      const [operation, sessionId, entryId] = positional;
+      if (!operation || !sessionId) throw new Error("session quickref 需要操作与 ses_id");
+      const collection = "/api/sessions/" + encodeURIComponent(sessionId) + "/quickrefs";
+      const item = entryId ? collection + "/" + encodeURIComponent(entryId) : "";
+      const revision = Number(named.revision);
+      const sources = typeof named.sources === "string"
+        ? named.sources.split(",").map((value) => value.trim()).filter(Boolean)
+        : [];
+      let data;
+      if (operation === "list") {
+        ({ data } = await api("GET", collection));
+      } else if (operation === "audit") {
+        ({ data } = await api("GET", collection + "/audit"));
+      } else if (operation === "get" && item) {
+        ({ data } = await api("GET", item));
+      } else if (operation === "add") {
+        if (typeof named.topic !== "string" || typeof named.content !== "string") {
+          throw new Error("quickref add 需要 --topic 与 --content");
+        }
+        ({ data } = await api("POST", collection, { topic: named.topic, content: named.content, source_refs: sources }));
+      } else if (operation === "update" && item) {
+        if (!Number.isInteger(revision) || revision < 1) throw new Error("quickref update 需要 --revision <n>");
+        const patch = { expected_revision: revision };
+        if (typeof named.topic === "string") patch.topic = named.topic;
+        if (typeof named.content === "string") patch.content = named.content;
+        if (named.sources !== undefined) patch.source_refs = sources;
+        if (!("topic" in patch) && !("content" in patch) && !("source_refs" in patch)) {
+          throw new Error("quickref update 至少需要 --topic、--content 或 --sources");
+        }
+        ({ data } = await api("PATCH", item, patch));
+      } else if (operation === "delete" && item) {
+        if (!Number.isInteger(revision) || revision < 1) throw new Error("quickref delete 需要 --revision <n>");
+        ({ data } = await api("DELETE", item, { expected_revision: revision }));
+      } else {
+        throw new Error("未知 quickref 操作：" + operation);
+      }
+      println(JSON.stringify(data, null, 2));
+      return;
+    }
     if (sub === "list") {
       const { data } = await api("GET", "/api/sessions");
       let sessions = Array.isArray(data?.sessions) ? data.sessions : [];

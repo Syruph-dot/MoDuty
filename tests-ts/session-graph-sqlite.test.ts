@@ -110,3 +110,20 @@ test("session graph: explicit links in reasoning and tool calls survive migratio
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("session graph: explicit links beyond a long tool result remain discoverable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "moduty-graph-long-result-"));
+  try {
+    const sessions = new SessionManager(root);
+    const target = await sessions.createSession("target", root);
+    await sessions.addMessage(target.id, "user", "target");
+    const source = await sessions.createSession("source", root);
+    await sessions.addMessage(source.id, "agent", "no link in content", {
+      toolCalls: [{ tool: "read_file", args: "{}", result: "x".repeat(200_100) + " &" + target.id }],
+    });
+    const graph = await readSessionGraph(sessions.sessionsDir, sessions);
+    assert.deepEqual(graph.links.map((edge) => [edge.source, edge.target]), [[source.id, target.id]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

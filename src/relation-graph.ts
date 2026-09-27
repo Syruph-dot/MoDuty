@@ -119,13 +119,13 @@ function bumpGeneration(db: SqliteDatabase): void {
   db.prepare("UPDATE graph_meta SET generation = generation + 1, updated_at = ? WHERE id = 1").run(now);
 }
 
-function referenceTargets(messages: GraphMessage[]): Set<string> {
+/** Extract explicit session handles from all persisted message text fields. */
+export function extractSessionReferenceTargets(messages: GraphMessage[]): Set<string> {
   const targets = new Set<string>();
   const collect = (value: unknown, depth = 0): void => {
     if (value == null || depth > 4) return;
     if (typeof value === "string") {
-      // Match the existing relation view's bound for long tool results.
-      for (const raw of extractAmpersandRefs(value.slice(0, 200_000))) targets.add(normalizeSessionId(raw));
+      for (const raw of extractAmpersandRefs(value)) targets.add(normalizeSessionId(raw));
     } else if (Array.isArray(value)) {
       for (const item of value) collect(item, depth + 1);
     } else if (typeof value === "object") {
@@ -148,7 +148,7 @@ export async function refreshSessionGraph(
   try {
     await withFileLock(file, async () => {
       const session = await source.getSession(sessionId);
-      const targets = session ? referenceTargets(await source.getMessages(sessionId, null)) : new Set<string>();
+      const targets = session ? extractSessionReferenceTargets(await source.getMessages(sessionId, null)) : new Set<string>();
       await withDatabase(sessionsDir, (db) => transaction(db, () => {
         if (session) {
           db.prepare(
@@ -182,7 +182,7 @@ export async function rebuildSessionGraph(sessionsDir: string, source: SessionGr
       const sessions = await source.listSessions();
       const targets = new Map<string, Set<string>>();
       for (const session of sessions) {
-        targets.set(session.id, referenceTargets(await source.getMessages(session.id, null)));
+        targets.set(session.id, extractSessionReferenceTargets(await source.getMessages(session.id, null)));
       }
       await withDatabase(sessionsDir, (db) => transaction(db, () => {
         db.exec("DELETE FROM graph_links");

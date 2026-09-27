@@ -20,7 +20,7 @@ export interface QuickRefEntry {
 }
 
 export interface QuickRefActor {
-  channel: "agent" | "desktop" | "cli";
+  channel: "agent" | "desktop" | "cli" | "api";
   agentId?: string;
 }
 
@@ -64,20 +64,34 @@ export class QuickRefConflictError extends Error {
   }
 }
 
+export class QuickRefValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "QuickRefValidationError";
+  }
+}
+
+export class QuickRefSessionNotFoundError extends Error {
+  constructor(sessionId: string) {
+    super("Unknown session: " + sessionId);
+    this.name = "QuickRefSessionNotFoundError";
+  }
+}
+
 function cleanText(value: string, label: string, maxChars: number): string {
   const clean = value.trim();
-  if (!clean || [...clean].length > maxChars) throw new Error(label + " must contain 1-" + maxChars + " characters.");
-  if (containsSensitiveTraceContent(clean)) throw new Error(label + " contains secret-like content.");
+  if (!clean || [...clean].length > maxChars) throw new QuickRefValidationError(label + " must contain 1-" + maxChars + " characters.");
+  if (containsSensitiveTraceContent(clean)) throw new QuickRefValidationError(label + " contains secret-like content.");
   return clean;
 }
 
 function cleanRefs(refs: string[], origin: QuickRefEntry["origin"]): string[] {
-  if (!Array.isArray(refs)) throw new Error("sourceRefs must be an array.");
+  if (!Array.isArray(refs)) throw new QuickRefValidationError("sourceRefs must be an array.");
   const clean = [...new Set(refs.map((value) => String(value).trim()).filter(Boolean))];
   if (clean.length > 20 || clean.some((ref) => ref.length > 256 || containsSensitiveTraceContent(ref))) {
-    throw new Error("sourceRefs exceed the limit or contain secret-like content.");
+    throw new QuickRefValidationError("sourceRefs exceed the limit or contain secret-like content.");
   }
-  if (origin === "agent" && clean.length === 0) throw new Error("Agent quick references require sourceRefs.");
+  if (origin === "agent" && clean.length === 0) throw new QuickRefValidationError("Agent quick references require sourceRefs.");
   return clean;
 }
 
@@ -90,7 +104,7 @@ export class SessionQuickRefStore {
 
   private async filePath(sessionId: string): Promise<string> {
     if (!/^ses_[a-z0-9]+$/u.test(sessionId) || !(await this.sessions.getSession(sessionId))) {
-      throw new Error("Unknown session: " + sessionId);
+      throw new QuickRefSessionNotFoundError(sessionId);
     }
     return path.join(this.sessions.sessionsDir, sessionId, "quickrefs.json");
   }
@@ -167,7 +181,7 @@ export class SessionQuickRefStore {
   async update(sessionId: string, entryId: string, input: UpdateQuickRef, actor: QuickRefActor): Promise<QuickRefEntry | null> {
     const file = await this.filePath(sessionId);
     if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) {
-      throw new Error("expectedRevision must be a positive integer.");
+      throw new QuickRefValidationError("expectedRevision must be a positive integer.");
     }
     return await withFileLock(file, async () => {
       const state = await this.read(file);
@@ -195,7 +209,7 @@ export class SessionQuickRefStore {
   async delete(sessionId: string, entryId: string, expectedRevision: number, actor: QuickRefActor): Promise<boolean> {
     const file = await this.filePath(sessionId);
     if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
-      throw new Error("expectedRevision must be a positive integer.");
+      throw new QuickRefValidationError("expectedRevision must be a positive integer.");
     }
     return await withFileLock(file, async () => {
       const state = await this.read(file);

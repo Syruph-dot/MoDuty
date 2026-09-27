@@ -13,6 +13,7 @@ import { handleDispatchBridge, orchestrationOf, startDispatchStallScanner, wireA
 import { setDispatchHandler } from "./dispatch-bridge.js";
 import { handleSettingsRoutes } from "./http/settings-routes.js";
 import { handleSessionRoutes } from "./http/session-routes.js";
+import { handleQuickRefRoutes } from "./http/quickref-routes.js";
 import { handleRelationRoutes } from "./http/relation-routes.js";
 import { handleAgentRoutes } from "./http/agent-routes.js";
 import { handleApprovalRoutes } from "./http/approval-routes.js";
@@ -87,6 +88,7 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
 
     if (await handleSettingsRoutes(ctx, request, response, url)) return;
     if (await handleRelationRoutes(ctx, request, response, url)) return;
+    if (await handleQuickRefRoutes(ctx, request, response, url)) return;
     if (await handleSessionRoutes(ctx, request, response, url)) return;
     if (await handleAgentRoutes(ctx, request, response, url)) return;
     if (await handleApprovalRoutes(ctx, request, response, url)) return;

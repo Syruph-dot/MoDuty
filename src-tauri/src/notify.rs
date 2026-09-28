@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::Manager;
+use tauri::Emitter;
 use tauri_winrt_notification::{Duration, Sound, Toast};
 use windows::core::{Interface, HSTRING, PWSTR};
 use windows::Win32::Foundation::PROPERTYKEY;
@@ -190,7 +190,7 @@ pub fn toast_with_actions(
   toast
     .on_activated(move |arguments| {
       if let Some(action) = arguments {
-        let _ = handle.emit_all(TOAST_ACTION_EVENT, ToastActionPayload { action });
+        let _ = handle.emit(TOAST_ACTION_EVENT, ToastActionPayload { action });
       }
       Ok(())
     })

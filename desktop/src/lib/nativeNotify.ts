@@ -38,17 +38,17 @@ export function notificationCapability(): "granted" | "default" | "denied" | "un
   return Notification.permission;
 }
 
-/** 是否跑在 Tauri 壳里（v1 注入 window.__TAURI__；纯 ESM 场景只有 IPC 全局对象） */
+/** 是否跑在 Tauri 壳里（v2 注入 __TAURI_INTERNALS__；v1 是 __TAURI__ / __TAURI_IPC__） */
 function inTauri(): boolean {
   if (typeof window === "undefined") return false;
-  const w = window as unknown as { __TAURI__?: unknown; __TAURI_IPC__?: unknown };
-  return Boolean(w.__TAURI__ || w.__TAURI_IPC__);
+  const w = window as unknown as Record<string, unknown>;
+  return "__TAURI_INTERNALS__" in w || "__TAURI__" in w || "__TAURI_IPC__" in w;
 }
 
 async function notifyViaTauri(title: string, body: string, actions: NotifyAction[]): Promise<boolean> {
   try {
     // 动态 import：避免 vite 浏览器构建时把 @tauri-apps/api 拉进主包
-    const { invoke } = await import("@tauri-apps/api/tauri");
+    const { invoke } = await import("@tauri-apps/api/core");
     await invoke("notify_toast", { title, body, actions });
     return true;
   } catch (error) {

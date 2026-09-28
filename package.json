@@ -25,6 +25,7 @@
     "desktop:preview": "npm run preview --prefix desktop"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0",
     "@types/node": "^22.15.29",
     "@types/qrcode": "^1.5.6",
     "esbuild": "^0.25.5",

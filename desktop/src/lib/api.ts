@@ -19,8 +19,15 @@ function readEnvBase(): string | undefined {
   return value ? String(value) : undefined;
 }
 
+/**
+ * 是否跑在 Tauri 壳里。
+ * v1 注入 window.__TAURI__（withGlobalTauri）与 __TAURI_IPC__；
+ * v2 注入 window.__TAURI_INTERNALS__（默认就有，不依赖 withGlobalTauri）。
+ */
 function inTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as Record<string, unknown>;
+  return "__TAURI_INTERNALS__" in w || "__TAURI__" in w || "__TAURI_IPC__" in w;
 }
 
 function inMomokaShell(): boolean {
@@ -29,13 +36,15 @@ function inMomokaShell(): boolean {
 
 export function awaitApiBase(): Promise<string> {
   if (_apiBasePromise) return _apiBasePromise;
+  // 失败必须清掉缓存：后端 sidecar 冷启动期间（带端口重试时可达数秒）第一次调用
+  // 往往拿不到端口，若把已拒绝的 promise 缓存下来，界面就永远连不上直到手动重载。
   _apiBasePromise = (async () => {
     const envBase = readEnvBase();
     if (envBase) return envBase;
     if (inTauri()) {
       // 动态 import：避免 vite 浏览器构建时拉 @tauri-apps/api 失败
       try {
-        const { invoke } = await import("@tauri-apps/api/tauri");
+        const { invoke } = await import("@tauri-apps/api/core");
         const port = await invoke<number>("get_momoka_port");
         return `http://127.0.0.1:${port}`;
       } catch (err) {
@@ -49,7 +58,10 @@ export function awaitApiBase(): Promise<string> {
       return "http://127.0.0.1:8888";
     }
     return ""; // 浏览器 dev：Vite dev proxy
-  })();
+  })().catch((error: unknown) => {
+    _apiBasePromise = null;
+    throw error;
+  });
   return _apiBasePromise;
 }
 

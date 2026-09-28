@@ -1,4 +1,4 @@
-import { appWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 
 /**
@@ -8,7 +8,9 @@ import { appWindow } from "@tauri-apps/api/window";
  * （见 RightCharm.tsx）——那里是「窗口外沿工具」的统一去处。
  */
 export default function ControlBar() {
-  const inTauri = typeof window !== "undefined" && "__TAURI__" in window;
+  // v2 注入 __TAURI_INTERNALS__；v1 是 __TAURI__
+  const inTauri = typeof window !== "undefined"
+    && ("__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>) || "__TAURI__" in window);
 
   return (
     <>
@@ -20,7 +22,7 @@ export default function ControlBar() {
             className="control-bar__btn"
             aria-label="Minimize window"
             onClick={() => {
-              void appWindow.minimize();
+              void getCurrentWindow().minimize();
             }}
           >
             −
@@ -30,7 +32,7 @@ export default function ControlBar() {
             className="control-bar__btn control-bar__btn--close"
             aria-label="Close MoDuty"
             onClick={() => {
-              void appWindow.close();
+              void getCurrentWindow().close();
             }}
           >
             ×

@@ -1,91 +1,70 @@
 {
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MoDuty",
+  "mainBinaryName": "MoDuty",
+  "version": "0.1.0",
+  "identifier": "com.aronachest.app",
   "build": {
-    "beforeBuildCommand": "npm --prefix desktop run build",
     "beforeDevCommand": "npm --prefix desktop run dev",
-    "devPath": "http://localhost:5173",
-    "distDir": "../desktop/dist"
+    "beforeBuildCommand": "npm --prefix desktop run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../desktop/dist"
   },
-  "package": {
-    "productName": "MoDuty",
-    "version": "0.1.0"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "notification": {
-        "all": false
-      },
-      "shell": {
-        "all": false,
-        "execute": true,
-        "sidecar": true,
-        "scope": [
-          {
-            "name": "binaries/momoka-server",
-            "sidecar": true,
-            "args": true,
-            "env": {
-              "MOMOKA_PORT_FILE": "1",
-              "MOMOKA_PROJECT_ROOT": "1"
-            }
-          }
-        ]
-      }
-    },
-    "bundle": {
-      "active": true,
-      "category": "DeveloperTool",
-      "copyright": "",
-      "deb": {
-        "depends": []
-      },
-      "externalBin": [
-        "binaries/momoka-server"
-      ],
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "identifier": "com.aronachest.app",
-      "longDescription": "MoDuty — AI Agent tile-wall desktop shell powered by the MOMOKA Agent core.",
-      "macOS": {
-        "entitlements": null,
-        "exceptionDomain": "",
-        "frameworks": [],
-        "providerShortName": "MoDuty",
-        "signingIdentity": null
-      },
-      "resources": {
-        "../prompts": "prompts",
-        "../skills": "skills",
-        "../static": "static"
-      },
-      "shortDescription": "MoDuty — AI Agent tile-wall desktop",
-      "targets": "all",
-      "windows": {
-        "certificateThumbprint": null,
-        "digestAlgorithm": "sha256",
-        "timestampUrl": ""
-      }
-    },
-    "security": {
-      "csp": null
-    },
-    "updater": {
-      "active": false
-    },
+  "app": {
+    "withGlobalTauri": false,
     "windows": [
       {
-        "decorations": false,
-        "fullscreen": true,
+        "label": "main",
+        "title": "MoDuty",
+        "width": 800,
         "height": 600,
         "resizable": true,
-        "title": "MoDuty",
-        "width": 800
+        "fullscreen": true,
+        "decorations": false
       }
-    ]
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "copyright": "",
+    "shortDescription": "MoDuty — AI Agent tile-wall desktop",
+    "longDescription": "MoDuty — AI Agent tile-wall desktop shell powered by the MOMOKA Agent core.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../prompts": "prompts",
+      "../skills": "skills",
+      "../static": "static"
+    },
+    "externalBin": [
+      "binaries/momoka-server"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": "MoDuty",
+      "signingIdentity": null
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
   }
 }

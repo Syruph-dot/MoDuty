@@ -10,12 +10,13 @@ edition = "2021"
 rust-version = "1.60"
 
 [build-dependencies]
-tauri-build = { version = "1.5.6", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "1.8.3", features = ["shell-execute", "shell-sidecar"] }
+# 多 webview（浏览器磁贴）需要 unstable feature；见 tauri v2 的 Webview::builder / Window::add_child
+tauri = { version = "=2.11.5", features = ["unstable"] }
 
 # Windows 系统通知：tauri 自带的 notification 在 target\debug|release 下会跳过 AppUserModelID，
 # 未打包运行时不显示（静默丢弃）；这里自己维护 AUMID 并直接发 WinRT toast。
@@ -30,9 +31,3 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell_PropertiesSystem",
 ] }
 winreg = "0.52"
-
-[features]
-# this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.
-# If you use cargo directly instead of tauri's cli you can use this feature flag to switch between tauri's `dev` and `build` modes.
-# DO NOT REMOVE!!
-custom-protocol = [ "tauri/custom-protocol" ]

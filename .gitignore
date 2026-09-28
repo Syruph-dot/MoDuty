@@ -6,6 +6,8 @@ dist/
 # Bundled sidecar binaries (Bun --compile outputs, rebuilt per platform)
 binaries/
 src-tauri/binaries/
+# Tauri v2 生成的 capability schema（每次构建重建）
+src-tauri/gen/
 
 .env
 .env.example

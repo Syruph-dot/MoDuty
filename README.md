@@ -130,19 +130,23 @@ npm run desktop:dev
 # 1) 后端 + 旧前端 + 桌面前端产物
 npm run build
 
-# 2) sidecar 二进制（需要 bun）。Tauri v1 的 externalBin 相对 src-tauri/ 解析，
+# 2) sidecar 二进制（需要 bun）。Tauri 的 externalBin 相对 src-tauri/ 解析，
 #    必须产出 src-tauri/binaries/momoka-server-<target-triple>.exe
 npm run build:sidecar
 
-# 3) 打包
-cd src-tauri && cargo tauri build                       # 完整安装包（MSI + NSIS）
-cd src-tauri && cargo tauri build --debug --bundles none # 免安装调试产物
+# 3) 打包（Tauri v2：CLI 用 @tauri-apps/cli，不要再用 cargo tauri）
+CARGO_NET_OFFLINE=true npx tauri build                  # 完整安装包（MSI + NSIS）
+CARGO_NET_OFFLINE=true npx tauri build --debug --no-bundle  # 免安装调试产物
 ```
+
+关于 `CARGO_NET_OFFLINE=true` 与版本钉：`src-tauri/Cargo.toml` 把 `tauri`/`tauri-build` 钉在 `=2.11.5`/`=2.6.3`，这两个版本及其依赖已在本机 cargo 缓存里；一旦放开 semver 范围（例如 `"2"`），cargo 会去 crates.io 拉新版本，而本机到 crates.io 的访问经常超时。要升级 Tauri 时先确认网络可用，再改钉版本号。
 
 产物位置：`src-tauri/.cargo/config.toml` 把 `target-dir` 指到了 `D:/cargo-target/arona-chest`（按需可改回默认的 `src-tauri/target`），所以：
 
-- 免安装产物：`arona-chest/debug/MoDuty.exe`（同目录带 `momoka-server.exe`、`prompts/`、`static/`）
+- 免安装产物：`arona-chest/debug/MoDuty.exe`（同目录带 `momoka-server.exe`、`prompts/`、`skills/`、`static/`）
 - 发行版：`arona-chest/release/MoDuty.exe` 与 `arona-chest/release/bundle/{msi,nsis}/MoDuty_<版本>_x64*`
+
+运行时行为（Tauri v2）：主程序启动时**自己挑选一个可用端口**（8888 起递增，实起实探）并把 `PORT` 传给 sidecar，端口写入临时文件供前端读取；退出时主动收掉 sidecar，下次启动也会清理上次残留的 sidecar。Windows 上进程被强杀后可能留下归属已死 PID 的残留监听（端口显示占用但无法绑定），带重试的启动流程正是为了不被它拖死；重启系统可清掉这些残留。
 
 注意两个路径陷阱：`externalBin` 与 `bundle.resources` 都相对 **src-tauri/** 解析，仓库根的 `binaries/` 不参与打包；改了 `src/` 之后必须重跑 `npm run build:sidecar`，否则安装包里还是上一版后端。
 

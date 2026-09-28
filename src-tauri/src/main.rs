@@ -2,14 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use tauri::api::process::{Command, CommandEvent};
 use tauri::Manager;
 
 #[cfg(windows)]
@@ -26,94 +26,169 @@ struct MomokaServerState {
 const PROBE_BASE_PORT: u16 = 8888;
 const PROBE_TRIES: u16 = 10; // 8888..=8897
 const PROBE_INTERVAL_MS: u64 = 200;
-const PROBE_MAX_DURATION_MS: u64 = 10_000;
+/// 每个候选端口上等 sidecar 变成健康的时长（含冷启动）
+const HEALTH_WAIT_MS: u64 = 3_000;
+
+/// sidecar 与主可执行文件同目录：开发时是 target/<profile>/，安装后是安装目录。
+fn resolve_sidecar_path() -> Result<PathBuf, String> {
+  let exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
+  let dir = exe.parent().ok_or_else(|| "current_exe has no parent directory".to_string())?;
+  let name = if cfg!(windows) { "momoka-server.exe" } else { "momoka-server" };
+  let candidate = dir.join(name);
+  if candidate.exists() {
+    return Ok(candidate);
+  }
+  Err(format!(
+    "momoka-server sidecar not found at {} (did you run `npm run build:sidecar`?)",
+    candidate.display()
+  ))
+}
+
+/// sidecar 进程记录：用于「上一个进程被杀时留下的孤儿后端」清理。
+///
+/// 为什么必要：Windows 不会因父进程退出而回收子进程。孤儿 sidecar 会占住 8888，
+/// 新版本启动时端口探测会探测到它并继续用它——于是升级后可能一直在跑**旧后端**
+/// （2026-09-28 实测：一次构建被孤儿进程锁住目标文件，排查时才确认这个隐患）。
+static SIDECAR_PID_FILE: OnceLock<PathBuf> = OnceLock::new();
+static SIDECAR_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+fn sidecar_pid_file() -> PathBuf {
+  SIDECAR_PID_FILE
+    .get_or_init(|| std::env::temp_dir().join("arona-chest.momoka.sidecar.pid"))
+    .clone()
+}
+
+#[cfg(windows)]
+fn kill_pid(pid: u32) {
+  let _ = Command::new("taskkill")
+    .args(["/F", "/PID", &pid.to_string()])
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status();
+}
+
+#[cfg(not(windows))]
+fn kill_pid(pid: u32) {
+  let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+}
+
+/// 启动前清理上一次运行留下的 sidecar。
+fn kill_previous_sidecar() {
+  let pid_file = sidecar_pid_file();
+  if let Ok(text) = fs::read_to_string(&pid_file) {
+    if let Ok(pid) = text.trim().parse::<u32>() {
+      if pid != std::process::id() {
+        eprintln!("[sidecar] killing leftover sidecar pid={pid}");
+        kill_pid(pid);
+      }
+    }
+  }
+  let _ = fs::remove_file(&pid_file);
+}
+
+/// 记下本次启动的 sidecar pid（供下次启动与退出时清理）。
+fn remember_sidecar_pid(pid: u32) {
+  if let Ok(mut guard) = SIDECAR_PID.lock() {
+    *guard = Some(pid);
+  }
+  let _ = fs::write(sidecar_pid_file(), pid.to_string());
+}
+
+/// 退出时收掉自己拉起的 sidecar，不留孤儿。
+fn shutdown_sidecar() {
+  let pid = SIDECAR_PID.lock().ok().and_then(|guard| *guard);
+  if let Some(pid) = pid {
+    eprintln!("[sidecar] shutting down pid={pid}");
+    kill_pid(pid);
+  }
+  let _ = fs::remove_file(sidecar_pid_file());
+}
 
 fn main() {
   tauri::Builder::default()
     .setup(|app| {
       let port_file = std::env::temp_dir().join("arona-chest.momoka.port");
-      // 清理可能残留的旧端口文件
+      // 清理可能残留的旧端口文件与孤儿 sidecar
       let _ = fs::remove_file(&port_file);
+      kill_previous_sidecar();
+      // 等一下端口释（taskkill 是同步的，但监听 socket 需要极短时间关闭）
+      thread::sleep(Duration::from_millis(300));
 
-      // 启动 sidecar：binaries/momoka-server（target-triple 后缀由 tauri 自动加）
-      // 注意：Tauri 1.8 sidecar 模式下对自定义 env 的传递不可靠，所以**不**依赖
-      // process.env.MOMOKA_PORT_FILE，而是由 Rust 侧通过 HTTP 探测拿到真实端口。
-      let sidecar = Command::new_sidecar("momoka-server")
-        .map_err(|e| format!("sidecar command not found: {e}"))?;
-
-      let (mut rx, _child) = sidecar
-        .spawn()
-        .map_err(|e| format!("failed to spawn momoka-server sidecar: {e}"))?;
-
-      // 后台消费 stdout/stderr（避免管道缓冲区塞满导致 sidecar 卡死）
-      tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-          match event {
-            CommandEvent::Stdout(line) => {
-              eprintln!("[sidecar] {}", line);
-            }
-            CommandEvent::Stderr(line) => {
-              eprintln!("[sidecar:err] {}", line);
-            }
-            CommandEvent::Error(err) => {
-              eprintln!("[sidecar:event] error: {}", err);
-            }
-            CommandEvent::Terminated(payload) => {
-              eprintln!(
-                "[sidecar] terminated: code={:?} signal={:?}",
-                payload.code, payload.signal
-              );
-              break;
-            }
-            _ => {}
-          }
-        }
-      });
-
-      // 共享给探测线程：resolved_port
-      let resolved_port = Mutex::new(None::<u16>);
+      // sidecar 与主可执行文件同目录（v2 的 externalBin 会放到同一目录）。
+      // 缺文件属于安装/构建错误，直接在启动期报出来。
+      let sidecar_path = resolve_sidecar_path()?;
+      let resolved_port: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
       let port_file_for_thread = port_file.clone();
+      let resolved_for_thread = resolved_port.clone();
 
-      // 独立 OS 线程跑探测：不阻塞 Tauri runtime / setup 回调
+      // 启动 + 健康探测全部放到后台线程，并且**带端口重试**：
+      // Windows 上进程被强杀后可能留下归属已死 PID 的残留监听（实测：PID 不存在但端口
+      // 仍 EADDRINUSE），只靠“先试着绑一下”挑端口并不可靠；而 sidecar 在端口被占时
+      // 会故意直接失败（防多实例写坏 agents.json）。所以在每个候选端口上实起实探，
+      // 失败就收掉这个子进程、换下一个端口。
       thread::Builder::new()
-        .name("arona-chest.port-probe".to_string())
+        .name("moduty.sidecar-boot".to_string())
         .spawn(move || {
-          let started = std::time::Instant::now();
-          let mut attempt: u32 = 0;
-          loop {
-            if started.elapsed() > Duration::from_millis(PROBE_MAX_DURATION_MS) {
-              eprintln!(
-                "[probe] gave up after {}ms; port file not written",
-                PROBE_MAX_DURATION_MS
-              );
-              break;
-            }
-            for offset in 0..PROBE_TRIES {
-              let port = PROBE_BASE_PORT + offset;
-              if probe_health(port) {
-                if let Err(err) = fs::write(&port_file_for_thread, port.to_string()) {
-                  eprintln!("[probe] write port file failed: {err}");
-                  return;
-                }
-                eprintln!("[probe] momoka-server alive on :{port}; wrote port file");
-                if let Ok(mut guard) = resolved_port.lock() {
-                  *guard = Some(port);
-                }
-                return;
+          kill_previous_sidecar();
+          thread::sleep(Duration::from_millis(300));
+          for offset in 0..PROBE_TRIES {
+            let port = PROBE_BASE_PORT + offset;
+            eprintln!("[sidecar] spawning {} on port {port}", sidecar_path.display());
+            let mut child = match Command::new(&sidecar_path)
+              .env("PORT", port.to_string())
+              .stdout(Stdio::piped())
+              .stderr(Stdio::piped())
+              .spawn()
+            {
+              Ok(child) => child,
+              Err(err) => {
+                eprintln!("[sidecar] spawn failed: {err}");
+                break;
               }
+            };
+
+            // 后台消费 stdout/stderr（避免管道缓冲区塞满导致 sidecar 卡死）
+            if let Some(stdout) = child.stdout.take() {
+              thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                  eprintln!("[sidecar] {line}");
+                }
+              });
             }
-            attempt += 1;
-            if attempt % 5 == 0 {
-              eprintln!(
-                "[probe] still waiting for momoka-server (attempt={}, elapsed={}ms)",
-                attempt,
-                started.elapsed().as_millis()
-              );
+            if let Some(stderr) = child.stderr.take() {
+              thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                  eprintln!("[sidecar:err] {line}");
+                }
+              });
             }
-            thread::sleep(Duration::from_millis(PROBE_INTERVAL_MS));
+
+            if wait_for_health(port, Duration::from_millis(HEALTH_WAIT_MS)) {
+              remember_sidecar_pid(child.id());
+              if let Err(err) = fs::write(&port_file_for_thread, port.to_string()) {
+                eprintln!("[probe] write port file failed: {err}");
+              }
+              if let Ok(mut guard) = resolved_for_thread.lock() {
+                *guard = Some(port);
+              }
+              eprintln!("[probe] momoka-server alive on :{port}; port file written");
+              // 守着子进程退出（应用退出时会主动收掉它）
+              let status = child.wait();
+              eprintln!("[sidecar] exited: {status:?}");
+              return;
+            }
+
+            eprintln!("[sidecar] port {port} never became healthy; killing pid={}", child.id());
+            kill_pid(child.id());
+            let _ = child.wait();
           }
+          eprintln!(
+            "[sidecar] gave up: no healthy backend in {}..{}",
+            PROBE_BASE_PORT,
+            PROBE_BASE_PORT + PROBE_TRIES - 1
+          );
         })
-        .map_err(|e| format!("failed to spawn port-probe thread: {e}"))?;
+        .map_err(|e| format!("failed to spawn sidecar bootstrap thread: {e}"))?;
 
       app.manage(MomokaServerState {
         port_file,
@@ -130,8 +205,13 @@ fn main() {
       Ok(())
     })
     .invoke_handler(tauri::generate_handler![get_momoka_port, notify_toast])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|_handle, event| {
+      if let tauri::RunEvent::Exit = event {
+        shutdown_sidecar();
+      }
+    });
 }
 
 /// 前端调用：发一条系统通知（Windows 原生 Toast），可带按钮。
@@ -175,6 +255,8 @@ fn notify_toast(
 /// 优先读端口文件；若探测线程尚未写完，fallback 到内存中的探测结果。
 #[tauri::command]
 fn get_momoka_port(state: tauri::State<MomokaServerState>) -> Result<u16, String> {
+  // 诊断用：前端每次解析 API base 都会走到这里（保留，便于排查“界面连不上后端”）
+  eprintln!("[port] get_momoka_port invoked");
   if let Ok(content) = fs::read_to_string(&state.port_file) {
     if let Ok(port) = content.trim().parse::<u16>() {
       return Ok(port);
@@ -186,6 +268,18 @@ fn get_momoka_port(state: tauri::State<MomokaServerState>) -> Result<u16, String
     }
   }
   Err("momoka-server not ready yet (port probe still in progress)".to_string())
+}
+
+/// 轮询等待某个端口上的后端变成健康（含冷启动时间）。
+fn wait_for_health(port: u16, timeout: Duration) -> bool {
+  let started = std::time::Instant::now();
+  while started.elapsed() < timeout {
+    if probe_health(port) {
+      return true;
+    }
+    thread::sleep(Duration::from_millis(PROBE_INTERVAL_MS));
+  }
+  false
 }
 
 /// 同步 TCP 探测 + 最小 HTTP GET：连接 + 写入 HTTP/1.0 请求 + 读首行。

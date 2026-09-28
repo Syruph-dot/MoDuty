@@ -61,8 +61,29 @@ const EXPERIENCE_SYSTEM_PROMPT = `你是 MoDuty 的工作经验复盘整理器�
 
 这份材料属于组织记忆中的显性操作知识（operational know-how / runbook），不是用户画像。若证据不足以提炼有用经验，只输出精确标记 NO_EXPERIENCE。`;
 
+/** 索引扫描上限：文件名（ID）以时间戳开头，新的在前，截断只影响最旧的经验文档 */
+const EXPERIENCE_INDEX_MAX_FILES = 500;
+
+/** 一份经验文档的索引项：正文解析结果随文件版本缓存 */
+interface ExperienceIndexEntry {
+  id: string;
+  mtimeMs: number;
+  size: number;
+  /** 读取/解析失败（负缓存）：同一版本不再重复读盘与刷日志 */
+  failed?: boolean;
+  title: string;
+  preview: string;
+  sessionId: string | null;
+  paragraphs: string[];
+}
+
 export class ExperienceMemoryService {
   private readonly directory: string;
+  /**
+   * 文档索引缓存：键为文件的绝对路径，失效判断只看 (mtimeMs, size)。
+   * 为的是让 recall 在稳态下只花一次 readdir + N 次 stat，而不是每轮把每份文档读两遍。
+   */
+  private readonly indexCache = new Map<string, ExperienceIndexEntry>();
 
   constructor(dataDir: string, private readonly modelClient: ModelClient) {
     this.directory = path.join(path.resolve(dataDir), "memory", "experiences");
@@ -174,32 +195,95 @@ export class ExperienceMemoryService {
     }
   }
 
-  /** Read current Markdown on every recall, so edits and deletions take effect immediately. */
+  /**
+   * 扫描并维护经验文档索引，供 recall 使用。
+   *
+   * 每轮只 readdir 一次 + 逐文件 stat；只有 (mtimeMs, size) 变过的文档才重新读取与
+   * 解析正文，其余直接复用缓存。文件被编辑、删除、新增都会被 mtime/size 或目录列表
+   * 变化如实反映，不依赖进程内的写入路径。
+   */
+  private async scanIndex(): Promise<ExperienceIndexEntry[]> {
+    let names: string[];
+    try {
+      names = (await readdir(this.directory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map((entry) => entry.name)
+        .sort((left, right) => right.localeCompare(left))
+        .slice(0, EXPERIENCE_INDEX_MAX_FILES);
+    } catch (error) {
+      if (isNotFound(error)) {
+        this.indexCache.clear();
+        return [];
+      }
+      throw error;
+    }
+    const seen = new Set<string>();
+    const entries: ExperienceIndexEntry[] = [];
+    // 先并行取全部 stat（比逐个 await 快得多），再只对版本变过的文档读正文
+    const stats = await Promise.all(names.map((name) => stat(path.join(this.directory, name)).catch(() => null)));
+    for (const [index, name] of names.entries()) {
+      const file = path.join(this.directory, name);
+      seen.add(file);
+      const fileStat = stats[index];
+      if (!fileStat) continue;
+      const cached = this.indexCache.get(file);
+      if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+        entries.push(cached);
+        continue;
+      }
+      const entry = await this.readIndexEntry(file, name.slice(0, -3), fileStat);
+      this.indexCache.set(file, entry);
+      entries.push(entry);
+    }
+    for (const key of [...this.indexCache.keys()]) if (!seen.has(key)) this.indexCache.delete(key);
+    return entries;
+  }
+
+  private async readIndexEntry(file: string, id: string, fileStat: { mtimeMs: number; size: number }): Promise<ExperienceIndexEntry> {
+    const version = { mtimeMs: fileStat.mtimeMs, size: fileStat.size };
+    try {
+      const content = await readFile(file, "utf8");
+      return {
+        id,
+        ...version,
+        title: content.match(/^#\s+(.+)$/mu)?.[1]?.trim() ?? id,
+        preview: content.split(/\r?\n/u).find((line) => line.trim() && !line.startsWith("#"))?.trim() ?? "",
+        sessionId: content.match(/会话 &(ses_[A-Za-z0-9_-]+)/u)?.[1] ?? null,
+        paragraphs: content.split(/\n\s*\n/u).filter((part) => part.trim() && !part.startsWith("## 来源")),
+      };
+    } catch {
+      return { id, ...version, failed: true, title: "", preview: "", sessionId: null, paragraphs: [] };
+    }
+  }
+
+  /**
+   * 按本轮主题召回相关经验。
+   *
+   * 走索引缓存：编辑与删除立即生效（mtime 变即重读），但稳态下不重复读盘。
+   */
   async recall(query: string, options: { limit?: number; charBudget?: number; excludeSessionId?: string; allowedSessionIds?: ReadonlySet<string>; semantic?: boolean; model?: string } = {}): Promise<RecalledExperience[]> {
     const terms = experienceTerms(query);
     if (terms.length === 0) return [];
     const candidates: RecalledExperience[] = [];
     const semanticPool: Array<RecalledExperience & { preview: string }> = [];
-    for (const item of await this.list()) {
-      const document = await this.get(item.id);
-      if (!document) continue;
-      const sessionId = document.content.match(/会话 &(ses_[A-Za-z0-9_-]+)/u)?.[1] ?? null;
-      if (sessionId && sessionId === options.excludeSessionId) continue;
-      if (sessionId && options.allowedSessionIds && !options.allowedSessionIds.has(sessionId)) continue;
-      const paragraphs = document.content.split(/\n\s*\n/u).filter((part) => part.trim() && !part.startsWith("## 来源"));
+    for (const entry of await this.scanIndex()) {
+      if (entry.failed) continue;
+      if (entry.sessionId && entry.sessionId === options.excludeSessionId) continue;
+      if (entry.sessionId && options.allowedSessionIds && !options.allowedSessionIds.has(entry.sessionId)) continue;
+      const paragraphs = entry.paragraphs;
       const reusable = paragraphs.find((part) => /可复用|适用边界|操作知识/u.test(part)) ?? paragraphs.find((part) => !part.startsWith("#")) ?? "";
-      semanticPool.push({ id: item.id, title: document.title, excerpt: reusable.replace(/\s+/gu, " ").slice(0, 550), sessionId, score: 0.5, preview: document.preview.slice(0, 160) });
+      semanticPool.push({ id: entry.id, title: entry.title, excerpt: reusable.replace(/\s+/gu, " ").slice(0, 550), sessionId: entry.sessionId, score: 0.5, preview: entry.preview.slice(0, 160) });
       let best = { text: "", score: 0 };
       for (const paragraph of paragraphs) {
         const scored = scoreExperienceText(paragraph, terms);
         if (scored > best.score) best = { text: paragraph, score: scored };
       }
-      const titleScore = scoreExperienceText(document.title, terms);
+      const titleScore = scoreExperienceText(entry.title, terms);
       const score = best.score + titleScore * 1.5;
       // Two distinct lexical signals or a strong title match; avoid injecting incidental common terms.
       if (score < 2 || !best.text) continue;
       const excerpt = best.text.replace(/\s+/gu, " ").slice(0, 550);
-      candidates.push({ id: item.id, title: document.title, excerpt, sessionId, score });
+      candidates.push({ id: entry.id, title: entry.title, excerpt, sessionId: entry.sessionId, score });
     }
     candidates.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
     if (candidates.length === 0 && options.semantic && semanticPool.length > 0) {

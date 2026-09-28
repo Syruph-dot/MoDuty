@@ -12,6 +12,9 @@ use std::time::Duration;
 use tauri::api::process::{Command, CommandEvent};
 use tauri::Manager;
 
+#[cfg(windows)]
+mod notify;
+
 /// 后端 sidecar 的运行时状态：
 /// - port_file  → 写入 / 读取后端真实监听端口的文件路径
 /// - resolved_port → 由探测线程填充；前端 invoke 时若文件尚未就绪可回退
@@ -116,11 +119,56 @@ fn main() {
         port_file,
         resolved_port: Mutex::new(None),
       });
+
+      // 系统通知：补齐 Windows 需要的 AUMID 环境（开始菜单快捷方式 + AppUserModelId 注册项）。
+      // 不补的话，未打包 / target\debug 运行时发出的 toast 会被 Windows 静默丢弃（不报错、不显示）。
+      #[cfg(windows)]
+      if let Err(error) = notify::ensure_identity() {
+        eprintln!("[notify] ensure_identity failed: {error}");
+      }
+
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![get_momoka_port])
+    .invoke_handler(tauri::generate_handler![get_momoka_port, notify_toast])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+/// 前端调用：发一条系统通知（Windows 原生 Toast），可带按钮。
+/// 按钮被点时 Rust 侧通过 `moduty-toast-action` 事件把 action id 回传（见 notify.rs）。
+#[derive(serde::Deserialize)]
+struct NotifyActionInput {
+  id: String,
+  label: String,
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn notify_toast(
+  app: tauri::AppHandle,
+  title: String,
+  body: String,
+  actions: Option<Vec<NotifyActionInput>>,
+) -> Result<(), String> {
+  let actions: Vec<notify::ToastAction> = actions
+    .unwrap_or_default()
+    .into_iter()
+    .map(|item| notify::ToastAction {
+      id: item.id,
+      label: item.label,
+    })
+    .collect();
+  notify::toast_with_actions(&app, &title, &body, &actions)
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn notify_toast(
+  _title: String,
+  _body: String,
+  _actions: Option<Vec<NotifyActionInput>>,
+) -> Result<(), String> {
+  Err("当前平台不支持系统通知".to_string())
 }
 
 /// 前端调用：返回后端真实监听端口。

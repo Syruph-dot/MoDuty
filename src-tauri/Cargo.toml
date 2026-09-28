@@ -15,7 +15,21 @@ tauri-build = { version = "1.5.6", features = [] }
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "1.8.3", features = ["shell-execute", "shell-sidecar", "notification"] }
+tauri = { version = "1.8.3", features = ["shell-execute", "shell-sidecar"] }
+
+# Windows 系统通知：tauri 自带的 notification 在 target\debug|release 下会跳过 AppUserModelID，
+# 未打包运行时不显示（静默丢弃）；这里自己维护 AUMID 并直接发 WinRT toast。
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7.3"
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+] }
+winreg = "0.52"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem and the built-in dev server is disabled.

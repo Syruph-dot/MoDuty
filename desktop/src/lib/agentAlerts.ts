@@ -1,5 +1,6 @@
 /**
- * 「Agent 在等你」提醒的总闸：桌面 toast + OS 通知共用一套判定与去重。
+ * 「Agent 在等你」提醒的总闸：判定、去重、冷却、打开窗口集中在这里，实际投递走 lib/nativeNotify
+ * （Tauri 内是 Windows 原生 Toast，浏览器内是 Web Notification）。
  *
  * 两条触发路径（缺一不可）：
  * 1. 事件驱动：SSE 收到某 Agent 进入 requiring_input（待答提问）/ waiting_approval（待审批）→ raiseAgentAlert；
@@ -8,8 +9,8 @@
  *
  * 抑制与去重：
  * - 该 Agent 的窗口已经打开且页面可见 → 不打扰（卡片就在眼前）；
- * - toast 每个 (Agent, 状态) 只弹一次，直到它脱离挂起态（避免 5s 轮询把同一件事反复弹）；
- * - OS 通知同一 (Agent, 状态) 60s 冷却。
+ * - 同一 (Agent, 状态) 只提醒一次，直到它脱离挂起态（避免事件抖动把同一件事反复弹）；
+ * - 额外 60s 冷却，兜住短期重复事件。
  */
 import { listAgents } from "./api";
 import { deriveVisibleAgents } from "./agentFilter";
@@ -19,41 +20,11 @@ import { useDialogStore } from "../state/dialogStore";
 
 export type AgentAlertState = "requiring_input" | "waiting_approval";
 
-export interface AgentAlert {
-  /** 去重键：`<agentId>:<state>` */
-  id: string;
-  agentId: string;
-  name: string;
-  state: AgentAlertState;
-  at: number;
-}
-
-export type AgentAlertEvent =
-  | { type: "raise"; alert: AgentAlert }
-  | { type: "dismiss"; agentId: string };
-
 const NOTIFY_COOLDOWN_MS = 60_000;
 
-const listeners = new Set<(event: AgentAlertEvent) => void>();
-const lastNotifyAt = new Map<string, number>();
+/** 已经提醒过的 `<agentId>:<state>`；Agent 脱离挂起态时清掉，允许下次再提醒 */
 const raisedKeys = new Set<string>();
-
-export function subscribeAgentAlerts(listener: (event: AgentAlertEvent) => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function emit(event: AgentAlertEvent): void {
-  for (const listener of [...listeners]) {
-    try {
-      listener(event);
-    } catch {
-      // 单个订阅者异常不影响其它订阅者
-    }
-  }
-}
+const lastNotifyAt = new Map<string, number>();
 
 function alertTitle(name: string, state: AgentAlertState): string {
   return state === "requiring_input" ? `${name} 在等你回答` : `${name} 在等审批`;
@@ -61,8 +32,8 @@ function alertTitle(name: string, state: AgentAlertState): string {
 
 function alertBody(state: AgentAlertState): string {
   return state === "requiring_input"
-    ? "有一条提问等你作答，在窗口里选一项或输入自定义答案即可。"
-    : "有一条待审批的操作，打开窗口即可处理。";
+    ? "有一条提问等你作答，回到 MoDuty 选一项或输入自定义答案即可。"
+    : "有一条待审批的操作，回到 MoDuty 即可处理。";
 }
 
 /** 该 Agent 的窗口已经开着且页面在看 → 不打扰 */
@@ -72,7 +43,7 @@ export function isAgentWindowInFront(agentId: string): boolean {
   return store.openAgentIds.includes(agentId) && document.visibilityState === "visible";
 }
 
-/** 记一次「Agent 在等你」：桌面 toast（每状态一次）+ OS 通知（60s 冷却） */
+/** 记一次「Agent 在等你」：去重 + 冷却后发系统通知 */
 export function raiseAgentAlert(input: { agentId: string; name?: string; state: AgentAlertState }): void {
   const { agentId, state } = input;
   if (!agentId || isAgentWindowInFront(agentId)) return;
@@ -82,39 +53,37 @@ export function raiseAgentAlert(input: { agentId: string; name?: string; state: 
     "有 Agent";
   const key = `${agentId}:${state}`;
 
-  if (!raisedKeys.has(key)) {
-    raisedKeys.add(key);
-    emit({ type: "raise", alert: { id: key, agentId, name, state, at: Date.now() } });
-  }
+  if (raisedKeys.has(key)) return;
+  raisedKeys.add(key);
 
   const now = Date.now();
   if (now - (lastNotifyAt.get(key) ?? 0) < NOTIFY_COOLDOWN_MS) return;
   lastNotifyAt.set(key, now);
+
   void notifyNative({
     title: alertTitle(name, state),
     body: alertBody(state),
     tag: `moduty-agent-${agentId}`,
+    // 通知上直接给一个入口按钮：点了由 Rust 回传 action，前端负责把窗口开出来
+    actions: [{ id: `open-agent:${agentId}`, label: "打开窗口" }],
     onClick: () => {
       void openAgentFromAlert(agentId).then(() => window.focus());
     },
   });
 }
 
-/** Agent 脱离挂起态（已作答 / 已审批）：撤掉飘着的 toast，并允许下次再提醒 */
+/** Agent 脱离挂起态（已作答 / 已审批）：允许下次再提醒 */
 export function clearAgentAlert(agentId: string): void {
-  let removed = false;
   for (const key of [...raisedKeys]) {
     if (key.startsWith(`${agentId}:`)) {
       raisedKeys.delete(key);
       lastNotifyAt.delete(key);
-      removed = true;
     }
   }
-  if (removed) emit({ type: "dismiss", agentId });
 }
 
 /**
- * 打开该 Agent 的窗口并收起提示（toast / OS 通知的点击动作）。
+ * 打开该 Agent 的窗口（浏览器分支点通知时调用；Tauri 分支的点击行为由 Windows 接管）。
  *
  * 两个坑：
  * 1. 值日生不是磁贴实体（wall 派生时被排除），openAgent 对它是空操作 → 改成打开值日生页；

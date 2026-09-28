@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import BotSettingsPanel from "./BotSettingsPanel";
 import { useDialogStore } from "../state/dialogStore";
+import { notifyNative } from "../lib/nativeNotify";
 import {
   getOverscrollEffect,
   onOverscrollEffectChange,
@@ -688,6 +689,27 @@ export default function SettingsScreen() {
                     <div className="settings-row__label">模型轨道</div>
                     <div className="settings-row__desc">高/低/指定只是指向模型池条目的指针；日报默认走低消费轨道，普通对话走高消费轨道。</div>
                   </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row__grow">
+                    <div className="settings-row__label">系统通知</div>
+                    <div className="settings-row__desc">
+                      需要你介入 / 有结果时发 Windows 原生通知（来源名与图标取自 MoDuty）；通知上的按钮可直接把对应窗口开出来。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-nav__back"
+                    onClick={() => {
+                      void notifyNative({
+                        title: "MoDuty · 通知自检",
+                        body: "右下角能看到这条，说明系统通知已经打通。",
+                        actions: [{ id: "open-duty", label: "打开值日生页" }],
+                      });
+                    }}
+                  >
+                    发送测试通知
+                  </button>
                 </div>
               </div>
             </section>

@@ -385,12 +385,15 @@ ${ref.message.content}`;
 
   /** Compact older complete turns into a sidecar handoff; never mutate messages.json. */
   async compactSession(sessionId: string): Promise<BuildCompactHandoffResult> {
-    return await withSessionLock(sessionId, async () => {
+    return await withSessionLock(sessionId, () => this.compactSessionUnlocked(sessionId));
+  }
+
+  private async compactSessionUnlocked(sessionId: string, sourceMessages?: Awaited<ReturnType<SessionManager["getStoredMessages"]>>): Promise<BuildCompactHandoffResult> {
       const session = await this.sessionManager.getSession(sessionId);
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
-      const messages = await this.sessionManager.getStoredMessages(sessionId);
+      const messages = sourceMessages ?? await this.sessionManager.getStoredMessages(sessionId);
       const previous = await this.sessionManager.getCompactHandoff(sessionId);
-      const { model, contextWindow } = await this.configuredContextWindow();
+      const { model, contextWindow } = await this.configuredContextWindow(sessionId);
       const dynamicContext = await this.buildTurnContext({
         workDir: session.folderPath,
         topic: session.goal || session.name,
@@ -421,6 +424,7 @@ ${ref.message.content}`;
             response = await this.options.modelClient.run(input, {
               systemPrompt: COMPACT_HANDOFF_SYSTEM_PROMPT,
               topic: "Compact Handoff",
+              model,
               workDir: session.folderPath,
               matchedSkills: [],
               requestKind: "continuation",
@@ -438,7 +442,6 @@ ${ref.message.content}`;
       });
       await this.sessionManager.saveCompactHandoff(result.checkpoint);
       return result;
-    });
   }
 
   async getCompactHandoff(sessionId: string): Promise<CompactHandoffCheckpoint | null> {
@@ -467,19 +470,23 @@ ${ref.message.content}`;
     contextWindow: number;
     outputTokenLimit: number;
   }): void {
-    const toolSpecs = input.tools ?? TOOL_SPECS;
-    const estimate = estimateTokens(input.systemPrompt)
-      + estimateTokens(formatMessages(input.historyMessages))
-      + estimateTokens(input.input)
-      + estimateTokens(JSON.stringify(toolSpecs));
+    const estimate = this.estimatePromptInput(input);
     const safetyReserve = Math.ceil(input.contextWindow * 0.08);
     const inputLimit = input.contextWindow - input.outputTokenLimit - safetyReserve;
     if (estimate > inputLimit) {
       throw new MomokaHttpError(
         413,
-        `完整的 Compact Handoff、Turns、当前 User Input、系统提示和工具规格估算为 ${estimate} tokens，超出本模型可用输入预算 ${Math.max(0, inputLimit)}。历史未被裁剪；请先点击会话卡片上的 Compact 按钮。`,
+        `Compact block、当前 User Input、系统提示和工具规格估算为 ${estimate} tokens，超出本模型可用输入预算 ${Math.max(0, inputLimit)}。历史未被裁剪；请缩短当前输入或调整模型窗口。`,
       );
     }
+  }
+
+  private estimatePromptInput(input: { systemPrompt: string; historyMessages: Array<{ role: string; content: string }>; input: string; tools?: readonly unknown[] }): number {
+    const toolSpecs = input.tools ?? TOOL_SPECS;
+    return estimateTokens(input.systemPrompt)
+      + estimateTokens(formatMessages(input.historyMessages))
+      + estimateTokens(input.input)
+      + estimateTokens(JSON.stringify(toolSpecs));
   }
 
   private async runChat(request: ChatRequest): Promise<ChatResponse> {
@@ -491,6 +498,7 @@ ${ref.message.content}`;
     let workDir = request.workDir;
     // 会话历史：角色分离的消息数组（只追加，保证前缀稳定）；不再压平成一段文本
     let historyMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+    let preSendMessages: Awaited<ReturnType<SessionManager["getStoredMessages"]>> = [];
     if (sessionId) {
       const session = await this.sessionManager.getSession(sessionId);
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
@@ -511,6 +519,7 @@ ${ref.message.content}`;
       // The latest user message is passed separately as this run's actual input.
       // Compact only changes the prompt projection; it never edits the transcript.
       const forHistory = request.transient ? stored : stored.slice(0, -1);
+      preSendMessages = forHistory;
       if (resolveTurnMode(request) === "chat") {
         const compact = await this.sessionManager.getCompactHandoff(sessionId);
         let activeTurns = forHistory;
@@ -537,6 +546,7 @@ ${ref.message.content}`;
     // 同时记录 tool/text 顺序时间线（timeline）与分段文本（segments），
     // 供前端在重开/刷新后还原“文字段 → 工具卡片 → 文字段”的真实交错顺序。
     let streamingMessage: SessionMessage | null = null;
+    let autoCompactTriggered = false;
     // timeline: "text" 表示一段文本，number 表示 toolCalls 下标（工具）；segments 按文本段出现顺序归档
     const timeline: Array<"text" | number> = [];
     const segments: string[] = [];
@@ -634,6 +644,20 @@ ${ref.message.content}`;
         Number.isFinite(configuredOutputLimit) && configuredOutputLimit >= 256 ? Math.floor(configuredOutputLimit) : 16_384,
         Math.max(256, Math.floor(contextWindow * 0.2)),
       );
+      const projectedTokens = this.estimatePromptInput({ systemPrompt, historyMessages, input: prompt, tools });
+      const reachedCompactThreshold = projectedTokens >= Math.floor(contextWindow * 0.8);
+      const hasRawTurnsAfterCompact = historyMessages[0]?.content.startsWith("## Compact Handoff\n") && historyMessages.length > 1;
+      if (sessionId && turnMode === "chat" && (reachedCompactThreshold || hasRawTurnsAfterCompact)) {
+        try {
+          const compacted = await this.compactSessionUnlocked(sessionId, preSendMessages);
+          historyMessages = [{ role: "system", content: `## Compact Handoff\n${compacted.checkpoint.handoff}` }];
+          autoCompactTriggered = reachedCompactThreshold;
+          await appendTraceEvent(tracePath, "auto_compact", { checkpointId: compacted.checkpoint.id, model });
+        } catch (error) {
+          if (!(error instanceof CompactHandoffError)) throw error;
+          throw new MomokaHttpError(413, `达到模型窗口的 80%，但自动 Compact 未能安全完成：${error.message}`);
+        }
+      }
       // 耐用执行（P6）：上游偶发空流（~20%）与网络抖动走退避重试；
       // 重试复用同一 runId/tracePath，model-client 会从 checkpoint 命中已完成的工具调用而不重放副作用。
       let quietRounds = 0;

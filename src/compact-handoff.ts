@@ -137,8 +137,7 @@ export function formatMessagesForHandoff(messages: StoredMessage[]): string {
 }
 
 /**
- * Build a new handoff from a complete old-turn prefix, retaining the newest raw
- * complete turns and every unfinished turn after it. The canonical messages
+ * Build a new handoff from every available complete turn. The canonical messages
  * passed here are only read; only the returned checkpoint is persisted.
  */
 export async function buildCompactHandoff(input: BuildCompactHandoffInput): Promise<BuildCompactHandoffResult> {
@@ -155,9 +154,8 @@ export async function buildCompactHandoff(input: BuildCompactHandoffInput): Prom
   const { prelude, turns } = groupConversationTurns(messages.slice(startIndex));
   const firstIncomplete = turns.findIndex((turn) => !turn.complete);
   const eligibleTurns = firstIncomplete < 0 ? turns : turns.slice(0, firstIncomplete);
-  const retainedSuffixStart = chooseRetainedSuffixStart(eligibleTurns, input.contextWindow);
-  const compactedTurns = eligibleTurns.slice(0, retainedSuffixStart);
-  const retainedTurns = turns.slice(retainedSuffixStart);
+  const compactedTurns = eligibleTurns;
+  const retainedTurns = turns.slice(eligibleTurns.length);
   const sourceMessages = [
     ...(compactedTurns.length > 0 ? prelude : []),
     ...compactedTurns.flatMap((turn) => turn.messages),
@@ -225,22 +223,6 @@ export async function buildCompactHandoff(input: BuildCompactHandoffInput): Prom
     retainedTurnCount: retainedTurns.length,
     compactedMessageCount: sourceMessages.length,
   };
-}
-
-function chooseRetainedSuffixStart(turns: ConversationTurn[], contextWindow: number): number {
-  if (turns.length === 0) return 0;
-  // Keep recent complete turns raw, leaving headroom for the handoff, prompt,
-  // tool schemas, output reserve, and the next user message.
-  const targetTailTokens = Math.max(0, Math.floor(Math.max(1, contextWindow) * 0.3));
-  let start = turns.length;
-  let used = 0;
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const cost = estimateHandoffTokens(formatTurnForHandoff(turns[index]!));
-    if (used + cost > targetTailTokens) break;
-    used += cost;
-    start = index;
-  }
-  return start;
 }
 
 export const COMPACT_HANDOFF_SYSTEM_PROMPT = `你正在执行 Compact Handoff：为同一任务的后续执行者写一份可接续工作的交接摘要。

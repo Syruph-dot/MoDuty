@@ -1,16 +1,16 @@
-# Compact 与 Redirection 待办
+# Compact 与 Redirect 待办
 
 状态：设计约束已由用户确认；尚未实现。
 
 ## 已确认的产品约束
 
-- Compact 与 Redirection 是两个独立功能。Compact 是常规 Agent 上下文压缩，不生成、读取或依赖 Redirection 的 handoff Markdown。
+- Compact 与 Redirect 是两个独立功能。Compact 是常规 Agent 上下文压缩，不生成、读取或依赖 Redirect 的 handoff Markdown。
 - 用户发送消息后，按该会话当前使用模型的上下文窗口设置估算本次将发送的输入量；达到窗口的 80% 时，在模型处理当前请求前自动 Compact。
 - Compact 摘要调用与当前会话使用同一个模型；窗口预算也取该模型对应的设置，不使用 high-tier 默认窗口。
 - Compact 后的模型输入只保留 Compact block，以及正常运行必需的系统提示、工具定义和当前用户输入；不再附加 Compact 覆盖范围内或其后的旧原始 Turns。原始 transcript 继续完整保存在会话记录中，供查阅与恢复。
-- Redirection 独立使用 Agent 维护的工作目录文件 `.momoka/handoffs/<session-id>.md`。接近阈值后，在完整 Turn 结束时自动提醒 Agent 更新 handoff；该操作不属于 Compact。
-- Redirection 按钮只在 handoff 文件存在且有效时启用；不可用时只变暗并禁用，不显示原因。
-- 按下 Redirection 后创建并立即打开新会话；首条输入自动带入母会话 `&ses_<id>`，并指示新 Agent 读取对应 handoff Markdown。新会话沿用母会话的工作目录；新会话的模型继承策略待定。
+- Redirect 独立使用 Agent 维护的工作目录文件 `.momoka/handoffs/<session-id>.md`。接近阈值后，在完整 Turn 结束时自动提醒 Agent 更新 handoff；该操作不属于 Compact。
+- Redirect 按钮只在 handoff 文件存在且有效时启用；不可用时只变暗并禁用，不显示原因。
+- 按下 Redirect 后创建并立即打开新会话；系统自动生成首条输入，包含母会话 `&ses_<id>`、handoff 文件相对路径和先读取 handoff 再接续任务的指令。新会话沿用母会话的工作目录；新会话的模型继承策略待定。
 
 ## Compact 实施
 
@@ -21,12 +21,12 @@
 - [ ] 若压缩后 Compact block、系统提示、工具定义与当前输入仍超过模型预算，停止发送并返回明确的超限状态；不得静默截断当前输入或回退注入旧 Turns。
 - [ ] 验收覆盖：阈值低于 80% 不触发、达到 80% 先压缩再调用、恰好跨阈值的当前输入保留、连续 Compact 更新摘要、原 transcript 完整、不同模型使用各自窗口、Compact block 后无旧原始 Turns 注入。
 
-## Redirection 与 handoff 实施
+## Redirect 与 handoff 实施
 
 - [ ] 为每个母会话在其工作目录维护 `.momoka/handoffs/<session-id>.md`；文档由 Agent 更新，记录目标、进度、已验证证据、重要决策、产物路径、未完成事项和下一步，并保留母会话链接。
 - [ ] Compact 达到 80% 阈值后设置 handoff 待更新状态；当前完整 Turn 结束后，独立提醒 Agent 更新 Markdown。不得将 handoff 文件写入或混入 Compact block。
-- [ ] handoff 写入遵守 workspace manifest 的读写边界；写入成功并验证文件有效后才启用 Redirection。
-- [ ] handoff 不存在或无效时，Redirection 按钮变暗且不可点击，不显示原因；新 Turn 使 handoff 过期时恢复禁用，待 Agent 更新后重新启用。
-- [ ] Redirection 点击操作创建新会话并沿用母会话工作目录；首条输入包含 `&ses_<parent-session-id>` 和 handoff 文件相对路径，并要求先读取文件、再接续未完成工作；创建成功后立即跳转到新会话。
-- [ ] 决定 Redirection 新会话的模型选择策略；此决策与 Compact 摘要调用必须使用当前会话模型的要求分开处理。
+- [ ] handoff 写入遵守 workspace manifest 的读写边界；写入成功并验证文件有效后才启用 Redirect。
+- [ ] handoff 不存在或无效时，Redirect 按钮变暗且不可点击，不显示原因；新 Turn 使 handoff 过期时恢复禁用，待 Agent 更新后重新启用。
+- [ ] Redirect 点击操作创建新会话并沿用母会话工作目录；系统自动在首条输入中注入 `&ses_<parent-session-id>`、handoff 文件相对路径和读取指令；创建成功后立即跳转到新会话。
+- [ ] 决定 Redirect 新会话的模型选择策略；此决策与 Compact 摘要调用必须使用当前会话模型的要求分开处理。
 - [ ] 验收覆盖：hand-off 未就绪时按钮禁用；文件更新成功后启用；点击后新会话链接指向正确母会话并读取正确文件；创建失败不关闭或丢失母会话；不同会话 handoff 文件互不覆盖。

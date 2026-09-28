@@ -25,6 +25,7 @@ test("quickref HTTP API: list, create, get, update, delete and audit share one c
   try {
     const preflight = await fetch(base, { method: "OPTIONS" });
     assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /x-momoka-client/u);
+    assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /PATCH/u);
     const empty = await fetch(base);
     assert.equal(empty.status, 200);
     assert.deepEqual((await empty.json() as { entries: unknown[] }).entries, []);

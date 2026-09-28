@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import QuickRefManager from "./QuickRefManager";
 
 import {
   deleteMemory,
@@ -39,7 +40,7 @@ const SCOPES = ["", "user", "project", "agent", "session"];
  * 因为它是「检视与治理」而不是日常操作，不需要常驻占位。
  */
 export default function MemoryScreen({ onClose }: { onClose: () => void }) {
-  const [panel, setPanel] = useState<"memories" | "experiences">("memories");
+  const [panel, setPanel] = useState<"memories" | "experiences" | "quickrefs">("memories");
   const [memories, setMemories] = useState<MemoryView[]>([]);
   const [experiences, setExperiences] = useState<WorkExperienceView[]>([]);
   const [selectedExperience, setSelectedExperience] = useState<WorkExperienceDocument | null>(null);
@@ -80,7 +81,7 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (panel === "memories") void load();
-    else void loadExperiences();
+    else if (panel === "experiences") void loadExperiences();
   }, [panel, load, loadExperiences]);
 
   const stats = useMemo(() => {
@@ -154,9 +155,9 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
     <section className="memory-screen" aria-label="记忆面板">
       <header className="memory-screen__header">
         <div className="memory-screen__identity">
-          <h2 className="memory-screen__title">{panel === "memories" ? "记忆" : "工作经验"}</h2>
+          <h2 className="memory-screen__title">{panel === "memories" ? "记忆" : panel === "experiences" ? "工作经验" : "会话速查"}</h2>
           <span className="memory-screen__subtitle">
-            {panel === "memories"
+            {panel === "quickrefs" ? "按会话管理可复用的速查条目 · 人工纠正与审计" : panel === "memories"
               ? `共 ${stats.total} 条${stats.byStatus.size > 0 ? ` · ${[...stats.byStatus.entries()].map(([key, count]) => `${STATUS_LABELS[key] ?? key} ${count}`).join(" / ")}` : ""}`
               : `共 ${experiences.length} 篇 · 可编辑 Markdown · 复盘与操作知识`}
           </span>
@@ -169,6 +170,7 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
       <nav className="memory-screen__tabs" aria-label="记忆类别">
         <button type="button" className={panel === "memories" ? "is-active" : ""} onClick={() => setPanel("memories")}>长期记忆</button>
         <button type="button" className={panel === "experiences" ? "is-active" : ""} onClick={() => setPanel("experiences")}>工作经验</button>
+        <button type="button" className={panel === "quickrefs" ? "is-active" : ""} onClick={() => setPanel("quickrefs")}>会话速查</button>
       </nav>
 
       {panel === "memories" ? (
@@ -285,7 +287,7 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
           </li>
         ))}
       </ul>
-      : (
+       : panel === "experiences" ? (
         <div className="memory-screen__experience-layout">
           <aside className="memory-screen__experience-sidebar" aria-label="工作经验列表">
             <div className="memory-screen__experience-tools">
@@ -353,7 +355,7 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
             )}
           </article>
         </div>
-      )}
+      ) : <QuickRefManager />}
     </section>
   );
 }

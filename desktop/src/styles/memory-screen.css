@@ -290,3 +290,77 @@
   .memory-screen__experience-sidebar { flex: 0 0 35%; max-width: none; }
   .memory-screen__experience-detail { flex: 1 1 65%; }
 }
+
+.quickref-manager {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quickref-manager__toolbar,
+.quickref-manager__actions,
+.quickref-manager__section-head {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.quickref-manager__toolbar { flex-wrap: wrap; }
+
+.quickref-manager__field {
+  display: flex;
+  flex: 1 1 240px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: #aebbd0;
+}
+
+.quickref-manager__field .memory-screen__search,
+.quickref-manager__field .memory-screen__select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+}
+
+.quickref-manager__layout {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
+  gap: 16px;
+}
+
+.quickref-manager__entries,
+.quickref-manager__editor {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(10, 14, 24, 0.4);
+}
+
+.quickref-manager__editor { overflow-y: auto; }
+.quickref-manager__entries { overflow-y: auto; }
+.quickref-manager__section-head { justify-content: space-between; }
+.quickref-manager h3 { margin: 0; font-size: 15px; font-weight: 500; }
+.quickref-manager__section-head span { font-size: 12px; color: #94a2b8; }
+.quickref-manager__entries .memory-screen__list { flex: 1 1 auto; min-height: 0; }
+.quickref-manager__editor .memory-card__editor { min-height: 140px; }
+.quickref-manager__actions { justify-content: flex-start; }
+.quickref-manager__audit { border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 8px; color: #94a2b8; font-size: 11px; }
+.quickref-manager__audit summary { cursor: pointer; }
+.quickref-manager__audit ul { max-height: 110px; overflow-y: auto; padding-left: 18px; }
+
+@media (max-width: 850px) {
+  .quickref-manager__layout { grid-template-columns: 1fr; overflow-y: auto; }
+  .quickref-manager__entries { min-height: 280px; }
+}

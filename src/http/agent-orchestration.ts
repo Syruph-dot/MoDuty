@@ -6,6 +6,8 @@ import { readdir, stat, readFile } from "node:fs/promises";
 import type { MomokaAgentCore } from "../agent.js";
 import type { AgentRegistry } from "../agent-registry.js";
 import { isDispatcherAgent } from "../agent-registry.js";
+import { normalizeSessionId } from "../relation-graph.js";
+import type { SessionManager } from "../session-manager.js";
 import type { AgentStateMachine, AgentStateEvent, ContextStatsSnake } from "../agent-state.js";
 import type { WorkspaceManager } from "../workspace-manager.js";
 import type { AgentRecord, ChatResponse, StreamEvent, TurnMode } from "../types.js";
@@ -450,8 +452,12 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     if (refusal) return { ok: false, output: refusal };
   }
 
+  // 参考会话：正则抓句柄 → 存在性校验 → 不存在的从任务书剔除（只记存在性通过的进台账）
+  const knownSessionIds = await existingSessionIds(deps.agent.sessionManager);
+  const refs = stripUnknownSessionRefs(task, knownSessionIds);
+
   // 派发保真：老师原话里的链接/路径若没进任务书，自动补在尾部（执行者才有输入可用）
-  const fidelity = await buildDispatchedMessage(deps, caller.sessionId, task);
+  const fidelity = await buildDispatchedMessage(deps, caller.sessionId, refs.task);
   const taskWithFidelity = fidelity.message.slice(0, LEDGER_TASK_MAX_CHARS);
 
   const entry = await deps.registry.recordDispatch({
@@ -460,7 +466,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     targetAgentId: target.id,
     targetSessionId: target.sessionId,
     task: taskWithFidelity,
-    linkedSessions: extractSessionRefs(taskWithFidelity),
+    linkedSessions: knownSessionRefs(taskWithFidelity, knownSessionIds),
     ...(fidelity.askExcerpt ? { askExcerpt: fidelity.askExcerpt } : {}),
   });
 
@@ -474,6 +480,11 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
   }
   const fidelityWarn = fidelity.mismatch ? `
 ⚠ 注意：${fidelity.mismatch}。若任务书本身写错了，请用老师这条最新消息重派一条并取消本条。` : "";
+  // 不存在的参考会话句柄：不阻断派发，但已从任务书里剔除，必须在回执里让值日生看见
+  const refsWarn = refs.removed.length > 0
+    ? `
+⚠ 任务书里的参考会话句柄不存在，已从下发的任务书中剔除（台账不计入、执行者拿不到）：${refs.removed.map((id) => `&${id}`).join("、")}。需要带上它们请先用 search_sessions / inspect_session 确认会话 ID 后重派。`
+    : "";
 
   if (input.kind === "chat") {
     // 同步派发：等执行者本轮结束（结果给调用者）；台账照常进入判读队列
@@ -482,7 +493,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
     return {
       ok: true,
       dispatchId: entry.id,
-      output: (output.slice(0, 4000) || `（执行者无文本输出；台账 ${entry.id} 已进入判读队列）`) + fidelityWarn,
+      output: (output.slice(0, 4000) || `（执行者无文本输出；台账 ${entry.id} 已进入判读队列）`) + fidelityWarn + refsWarn,
     };
   }
 
@@ -509,7 +520,7 @@ export async function handleDispatchBridge(deps: OrchestrationDeps, input: Dispa
   return {
     ok: true,
     dispatchId: entry.id,
-    output: `已派发 ${target.id}「${target.name}」（台账 ${entry.id}）。执行者完成/出错/停转后系统会唤醒你判读，届时用 dispatch verdict 提交判定。${fidelityWarn}`,
+    output: `已派发 ${target.id}「${target.name}」（台账 ${entry.id}）。执行者完成/出错/停转后系统会唤醒你判读，届时用 dispatch verdict 提交判定。${fidelityWarn}${refsWarn}`,
   };
 }
 
@@ -682,12 +693,50 @@ async function validateDispatcherReuse(
   return null;
 }
 
-function extractSessionRefs(task: string): string[] {
-  const refs: string[] = [];
-  for (const match of task.matchAll(/&ses_([a-z0-9]+)/gi)) {
-    refs.push(`ses_${match[1]}`);
+/**
+ * 从任务书文本里正则抓参考会话句柄。
+ *
+ * 用户 2026-09-28 拍板：参考会话不做结构化 ID 列表，仍由值日生在任务书文本里自己写
+ * `&ses_<id>`；后端负责归一化（统一小写，兼容写出大写的句柄）、去重和存在性校验。
+ */
+export function extractSessionRefs(text: string): string[] {
+  const refs = new Set<string>();
+  for (const match of text.matchAll(/&ses_([a-z0-9]+)/gi)) {
+    const id = normalizeSessionId(match[1] ?? "");
+    if (id) refs.add(id);
   }
-  return refs;
+  return [...refs];
+}
+
+/** 当前真实存在的会话 ID 集合（一次读盘，供本轮所有句柄共用） */
+async function existingSessionIds(sessions: SessionManager): Promise<Set<string>> {
+  return new Set((await sessions.listSessions()).map((session) => session.id));
+}
+
+/**
+ * 参考会话存在性校验 + 任务书改写（用户 2026-09-28 拍板：剔除无效句柄并改写任务书）。
+ *
+ * 不存在的句柄**不阻断派发**，但要把死链从下发文本里摘掉：去掉 `&` 前缀只留裸 ID，
+ * 这样它不再被当作资源句柄解析（关系图、台账、执行者的按需自读都不会再碰它），
+ * 同时散文仍然可读。被剔除的句柄由调用方在工具回执里回报值日生。
+ *
+ * 只改写值日生写的任务书；老师原话是权威文本，一律不改写（见 dispatch-fidelity.ts）。
+ */
+export function stripUnknownSessionRefs(task: string, existing: Set<string>): { task: string; removed: string[] } {
+  const refs = extractSessionRefs(task);
+  const removed = refs.filter((id) => !existing.has(id));
+  if (removed.length === 0) return { task, removed };
+  let text = task;
+  for (const id of removed) {
+    // 负向后顾：短 ID 不得吃掉长 ID 的前缀（&ses_abc 不能命中 &ses_abcdef）
+    text = text.replace(new RegExp(`&${id}(?![a-z0-9])`, "giu"), id);
+  }
+  return { task: text, removed };
+}
+
+/** 下发文本里真正存在的参考会话句柄（台账只记这些；不存在的句柄不入台账） */
+export function knownSessionRefs(text: string, existing: Set<string>): string[] {
+  return extractSessionRefs(text).filter((id) => existing.has(id));
 }
 
 /* ============================================================

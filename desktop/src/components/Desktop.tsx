@@ -1424,8 +1424,13 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             onClick: () => openBrowser(browser.id),
           },
           {
+            id: "close-browser",
+            label: browser.mode === "persistent" ? "关闭浏览器（保留登录态）" : "关闭无痕浏览器（清除临时数据）",
+            onClick: () => void closeBrowser(browser.id),
+          },
+          {
             id: "remove-browser",
-            label: "删除浏览器（无痕同时销毁数据）",
+            label: "删除浏览器并清除登录数据",
             onClick: () => void deleteBrowser(browser.id),
           },
         ];
@@ -1445,7 +1450,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
             back={isOpen ? (
               <BrowserWindow
                 browser={browser}
-                onClose={() => closeBrowser(browser.id)}
+                onClose={() => { void closeBrowser(browser.id); }}
                 onHeaderDoubleClick={() => centerTileX(browser.id)}
               />
             ) : undefined}

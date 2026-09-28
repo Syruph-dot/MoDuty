@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { createBrowser as apiCreateBrowser, deleteBrowser as apiDeleteBrowser, listBrowsers } from "../lib/api";
+import { browserAction, createBrowser as apiCreateBrowser, deleteBrowser as apiDeleteBrowser, listBrowsers } from "../lib/api";
 import { spawnXToCol } from "../lib/persistTiles";
 import { useTileStore } from "./tileStore";
 import type { BrowserInfo, TileGrid } from "../types";
@@ -19,7 +19,7 @@ interface BrowserStore {
   createBrowser: (input: { name?: string; mode?: "persistent" | "incognito" }) => Promise<BrowserInfo | null>;
   deleteBrowser: (id: string) => Promise<void>;
   openBrowser: (id: string) => void;
-  closeBrowser: (id: string) => void;
+  closeBrowser: (id: string) => Promise<void>;
   updateBrowser: (browser: BrowserInfo) => void;
   /** 消费浏览器事件（created → 自动入座并打开；deleted → 移除；state → 就地更新） */
   applyBrowserEvent: (event: BrowserServiceEvent) => void;
@@ -49,7 +49,7 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
   },
 
   async createBrowser(input) {
-    const browser = await apiCreateBrowser({ mode: input.mode ?? "incognito", name: input.name });
+    const browser = await apiCreateBrowser({ mode: input.mode ?? "persistent", name: input.name });
     useTileStore.getState().ensureTile(browser.id, "browser", { colHint: spawnXToCol(0) });
     set((state) => ({ browsers: [browser, ...state.browsers] }));
     return browser;
@@ -72,7 +72,8 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
     }));
   },
 
-  closeBrowser(id) {
+  async closeBrowser(id) {
+    await browserAction(id, "close");
     set((state) => ({ openBrowserIds: state.openBrowserIds.filter((openId) => openId !== id) }));
   },
 

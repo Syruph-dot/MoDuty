@@ -58,9 +58,18 @@ function resolveExecutable(): string | undefined {
 }
 
 function profileRoot(): string {
-  const dir = path.join(os.homedir(), ".momoka", "browser-profiles");
+  const dir = process.env.MOMOKA_BROWSER_PROFILE_ROOT || path.join(os.homedir(), ".momoka", "browser-profiles");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+const BROWSER_ID_RE = /^brw_[A-Za-z0-9_-]{1,80}$/u;
+
+function persistedInfo(id: string, name: string, createdAt: string): BrowserInstanceInfo {
+  return {
+    id, name, mode: "persistent", state: "closed", url: null, title: null, tabs: 0,
+    createdAt, lastActiveAt: createdAt, profileDir: path.join(profileRoot(), id),
+  };
 }
 
 /** 把 Playwright 错误转译为 AI/用户友好消息（参考 agent-browser toAIFriendlyError） */
@@ -87,8 +96,57 @@ export interface BrowserServiceEvent {
   browser: BrowserInstanceInfo;
 }
 
-class BrowserService {
+export class BrowserService {
   private readonly instances = new Map<string, RuntimeInstance>();
+
+  constructor() {
+    this.restorePersistentInstances();
+  }
+
+  private registryPath(): string {
+    return path.join(profileRoot(), "instances.json");
+  }
+
+  private restorePersistentInstances(): void {
+    const root = profileRoot();
+    let saved: unknown = [];
+    try {
+      saved = JSON.parse(fs.readFileSync(this.registryPath(), "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("[BrowserService] browser registry unreadable; recovering profile directories", error);
+    }
+    if (Array.isArray(saved)) {
+      for (const row of saved) {
+        if (!row || typeof row !== "object") continue;
+        const candidate = row as Record<string, unknown>;
+        const id = candidate.id;
+        if (typeof id !== "string" || !BROWSER_ID_RE.test(id)) continue;
+        let profileStats: fs.Stats;
+        try { profileStats = fs.lstatSync(path.join(root, id)); } catch { continue; }
+        if (!profileStats.isDirectory() || profileStats.isSymbolicLink()) continue;
+        const createdAt = typeof candidate.createdAt === "string" && !Number.isNaN(Date.parse(candidate.createdAt))
+          ? candidate.createdAt : new Date().toISOString();
+        const info = persistedInfo(id, typeof candidate.name === "string" && candidate.name.trim() ? candidate.name : "浏览器", createdAt);
+        this.instances.set(id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+      }
+    }
+    // Older releases created profile directories without a registry. Recover them by stable directory ID.
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !BROWSER_ID_RE.test(entry.name) || this.instances.has(entry.name)) continue;
+      const info = persistedInfo(entry.name, "浏览器", fs.statSync(path.join(root, entry.name)).birthtime.toISOString());
+      this.instances.set(info.id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+    }
+    this.persistRegistry();
+  }
+
+  private persistRegistry(): void {
+    const rows = [...this.instances.values()].filter(({ info }) => info.mode === "persistent")
+      .map(({ info }) => ({ id: info.id, name: info.name, createdAt: info.createdAt }));
+    const target = this.registryPath();
+    const temporary = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(rows, null, 2), "utf8");
+    fs.renameSync(temporary, target);
+  }
 
   /** 浏览器生命周期事件（created / deleted / state）；订阅方 = /api/browsers/events SSE */
   private readonly listeners = new Set<(event: BrowserServiceEvent) => void>();
@@ -143,7 +201,7 @@ class BrowserService {
   /** 创建实例（不启动；磁贴打开时才 launch）。persistent 模式建立持久化 profile 目录。 */
   async createInstance(input: { name?: string; mode?: BrowserMode }): Promise<BrowserInstanceInfo> {
     const id = `brw_${randomUUID().slice(0, 12)}`;
-    const mode: BrowserMode = input.mode === "persistent" ? "persistent" : "incognito";
+    const mode: BrowserMode = input.mode === "incognito" ? "incognito" : "persistent";
     const now = new Date().toISOString();
     const name = (input.name ?? "").trim() || (mode === "persistent" ? "浏览器" : "无痕浏览器");
     const info: BrowserInstanceInfo = {
@@ -162,6 +220,7 @@ class BrowserService {
       fs.mkdirSync(info.profileDir!, { recursive: true });
     }
     this.instances.set(id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+    if (mode === "persistent") this.persistRegistry();
     this.emit({ type: "browser_created", browser: { ...info } });
     return { ...info };
   }
@@ -173,9 +232,10 @@ class BrowserService {
     }
     await this.closeInstance(id);
     if (runtime.info.mode === "persistent" && runtime.info.profileDir) {
-      await fs.promises.rm(runtime.info.profileDir, { recursive: true, force: true }).catch(() => undefined);
+      await fs.promises.rm(runtime.info.profileDir, { recursive: true, force: true });
     }
     this.instances.delete(id);
+    if (runtime.info.mode === "persistent") this.persistRegistry();
     this.emit({ type: "browser_deleted", browser: { ...runtime.info } });
     return true;
   }
@@ -194,6 +254,7 @@ class BrowserService {
     runtime.info.state = "closed";
     runtime.info.tabs = 0;
     runtime.info.lastActiveAt = new Date().toISOString();
+    this.emit({ type: "browser_state", browser: { ...runtime.info } });
   }
 
   /** 启动实例（打开磁贴时调用；幂等：已 ready 直接返回） */

@@ -847,7 +847,7 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "browse_create",
-      description: "创建并启动一个受控浏览器（独立于 Agent 的浏览器磁贴）。mode=persistent 持久化登录/Cookie（正常模式）；mode=incognito 无痕（默认）。返回浏览器 id，后续 browse_* 用 browser_id 引用。",
+      description: "创建并启动一个受控浏览器（独立于 Agent 的浏览器磁贴）。mode=persistent 持久化登录/Cookie（默认正常模式）；mode=incognito 无痕。不同工作目录可通过 browse_list 中的 browser_id 复用同一 profile。返回浏览器 id，后续 browse_* 用 browser_id 引用。",
       parameters: {
         type: "object",
         properties: {

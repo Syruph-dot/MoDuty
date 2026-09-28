@@ -381,6 +381,8 @@ export default function AgentWindow({
   const [compactCheckpoint, setCompactCheckpoint] = useState<CompactHandoffView | null>(null);
   const [compactBusy, setCompactBusy] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
+  const [redirectReady, setRedirectReady] = useState(false);
+  const [redirectBusy, setRedirectBusy] = useState(false);
   const [handoffExpanded, setHandoffExpanded] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -400,6 +402,7 @@ export default function AgentWindow({
   const [mentionChips, setMentionChips] = useState<Array<{ sessionId: string; name: string }>>([]);
   const load = useAgentsStore((state) => state.load);
   const openAgent = useAgentsStore((state) => state.openAgent);
+  const closeAgent = useAgentsStore((state) => state.closeAgent);
   const agents = useAgentsStore((state) => state.agents);
   const browsers = useBrowserStore((state) => state.browsers);
   const openBrowser = useBrowserStore((state) => state.openBrowser);
@@ -427,6 +430,37 @@ export default function AgentWindow({
       setCompactCheckpoint(data.checkpoint);
     } catch {
       // The chat history remains usable when this optional lookup fails.
+    }
+  };
+
+  const loadRedirectStatus = async (): Promise<void> => {
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/redirect`);
+      const data = (await res.json()) as { ready?: boolean };
+      setRedirectReady(res.ok && data.ready === true);
+    } catch {
+      setRedirectReady(false);
+    }
+  };
+
+  const redirectConversation = async (): Promise<void> => {
+    if (!redirectReady || redirectBusy || streaming) return;
+    setRedirectBusy(true);
+    setCompactError(null);
+    try {
+      const base = await awaitApiBase();
+      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/redirect`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { agent?: Agent; error?: string };
+      if (!res.ok || !data.agent) throw new Error(data.error || `Redirect 失败（HTTP ${res.status}）`);
+      await load();
+      closeAgent(agent.id);
+      openAgent(data.agent.id);
+    } catch (error) {
+      setCompactError(error instanceof Error ? error.message : "Redirect 失败");
+      void loadRedirectStatus();
+    } finally {
+      setRedirectBusy(false);
     }
   };
 
@@ -741,6 +775,7 @@ export default function AgentWindow({
       }
       const data = (await res.json()) as { messages: StoredMessage[] };
       void loadCompactHandoff();
+      void loadRedirectStatus();
       // 落盘消息 → 展示消息：按 timeline 还原工具卡片与文本段的真实交错顺序
       // （关闭重开 / onDone 全量重建时与实时 SSE 渲染保持一致；已完成工具默认折叠）
       const restored: DisplayMessage[] = [];
@@ -816,6 +851,7 @@ export default function AgentWindow({
     if (!msgs.some((message) => message.status === "streaming")) {
       return;
     }
+    setRedirectReady(false);
     setStreaming(true);
     if (pollTimerRef.current !== null) {
       return;
@@ -1088,6 +1124,7 @@ export default function AgentWindow({
     }
     setStreamError(null);
     setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString() }]);
+    setRedirectReady(false);
     setStreaming(true);
     stopPolling(); // 有后台轮询时先停掉，由 SSE 接管实时更新
     const controller = new AbortController();
@@ -1381,6 +1418,18 @@ export default function AgentWindow({
               onMouseDown={(event) => event.stopPropagation()}
             >
               {compactBusy ? "整理中…" : "Compact"}
+            </button>
+          ) : null}
+          {!embedded && subject.kind === "agent" && subject.id === agent.id ? (
+            <button
+              type="button"
+              className="agent-window__compact-btn"
+              aria-label="Redirect 到新会话"
+              disabled={!redirectReady || redirectBusy || streaming || agent.state === "running"}
+              onClick={() => void redirectConversation()}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              {redirectBusy ? "跳转中…" : "Redirect"}
             </button>
           ) : null}
           <div className="agent-window__export">

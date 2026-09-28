@@ -88,6 +88,8 @@ export interface AgentRecord {
 export interface ModelRunContext {
   systemPrompt: string;
   topic: string;
+  /** Resolved session model; when present, use its enabled model-pool entry. */
+  model?: string;
   workDir?: string;
   tracePath?: string;
   sessionId?: string | null;

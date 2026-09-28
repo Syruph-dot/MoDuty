@@ -257,10 +257,16 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
       // 每次 run 重新解析：参数 > 配置文件 > 环境变量 > 默认值
+      const sessionModel = context.model?.trim();
+      const sessionEntry = sessionModel
+        ? (await loadSettings()).modelPool.find((entry) => entry.enabled && entry.model.toLowerCase() === sessionModel.toLowerCase())
+        : undefined;
+      if (sessionModel && !sessionEntry) throw new Error(`会话模型「${sessionModel}」不在已启用的模型池中`);
       const { apiKey, baseUrl, model } = await resolveModelConfigByTier(tier, {
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
-        model: options.model,
+        model: sessionModel || options.model,
+        ...(sessionEntry ? { entryId: sessionEntry.id } : {}),
       });
 
       if (!apiKey) {

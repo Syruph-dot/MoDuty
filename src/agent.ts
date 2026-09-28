@@ -447,9 +447,14 @@ ${ref.message.content}`;
     return await this.sessionManager.getCompactHandoff(sessionId);
   }
 
-  private async configuredContextWindow(): Promise<{ model: string; contextWindow: number }> {
+  private async configuredContextWindow(sessionId?: string | null): Promise<{ model: string; contextWindow: number }> {
     const settings = await loadSettings();
-    const entry = settings.modelPool.find((item) => item.id === settings.tierDefaults.high && item.enabled);
+    const agentRecord = sessionId && this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
+    const selectedModel = agentRecord?.model?.trim();
+    const entry = selectedModel
+      ? settings.modelPool.find((item) => item.enabled && item.model.toLowerCase() === selectedModel.toLowerCase())
+      : settings.modelPool.find((item) => item.id === settings.tierDefaults.high && item.enabled);
+    if (selectedModel && !entry) throw new MomokaHttpError(409, `会话模型「${selectedModel}」不在已启用的模型池中`);
     const model = entry?.model || process.env.MOMOKA_MODEL || "unknown";
     return { model, contextWindow: modelContextWindow(model, entry?.contextWindow) };
   }
@@ -623,7 +628,7 @@ ${ref.message.content}`;
         .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
       const tools = await this.toolsForSession(sessionId);
-      const { contextWindow } = await this.configuredContextWindow();
+      const { model, contextWindow } = await this.configuredContextWindow(sessionId);
       const configuredOutputLimit = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
       const outputTokenLimit = Math.min(
         Number.isFinite(configuredOutputLimit) && configuredOutputLimit >= 256 ? Math.floor(configuredOutputLimit) : 16_384,
@@ -648,7 +653,7 @@ ${ref.message.content}`;
             const attemptPrompt = continuationNote ? `${prompt}\n\n${continuationNote}` : prompt;
             this.assertPromptFits({ systemPrompt, historyMessages, input: attemptPrompt, tools, contextWindow, outputTokenLimit });
             const runResult = await this.options.modelClient.run(attemptPrompt, {
-              systemPrompt, topic, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
+              systemPrompt, topic, model, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
               tools,
               outputTokenLimit,
               historyMessages,

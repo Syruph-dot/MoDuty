@@ -16,6 +16,7 @@
     "build": "npm run build:server && npm run build:frontend && npm run desktop:build",
     "build:server": "tsc -p tsconfig.json",
     "build:frontend": "tsx scripts/build-frontend.ts",
+    "build:sidecar": "tsx scripts/build-sidecar.ts",
     "test": "tsx --test --test-concurrency=1 \"tests-ts/**/*.test.ts\"",
     "start": "node dist/server.js",
     "dev": "node scripts/dev-all.mjs",

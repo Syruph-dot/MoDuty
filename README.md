@@ -127,16 +127,24 @@ npm run desktop:dev
 ### 桌面构建 / 打包
 
 ```bash
-# 构建（server + 旧前端 + desktop 前端）
+# 1) 后端 + 旧前端 + 桌面前端产物
 npm run build
 
-# 调试产物（免安装器，直接出可执行文件）
-cd src-tauri && cargo tauri build --debug --no-bundle
-# 产物：src-tauri/target/debug/momoka-desktop.exe
+# 2) sidecar 二进制（需要 bun）。Tauri v1 的 externalBin 相对 src-tauri/ 解析，
+#    必须产出 src-tauri/binaries/momoka-server-<target-triple>.exe
+npm run build:sidecar
 
-# 完整安装包（需要 NSIS/WiX，用时较长）
-cargo tauri build
+# 3) 打包
+cd src-tauri && cargo tauri build                       # 完整安装包（MSI + NSIS）
+cd src-tauri && cargo tauri build --debug --bundles none # 免安装调试产物
 ```
+
+产物位置：`src-tauri/.cargo/config.toml` 把 `target-dir` 指到了 `D:/cargo-target/arona-chest`（按需可改回默认的 `src-tauri/target`），所以：
+
+- 免安装产物：`arona-chest/debug/MoDuty.exe`（同目录带 `momoka-server.exe`、`prompts/`、`static/`）
+- 发行版：`arona-chest/release/MoDuty.exe` 与 `arona-chest/release/bundle/{msi,nsis}/MoDuty_<版本>_x64*`
+
+注意两个路径陷阱：`externalBin` 与 `bundle.resources` 都相对 **src-tauri/** 解析，仓库根的 `binaries/` 不参与打包；改了 `src/` 之后必须重跑 `npm run build:sidecar`，否则安装包里还是上一版后端。
 
 旧 `static/index.html` / `chat.html` 保留为 debug fallback：仍然通过 `http://localhost:8888` 访问，`serveStatic` 未改动。
 

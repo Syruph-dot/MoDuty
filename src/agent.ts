@@ -543,6 +543,16 @@ ${ref.message.content}`;
     await writeRedirectHandoff(session.folderPath, sessionId, latest.id, narrative);
   }
 
+  /**
+   * 本模型本轮可用的输入预算：窗口 − 输出预留 − 安全余量。
+   *
+   * 自动 Compact 的触发与 assertPromptFits 的拒绝必须用同一口径：两者不一致时会出现
+   * 「本该压缩却被直接拒绝」的死区（实测：窗口 8192 时硬上限只有 72%，而触发点是 80%）。
+   */
+  private inputLimitFor(contextWindow: number, outputTokenLimit: number): number {
+    return contextWindow - outputTokenLimit - Math.ceil(contextWindow * 0.08);
+  }
+
   private assertPromptFits(input: {
     systemPrompt: string;
     historyMessages: Array<{ role: string; content: string }>;
@@ -552,12 +562,11 @@ ${ref.message.content}`;
     outputTokenLimit: number;
   }): void {
     const estimate = this.estimatePromptInput(input);
-    const safetyReserve = Math.ceil(input.contextWindow * 0.08);
-    const inputLimit = input.contextWindow - input.outputTokenLimit - safetyReserve;
+    const inputLimit = this.inputLimitFor(input.contextWindow, input.outputTokenLimit);
     if (estimate > inputLimit) {
       throw new MomokaHttpError(
         413,
-        `Compact block、当前 User Input、系统提示和工具规格估算为 ${estimate} tokens，超出本模型可用输入预算 ${Math.max(0, inputLimit)}。历史未被裁剪；请缩短当前输入或调整模型窗口。`,
+        `本轮当前输入、系统提示、工具规格与 Compact block 估算为 ${estimate} tokens，超出本模型可用输入预算 ${Math.max(0, inputLimit)}（历史已先压缩，仍装不下）；请把这条输入拆成多轮，或为会话选择窗口更大的模型。`,
       );
     }
   }
@@ -726,7 +735,10 @@ ${ref.message.content}`;
         Math.max(256, Math.floor(contextWindow * 0.2)),
       );
       const projectedTokens = this.estimatePromptInput({ systemPrompt, historyMessages, input: prompt, tools });
-      const reachedCompactThreshold = projectedTokens >= Math.floor(contextWindow * 0.8);
+      // 触发条件：达到窗口 80%，或本次估算已经超过硬上限（后者必须优先压缩，
+      // 否则会在 72%~80% 这段区间直接 413，而压缩本来能解决）
+      const reachedCompactThreshold = projectedTokens >= Math.floor(contextWindow * 0.8)
+        || projectedTokens > this.inputLimitFor(contextWindow, outputTokenLimit);
       const hasRawTurnsAfterCompact = historyMessages[0]?.content.startsWith("## Compact Handoff\n") && historyMessages.length > 1;
       if (sessionId && turnMode === "chat" && (reachedCompactThreshold || hasRawTurnsAfterCompact)) {
         try {

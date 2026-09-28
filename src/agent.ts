@@ -492,9 +492,10 @@ ${ref.message.content}`;
       workDir = session.folderPath;
       if (!request.transient) {
         userMessageId = (await this.sessionManager.addMessage(sessionId, "user", message)).id;
-        // 自动生成标题：若是首条用户消息（messageCount 从 0 变 1），生成标题并更新会话
+        // 仅自动命名 Agent 需要生成标题；普通会话沿用创建时的用户标题。
         const updatedSession = await this.sessionManager.getSession(sessionId);
-        if (updatedSession && updatedSession.messageCount === 1) {
+        const boundAgent = this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
+        if (updatedSession && updatedSession.messageCount === 1 && boundAgent?.autoName) {
           const title = await this.generateTitle(message);
           await this.sessionManager.updateSession(sessionId, { name: title });
           // 名字留空的 Agent（autoName）：首条对话生成标题后回填其名字

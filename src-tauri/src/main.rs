@@ -14,6 +14,8 @@ use tauri::Manager;
 
 #[cfg(windows)]
 mod notify;
+#[cfg(windows)]
+mod webview_spike;
 
 /// 后端 sidecar 的运行时状态：
 /// - port_file  → 写入 / 读取后端真实监听端口的文件路径
@@ -105,8 +107,11 @@ fn shutdown_sidecar() {
 }
 
 fn main() {
+  // 尖刀验证：只在带 --webview-spike 时启用（见 webview_spike.rs）
+  #[cfg(windows)]
+  let spike = std::env::args().any(|arg| arg == "--webview-spike");
   tauri::Builder::default()
-    .setup(|app| {
+    .setup(move |app| {
       let port_file = std::env::temp_dir().join("arona-chest.momoka.port");
       // 清理可能残留的旧端口文件与孤儿 sidecar
       let _ = fs::remove_file(&port_file);
@@ -200,6 +205,12 @@ fn main() {
       #[cfg(windows)]
       if let Err(error) = notify::ensure_identity() {
         eprintln!("[notify] ensure_identity failed: {error}");
+      }
+
+      // 尖刀验证：在后台线程里跑多 webview + CDP 检查，跑完写报告并退出应用
+      #[cfg(windows)]
+      if spike {
+        webview_spike::spawn(app.handle().clone(), webview_spike::SpikeOptions::from_env());
       }
 
       Ok(())

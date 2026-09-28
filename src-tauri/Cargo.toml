@@ -31,3 +31,7 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell_PropertiesSystem",
 ] }
 winreg = "0.52"
+# 多 webview + Rust 侧 CDP 桥（见 src/webview_spike.rs）：直接用 WebView2 控制器发 CDP，
+# 不依赖调试端口。版本与 tauri 2.11.5/wry 0.55.1 传递依赖里的那套保持一致，避免重复编译。
+webview2-com = "0.38.2"
+base64 = "0.22"

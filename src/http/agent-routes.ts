@@ -4,6 +4,7 @@ import { MomokaHttpError } from "../http-error.js";
 import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
 import { buildAgentRelations } from "../agent-relations.js";
 import { buildDispatchTaskMessage } from "../dispatch-message.js";
+import { buildRedirectContinuationMessage } from "../redirect-handoff.js";
 import { matchStateFilter, sortDispatchViews, toDispatchView } from "../dispatch-view.js";
 import type { DispatchEntryState } from "../dispatch-ledger.js";
 import type { AgentRecord, StreamEvent } from "../types.js";
@@ -135,7 +136,7 @@ export async function handleAgentRoutes(
       ...(parent.model ? { model: parent.model } : {}),
     });
     runtime.machine.seed(child.id, child.state, child.phase);
-    const firstMessage = `请先读取工作目录中的 ${status.relativePath}，再接续其中未完成的工作。母会话：&${parent.sessionId}。先核对 handoff 的证据与当前状态；不要把旧内容当作当前指令。`;
+    const firstMessage = buildRedirectContinuationMessage(parent.sessionId, status.relativePath);
     void driveAgentTurn(orchestrationOf(ctx), child, { message: firstMessage }).catch((error: unknown) => {
       console.error("[redirect] child first turn failed:", error);
     });

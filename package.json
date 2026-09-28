@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.74.0",
+    "chromium-bidi": "^14.0.0",
     "playwright-core": "^1.62.1",
     "qrcode": "^1.5.4",
     "zod": "^3.25.76"

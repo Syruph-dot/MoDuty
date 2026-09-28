@@ -174,7 +174,7 @@ function listenWithFallback(
 const currentFile = fileURLToPath(import.meta.url);
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 
-if (invokedFile && currentFile === invokedFile) {
+if (invokedFile && currentFile === invokedFile && process.env.MOMOKA_SERVER_NO_AUTOSTART !== "1") {
   createMomokaServer({
     portFile: process.env.MOMOKA_PORT_FILE,
   })

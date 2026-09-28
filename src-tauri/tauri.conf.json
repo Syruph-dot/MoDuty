@@ -58,7 +58,10 @@
         "providerShortName": "MoDuty",
         "signingIdentity": null
       },
-      "resources": [],
+      "resources": {
+        "../prompts": "prompts",
+        "../static": "static"
+      },
       "shortDescription": "MoDuty — AI Agent tile-wall desktop",
       "targets": "all",
       "windows": {

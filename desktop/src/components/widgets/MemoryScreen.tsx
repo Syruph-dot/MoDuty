@@ -9,6 +9,7 @@ import {
   listWorkExperiences,
   getWorkExperience,
   updateWorkExperience,
+  deleteWorkExperience,
   type MemoryStatusView,
   type MemoryTypeView,
   type MemoryView,
@@ -145,6 +146,18 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
       setSelectedExperience(updated);
       setExperienceDraft(updated.content);
       setExperiences((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setEditingExperience(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const removeExperience = async () => {
+    if (!selectedExperience || !window.confirm(`删除工作经验「${selectedExperience.title}」？`)) return;
+    try {
+      await deleteWorkExperience(selectedExperience.id);
+      setExperiences((items) => items.filter((item) => item.id !== selectedExperience.id));
+      setSelectedExperience(null);
       setEditingExperience(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -328,6 +341,7 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
                     <small>更新于 {new Date(selectedExperience.updatedAt).toLocaleString("zh-CN")}</small>
                   </div>
                   <div className="memory-screen__experience-actions">
+                    {!editingExperience ? <button type="button" className="btn btn--ghost btn--sm" onClick={() => void removeExperience()}>删除</button> : null}
                     {editingExperience ? (
                       <>
                         <button type="button" className="btn btn--primary btn--sm" onClick={() => void saveExperience()}>保存</button>

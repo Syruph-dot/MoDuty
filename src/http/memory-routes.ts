@@ -81,6 +81,11 @@ export async function handleMemoryRoutes(
   const experienceMatch = url.pathname.match(/^\/api\/memory\/experiences\/([A-Za-z0-9_-]+)$/u);
   if (experienceMatch) {
     const id = decodeURIComponent(experienceMatch[1] ?? "");
+    if (request.method === "DELETE") {
+      if (!await ctx.agent.experienceMemory.delete(id)) throw new MomokaHttpError(404, "Unknown work experience");
+      json(response, 200, { success: true });
+      return true;
+    }
     if (request.method === "GET") {
       const experience = await ctx.agent.experienceMemory.get(id);
       if (!experience) throw new MomokaHttpError(404, "Unknown work experience");

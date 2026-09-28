@@ -118,3 +118,9 @@ export async function updateWorkExperience(id: string, content: string): Promise
   const body = (await response.json()) as { experience: WorkExperienceDocument };
   return body.experience;
 }
+
+export async function deleteWorkExperience(id: string): Promise<void> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/memory/experiences/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(`删除工作经验失败：HTTP ${response.status}`);
+}

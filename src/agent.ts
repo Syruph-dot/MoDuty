@@ -30,7 +30,7 @@ import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } fr
 import { WorkspaceManager } from "./workspace-manager.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall, TOOL_SPECS, toolSpecsForKind } from "./tools.js";
-import { estimateTokens, formatMessages } from "./context.js";
+import { capHistoryEntry, estimateTokens, formatMessages } from "./context.js";
 import { buildContextStats, modelContextWindow } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { buildTurnModeBlock, resolveTurnMode } from "./turn-mode.js";
@@ -417,7 +417,12 @@ ${ref.message.content}`;
 
   /** Compact older complete turns into a sidecar handoff; never mutate messages.json. */
   async compactSession(sessionId: string): Promise<BuildCompactHandoffResult> {
-    return await withSessionLock(sessionId, () => this.compactSessionUnlocked(sessionId));
+    return await withSessionLock(sessionId, async () => {
+      // 手动 Compact 可能是崩溃后的第一个动作（没有开轮步骤），这里同样先定型残留 streaming，
+      // 否则压缩范围会被一条空残骸永久卡在 0。
+      await this.sessionManager.finalizeAbandonedStreaming(sessionId);
+      return await this.compactSessionUnlocked(sessionId);
+    });
   }
 
   private async compactSessionUnlocked(sessionId: string, sourceMessages?: Awaited<ReturnType<SessionManager["getStoredMessages"]>>): Promise<BuildCompactHandoffResult> {
@@ -426,29 +431,15 @@ ${ref.message.content}`;
       const messages = sourceMessages ?? await this.sessionManager.getStoredMessages(sessionId);
       const previous = await this.sessionManager.getCompactHandoff(sessionId);
       const { model, contextWindow } = await this.configuredContextWindow(sessionId);
-      const dynamicContext = await this.buildTurnContext({
-        workDir: session.folderPath,
-        topic: session.goal || session.name,
-        sessionId,
-      });
-      const agentRecord = this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
-      const activePlans = await this.plans.listPlans({ status: "active", limit: 100 });
-      const relevantPlans = agentRecord
-        ? activePlans.filter((plan) => plan.dispatcherId === agentRecord.id || plan.steps.some((step) => step.ownerAgentId === agentRecord.id)).slice(0, 3)
-        : [];
-      const planContext = relevantPlans.map((plan) => [
-        `计划 ${plan.id}：${plan.goal}（${plan.status}）`,
-        ...plan.steps.map((step) => `- ${step.id} ${step.status}：${step.title}${step.acceptanceCriteria.length ? `；验收：${step.acceptanceCriteria.join(" / ")}` : ""}`),
-      ].join("\n")).join("\n\n");
-      const runtimeContext = [dynamicContext, planContext ? `## Active Plan State\n${planContext}` : ""].filter(Boolean).join("\n\n");
 
+      // 只把「上一版摘要 + 本段 turns」交给摘要模型：运行时层（台账快照、身份、目录、记忆等）
+      // 每轮都会重新注入，写进摘要只会重复占预算（用户 2026-09-28 拍板）。
       const result = await buildCompactHandoff({
         sessionId,
         messages,
         previous,
         contextWindow,
         model,
-        runtimeContext,
         idFactory: () => makeId("cmp"),
         summarize: async (input, outputTokenLimit) => {
           let response: ModelRunResult;
@@ -564,6 +555,12 @@ ${ref.message.content}`;
       const session = await this.sessionManager.getSession(sessionId);
       if (!session) throw new MomokaHttpError(404, `Unknown session: ${sessionId}`);
       workDir = session.folderPath;
+      // 开轮前把上个进程留下的 streaming 残骸定型：否则它会永久挡住 Compact 的压缩范围
+      // （压缩只处理第一个未完成轮次之前的内容，一条空 streaming 消息就能让范围永远为 0）
+      const finalized = await this.sessionManager.finalizeAbandonedStreaming(sessionId);
+      if (finalized.length > 0) {
+        console.warn(`[session] ${sessionId} 有 ${finalized.length} 条残留 streaming 消息，已定型为 stopped`);
+      }
       if (!request.transient) {
         userMessageId = (await this.sessionManager.addMessage(sessionId, "user", message)).id;
         // 仅自动命名 Agent 需要生成标题；普通会话沿用创建时的用户标题。
@@ -594,7 +591,7 @@ ${ref.message.content}`;
         }
         historyMessages.push(...activeTurns.map((item) => ({
           role: item.role === "user" ? "user" as const : item.role === "system" ? "system" as const : "assistant" as const,
-          content: formatMessagesForHandoff([item]),
+          content: capHistoryEntry(formatMessagesForHandoff([item])),
         })));
       }
     }
@@ -719,8 +716,7 @@ ${ref.message.content}`;
       // 否则会在 72%~80% 这段区间直接 413，而压缩本来能解决）
       const reachedCompactThreshold = projectedTokens >= Math.floor(contextWindow * 0.8)
         || projectedTokens > this.inputLimitFor(contextWindow, outputTokenLimit);
-      const hasRawTurnsAfterCompact = historyMessages[0]?.content.startsWith("## Compact Handoff\n") && historyMessages.length > 1;
-      if (sessionId && turnMode === "chat" && (reachedCompactThreshold || hasRawTurnsAfterCompact)) {
+      if (sessionId && turnMode === "chat" && reachedCompactThreshold) {
         try {
           const compacted = await this.compactSessionUnlocked(sessionId, preSendMessages);
           historyMessages = [{ role: "system", content: `## Compact Handoff\n${compacted.checkpoint.handoff}` }];

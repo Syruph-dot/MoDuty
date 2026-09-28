@@ -42,7 +42,6 @@ export interface BuildCompactHandoffInput {
   previous?: CompactHandoffCheckpoint | null;
   contextWindow: number;
   model: string;
-  runtimeContext?: string;
   idFactory: () => string;
   summarize: (input: string, outputTokenLimit: number) => Promise<string>;
 }
@@ -76,13 +75,19 @@ export function groupConversationTurns(messages: StoredMessage[]): {
       current = [];
       return;
     }
-    const lastAgentMessage = [...current].reverse().find((message) => message.role === "agent");
+    const lastMessage = current[current.length - 1]!;
     turns.push({
       index: turns.length + 1,
       messages: current,
       userMessageId: userMessage.id,
-      lastMessageId: current[current.length - 1]!.id,
-      complete: Boolean(lastAgentMessage && lastAgentMessage.status !== "streaming"),
+      lastMessageId: lastMessage.id,
+      // 一轮是否结束，只看“最后一条消息是否仍在 streaming”。
+      // 旧口径要求“有 agent 回复且不是 streaming”，于是发送失败/被中断的“只有用户消息”的
+      // 轮次永远被判为未完成；而压缩只处理第一个未完成轮次之前的内容，压缩范围就永久停在
+      // 原地、上下文只涨不降（2026-09-28 实测：边界之后的 92 轮里有 9 轮是这种）。
+      // 没有东西在飞就算结束——不会被补上回复；唯一例外是别的轮次里还有 streaming（由
+      // 调用方在开轮前把残留 streaming 定型，见 SessionManager.finalizeAbandonedStreaming）。
+      complete: lastMessage.status !== "streaming",
     });
     current = [];
   };
@@ -180,12 +185,12 @@ export async function buildCompactHandoff(input: BuildCompactHandoffInput): Prom
   ];
   const sourceChunks = groupTurnsWithinTokenBudget(sourceTurns, chunkTokenLimit);
   let handoff = previous?.handoff ?? "";
-  const runtimeContext = input.runtimeContext?.trim() ?? "";
 
   for (let index = 0; index < sourceChunks.length; index += 1) {
     const segment = sourceChunks[index]!.map(formatTurnForHandoff).join("\n\n");
+    // 只喂「上一版摘要 + 本段 turns」：系统提示、台账快照、身份/目录/记忆等运行时层每轮都会
+    // 重新注入，写进摘要只会重复占用预算并让摘要随平台状态漂移（用户 2026-09-28 拍板）。
     const promptInput = [
-      runtimeContext ? `## Current runtime state\n${runtimeContext}` : "",
       handoff ? `## Previous Compact Handoff\n${handoff}` : "",
       `## Older completed transcript segment ${index + 1}/${sourceChunks.length}\n${segment}`,
       "Create or update the task handoff. This is an internal compaction operation, not a new user request.",

@@ -353,6 +353,34 @@ export class SessionManager {
     });
   }
 
+  /**
+   * 把残留的 streaming 消息定型（→ stopped）。
+   *
+   * 消息只在「本轮正在跑」时才是 streaming；调用方在开轮前调用本方法，此时任何 streaming
+   * 消息都是上一个进程被杀/崩溃的残骸。不定型的话它会永久阻塞压缩范围：压缩只处理第一个
+   * 未完成轮次之前的内容，而一条空 streaming 消息就能让这个范围永远为 0
+   * （2026-09-28 实测：值日生会话因此每条消息都报 “no older complete turns to compact”）。
+   *
+   * 返回被定型的消息 id 列表。
+   */
+  async finalizeAbandonedStreaming(sessionId: string): Promise<string[]> {
+    if (!isSafeSessionId(sessionId)) return [];
+    // 先不加锁地看一眼：绝大多数轮次没有残留 streaming，不该为此加锁或写盘
+    // （每轮都写一次会让并发清理的测试与前端轮询无谓地抢文件）
+    const snapshot = await this.getStoredMessages(sessionId);
+    if (!snapshot.some((message) => message.status === "streaming")) return [];
+    let finalized: string[] = [];
+    await withFileLock(this.messagesPath(sessionId), async () => {
+      const messages = await this.getStoredMessages(sessionId);
+      const stuck = messages.filter((message) => message.status === "streaming");
+      if (stuck.length === 0) return;
+      for (const message of stuck) message.status = "stopped";
+      await this.writeMessagesUpsert(sessionId, messages);
+      finalized = stuck.map((message) => message.id);
+    });
+    return finalized;
+  }
+
   /** 收尾流式消息：落完整段、更新会话元数据与 transcript。status 默认 done，可传 stopped/error */
   async finishStreamingMessage(sessionId: string, messageId: string, extra: Record<string, unknown> = {}): Promise<void> {
     await this.flushStreamingBuffer(sessionId);

@@ -26,7 +26,7 @@ export function defaultPaths(projectRoot: string) {
   return {
     projectRoot,
     promptsDir: resolvePromptsDir(projectRoot),
-    skillsDir: resolveSkillsDir(projectRoot),
+    skillsDirs: resolveSkillsDirs(projectRoot),
     memoryDir: path.join(projectRoot, "memory"), // 兼容：旧位置仍用于迁移读取
     dataDir: dataRoot,
     workspacesDir: resolveWorkspacesRoot(dataRoot),
@@ -81,11 +81,18 @@ export function resolvePromptsDir(projectRoot: string): string {
  * 1) MOMOKA_SKILLS_DIR 环境变量
  * 2) projectRoot/skills
  */
-export function resolveSkillsDir(projectRoot: string): string {
+/**
+ * 技能来源目录（按优先级）：MOMOKA_SKILLS_DIR（若设置）→ 用户级 ~/.momoka/skills → <projectRoot>/skills。
+ * 用户 2026-09-28 拍板：两者取并集，同名技能以靠前的目录为准。
+ */
+export function resolveSkillsDirs(projectRoot: string): string[] {
+  const dirs: string[] = [];
   if (process.env.MOMOKA_SKILLS_DIR) {
-    return path.resolve(process.env.MOMOKA_SKILLS_DIR);
+    dirs.push(path.resolve(process.env.MOMOKA_SKILLS_DIR));
   }
-  return path.join(projectRoot, "skills");
+  dirs.push(path.join(os.homedir(), ".momoka", "skills"));
+  dirs.push(path.join(projectRoot, "skills"));
+  return [...new Set(dirs)];
 }
 
 /**

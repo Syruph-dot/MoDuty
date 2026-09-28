@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFileSync, mkdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -184,13 +185,54 @@ function shortId(prefix: string): string {
 }
 
 /**
+ * 把旧的项目级 Agent 注册表导入用户级位置（幂等，启动时同步检查一次）。
+ *
+ * 旧位置：`<projectRoot>/memory/.agents/agents.json`（项目级，跟仓库目录绑定）。
+ * 新位置：`<dataDir>/.agents/agents.json`（用户级，见类注释）。
+ *
+ * 规则：新位置缺失 → 导入；两边都有且旧文件更新 → 先把新文件备份成
+ * `agents.json.bak-<时间戳>` 再导入（否则旧位置里较新的 Agent 会被历史快照盖掉）。
+ * 旧位置不存在时什么也不做。
+ */
+function migrateLegacyAgentsFile(memoryDir: string, targetFile: string): void {
+  const legacyFile = path.join(memoryDir, ".agents", "agents.json");
+  if (path.resolve(legacyFile) === path.resolve(targetFile)) return;
+  let legacyMtime: number;
+  try {
+    legacyMtime = statSync(legacyFile).mtimeMs;
+  } catch {
+    return; // 旧位置没有文件：无需迁移
+  }
+  let targetMtime: number | null = null;
+  try {
+    targetMtime = statSync(targetFile).mtimeMs;
+  } catch {
+    targetMtime = null;
+  }
+  if (targetMtime !== null && targetMtime >= legacyMtime) return;
+  if (targetMtime !== null) {
+    const backup = `${targetFile}.bak-${new Date().toISOString().replace(/\D/gu, "").slice(0, 14)}`;
+    copyFileSync(targetFile, backup);
+    console.warn(`[registry] 旧位置的 Agent 注册表更新，已备份 ${backup} 并从 ${legacyFile} 导入`);
+  } else {
+    console.warn(`[registry] 迁移 Agent 注册表：${legacyFile} → ${targetFile}`);
+  }
+  mkdirSync(path.dirname(targetFile), { recursive: true });
+  copyFileSync(legacyFile, targetFile);
+}
+
+/**
  * 多 Agent 注册表：1 Agent = 1 persona 档案 + 1:1 绑定的 session（上下文串）。
  * 创建 Agent 自动创建其专属 session；删除 Agent 连带删除该 session。
- * 记录 JSON 持久化（默认 memory/.agents/agents.json，可注入路径）。
+ *
+ * 记录 JSON 持久化在**用户级**数据目录（`<dataDir>/.agents/agents.json`）。
+ * 用户 2026-09-28 拍板：旧版把注册表放在 `<projectRoot>/memory/.agents/`，
+ * 项目根一变（例如打包后由安装目录启动）就读到空注册表——值日生与所有
+ * 磁贴都消失，而会话/台账因为本来就是用户级所以还在，看起来像“配置没了”。
  */
 export class AgentRegistry {
   private readonly registryFile: string;
-  /** 派发台账（值日生 → 执行者）；memoryDir 与 agents.json 同级 */
+  /** 派发台账（值日生 → 执行者） */
   readonly dispatches: DispatchLedger;
   /** 问答存储（Agent → 桌面用户的结构化提问） */
   readonly questions: QuestionStore;
@@ -202,8 +244,9 @@ export class AgentRegistry {
     registryFile?: string,
     dataDir?: string,
   ) {
-    this.registryFile = registryFile ?? path.join(memoryDir, ".agents", "agents.json");
     this.dataDir = dataDir ?? memoryDir;
+    this.registryFile = registryFile ?? path.join(this.dataDir, ".agents", "agents.json");
+    migrateLegacyAgentsFile(this.memoryDir, this.registryFile);
     this.dispatches = new DispatchLedger(this.dataDir);
     this.questions = new QuestionStore(this.dataDir);
   }

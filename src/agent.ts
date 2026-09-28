@@ -1,7 +1,7 @@
 import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { LIKERT_LABELS, defaultPaths, resolveProjectRoot } from "./config.js";
+import { LIKERT_LABELS, defaultPaths, resolveProjectRoot, resolveSkillsDirs } from "./config.js";
 import { analyzeJudgment, buildFollowupPrompt } from "./feedback.js";
 import { MemoryStore, USER_SCOPE, PROJECT_SCOPE, type MemoryScopeRef } from "./memory.js";
 import { IndexStore } from "./index-store.js";
@@ -262,11 +262,12 @@ export class MomokaAgentCore implements MomokaAgent {
     }
 
     // 渐进披露：任务命中技能关键词时，注入相关技能内容（保持提示词精简）
-    const matched = matchSkills(input.topic ?? "", input.message ?? "", await loadSkillIndex(this.projectRoot));
+    // 技能来源为用户级与项目级目录的并集；两边都没有技能时返回空表，不影响本轮
+    const matched = matchSkills(input.topic ?? "", input.message ?? "", await loadSkillIndex(resolveSkillsDirs(this.projectRoot)));
     if (matched.length > 0) {
       const contents: string[] = [];
       for (const skill of matched) {
-        const content = await loadSkillContent(this.projectRoot, skill);
+        const content = await loadSkillContent(skill);
         if (content) contents.push(`### ${skill.name}${skill.description ? `（${skill.description}）` : ""}\n${content}`);
       }
       if (contents.length > 0) sections.push(`## 可用技能（按需使用）\n${contents.join("\n\n")}`);

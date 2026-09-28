@@ -16,27 +16,50 @@ export interface SkillMeta {
   utilityScore?: number;
   version?: string;
   path: string;
+  /** 这条技能从哪个技能目录读出来的（合并多来源后用于定位正文） */
+  baseDir?: string;
 }
 
-export async function loadSkillIndex(projectRoot: string): Promise<SkillMeta[]> {
-  const indexPath = path.join(projectRoot, "skills", "index.json");
-  const parsed = JSON.parse(await readFile(indexPath, "utf8")) as { skills?: unknown };
-  if (!Array.isArray(parsed.skills)) throw new Error(`Skill index must contain a skills array: ${indexPath}`);
-  return parsed.skills.map((item, index) => {
-    if (typeof item !== "object" || item === null) throw new Error(`Invalid skill entry at index ${index}: ${indexPath}`);
-    const entry = item as Partial<SkillMeta>;
-    if (typeof entry.name !== "string" || !entry.name.trim() || typeof entry.path !== "string" || !entry.path.trim()) {
-      throw new Error(`Skill entry ${index} requires a name and path: ${indexPath}`);
+/**
+ * 合并多个技能目录的索引。
+ *
+ * 用户 2026-09-28 决定：技能来源 = 用户级 `~/.momoka/skills` 与 `<projectRoot>/skills` 取并集，
+ * 前面的目录优先（同名技能以用户级的为准）。
+ * 目录没有 index.json 就跳过——打包版可能只带其中一个来源，缺一个不应该让整轮对话失败。
+ */
+export async function loadSkillIndex(skillDirs: string[]): Promise<SkillMeta[]> {
+  const merged: SkillMeta[] = [];
+  const seen = new Set<string>();
+  for (const dir of skillDirs) {
+    const indexPath = path.join(dir, "index.json");
+    let raw: string;
+    try {
+      raw = await readFile(indexPath, "utf8");
+    } catch {
+      continue;
     }
-    return {
-      name: entry.name,
-      description: entry.description ?? "",
-      triggerKeywords: Array.isArray(entry.triggerKeywords) ? entry.triggerKeywords.map(String) : [],
-      utilityScore: typeof entry.utilityScore === "number" ? entry.utilityScore : 0,
-      version: entry.version,
-      path: entry.path,
-    };
-  });
+    const parsed = JSON.parse(raw) as { skills?: unknown };
+    if (!Array.isArray(parsed.skills)) throw new Error(`Skill index must contain a skills array: ${indexPath}`);
+    parsed.skills.forEach((item, index) => {
+      if (typeof item !== "object" || item === null) throw new Error(`Invalid skill entry at index ${index}: ${indexPath}`);
+      const entry = item as Partial<SkillMeta>;
+      if (typeof entry.name !== "string" || !entry.name.trim() || typeof entry.path !== "string" || !entry.path.trim()) {
+        throw new Error(`Skill entry ${index} requires a name and path: ${indexPath}`);
+      }
+      if (seen.has(entry.name)) return;
+      seen.add(entry.name);
+      merged.push({
+        name: entry.name,
+        description: entry.description ?? "",
+        triggerKeywords: Array.isArray(entry.triggerKeywords) ? entry.triggerKeywords.map(String) : [],
+        utilityScore: typeof entry.utilityScore === "number" ? entry.utilityScore : 0,
+        version: entry.version,
+        path: entry.path,
+        baseDir: dir,
+      });
+    });
+  }
+  return merged;
 }
 
 /** 按 topic/用户消息命中技能触发关键词，按 utility_score 降序返回 */
@@ -48,8 +71,9 @@ export function matchSkills(topic: string, message: string, index: SkillMeta[]):
 }
 
 /** 读取技能内容并截断（渐进披露只注入必要片段） */
-export async function loadSkillContent(projectRoot: string, skill: SkillMeta, maxChars = 1500): Promise<string> {
-  const skillPath = path.join(projectRoot, "skills", skill.path);
+export async function loadSkillContent(skill: SkillMeta, maxChars = 1500): Promise<string> {
+  if (!skill.baseDir) throw new Error(`技能 ${skill.name} 缺少来源目录，无法定位正文`);
+  const skillPath = path.join(skill.baseDir, skill.path);
   const content = await readFile(skillPath, "utf8");
   if (!content.trim()) throw new Error(`Matched skill is empty: ${skillPath}`);
   return content.length > maxChars ? `${content.slice(0, maxChars)}\n…[技能内容过长已截断]` : content;

@@ -146,6 +146,15 @@ cd src-tauri && cargo tauri build --debug --bundles none # 免安装调试产物
 
 注意两个路径陷阱：`externalBin` 与 `bundle.resources` 都相对 **src-tauri/** 解析，仓库根的 `binaries/` 不参与打包；改了 `src/` 之后必须重跑 `npm run build:sidecar`，否则安装包里还是上一版后端。
 
+运行期数据都在用户目录，与安装位置无关：
+
+- `%USERPROFILE%\.momoka\settings.json`：模型池与密钥
+- `%USERPROFILE%\.momoka\data\`：Agent 注册表（`.agents/agents.json`）、会话与 transcript、派发台账、索引库、长期记忆、工作经验
+- `%USERPROFILE%\.momoka\browser-profiles\`：浏览器登录态
+- 安装目录只放 `prompts/`、`skills/`、`static/` 与两个可执行文件；**技能来源是 `%USERPROFILE%\.momoka\skills` 与安装目录 `skills/` 的并集**，同名以用户级为准（用户可自己加技能，也可覆盖随包默认值）。
+
+（历史包袱：旧版把 Agent 注册表放在 `<项目根>/memory/.agents/`。首次以旧项目根启动时会把较新的那份导入用户级位置，并把被覆盖的文件备份成 `agents.json.bak-<时间戳>`。）
+
 旧 `static/index.html` / `chat.html` 保留为 debug fallback：仍然通过 `http://localhost:8888` 访问，`serveStatic` 未改动。
 
 ### 桌面前端结构

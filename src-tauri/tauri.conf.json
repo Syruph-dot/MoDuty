@@ -60,6 +60,7 @@
       },
       "resources": {
         "../prompts": "prompts",
+        "../skills": "skills",
         "../static": "static"
       },
       "shortDescription": "MoDuty — AI Agent tile-wall desktop",

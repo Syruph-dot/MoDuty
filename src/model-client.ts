@@ -257,16 +257,20 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
   return {
     async run(input: string, context: ModelRunContext): Promise<ModelRunResult> {
       // 每次 run 重新解析：参数 > 配置文件 > 环境变量 > 默认值
+      // 会话模型：只有能对上已启用模型池条目时才采用；对不上则回落档位默认。
+      // 上游负责池配置正确，这里只做兜底——不能把一条配置问题变成「整个会话每轮都失败」。
       const sessionModel = context.model?.trim();
       const sessionEntry = sessionModel
         ? (await loadSettings()).modelPool.find((entry) => entry.enabled && entry.model.toLowerCase() === sessionModel.toLowerCase())
         : undefined;
-      if (sessionModel && !sessionEntry) throw new Error(`会话模型「${sessionModel}」不在已启用的模型池中`);
+      if (sessionModel && !sessionEntry) {
+        console.warn(`[model] 会话模型「${sessionModel}」不在已启用的模型池中，本轮按档位默认模型发送`);
+      }
       const { apiKey, baseUrl, model } = await resolveModelConfigByTier(tier, {
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
-        model: sessionModel || options.model,
         ...(sessionEntry ? { entryId: sessionEntry.id } : {}),
+        ...(!sessionEntry && options.model ? { model: options.model } : {}),
       });
 
       if (!apiKey) {

@@ -121,6 +121,9 @@ const DEFAULT_AGENT_PERSONA = `# 文件助手
 4. 任务完成后给出简洁的总结
 5. 如果工具返回错误，解释原因并给出建议`;
 
+/** 已回退过的会话模型：只提示一次，避免每轮刷日志 */
+const warnedModelFallbacks = new Set<string>();
+
 export class MomokaAgentCore implements MomokaAgent {
   readonly projectRoot: string;
   readonly memoryStore: MemoryStore;
@@ -474,16 +477,30 @@ ${ref.message.content}`;
     return await this.sessionManager.getCompactHandoff(sessionId);
   }
 
-  private async configuredContextWindow(sessionId?: string | null): Promise<{ model: string; contextWindow: number }> {
+  /**
+   * 会话所用模型与窗口预算。
+   *
+   * 会话模型不在已启用模型池中（条目被停用/改名/删除）时按档位默认继续，并回报
+   * fallbackFrom 供调用方留痕；这里不做硬失败，以免一次配置问题把整个会话卡死。
+   */
+  private async configuredContextWindow(sessionId?: string | null): Promise<{ model: string; contextWindow: number; fallbackFrom?: string }> {
     const settings = await loadSettings();
     const agentRecord = sessionId && this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
     const selectedModel = agentRecord?.model?.trim();
-    const entry = selectedModel
+    const selectedEntry = selectedModel
       ? settings.modelPool.find((item) => item.enabled && item.model.toLowerCase() === selectedModel.toLowerCase())
-      : settings.modelPool.find((item) => item.id === settings.tierDefaults.high && item.enabled);
-    if (selectedModel && !entry) throw new MomokaHttpError(409, `会话模型「${selectedModel}」不在已启用的模型池中`);
+      : undefined;
+    if (selectedModel && !selectedEntry && !warnedModelFallbacks.has(selectedModel)) {
+      warnedModelFallbacks.add(selectedModel);
+      console.warn(`[model] 会话 ${sessionId ?? "(无)"} 的模型「${selectedModel}」不在已启用的模型池中，已回退到档位默认模型`);
+    }
+    const entry = selectedEntry ?? settings.modelPool.find((item) => item.id === settings.tierDefaults.high && item.enabled);
     const model = entry?.model || process.env.MOMOKA_MODEL || "unknown";
-    return { model, contextWindow: modelContextWindow(model, entry?.contextWindow) };
+    return {
+      model,
+      contextWindow: modelContextWindow(model, entry?.contextWindow),
+      ...(selectedModel && !selectedEntry ? { fallbackFrom: selectedModel } : {}),
+    };
   }
 
   async getRedirectStatus(sessionId: string) {
@@ -728,7 +745,10 @@ ${ref.message.content}`;
         .join("\n\n");
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
       const tools = await this.toolsForSession(sessionId);
-      const { model, contextWindow } = await this.configuredContextWindow(sessionId);
+      const { model, contextWindow, fallbackFrom } = await this.configuredContextWindow(sessionId);
+      if (fallbackFrom) {
+        await appendTraceEvent(tracePath, "model_fallback", { requested: fallbackFrom, used: model }).catch(() => undefined);
+      }
       const configuredOutputLimit = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
       const outputTokenLimit = Math.min(
         Number.isFinite(configuredOutputLimit) && configuredOutputLimit >= 256 ? Math.floor(configuredOutputLimit) : 16_384,

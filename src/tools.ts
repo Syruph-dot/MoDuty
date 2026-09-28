@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/p
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ApprovalStore, type ApprovalToolName, parseWhitelistedCommand } from "./approvals.js";
@@ -501,8 +502,14 @@ export async function runMomokaCliTool(input: {
   const invalid = validateMomokaCliArgs(input.args, input.scope ?? "agent");
   if (invalid) return `MOMOKA CLI 调用被拒绝：${invalid}`;
   const timeoutMs = input.commandTimeoutMs ?? 60_000;
+  // 打包版（bun --compile）里 bin/momoka.mjs 不存在，且 process.execPath 就是 sidecar 自己；
+  // 这时直接以 CLI 模式调用自身（sidecar 入口按有无参数分流，见 scripts/release-sidecar.ts）。
+  // 旧实现在打包版会把“CLI 子命令”变成“再起一个后端”，被占用的端口直接报错。
+  const cliArgs = fs.existsSync(MOMOKA_CLI_PATH)
+    ? [MOMOKA_CLI_PATH, "--mono", ...input.args]
+    : ["--mono", ...input.args];
   return await new Promise<string>((resolve) => {
-    const child = spawn(process.execPath, [MOMOKA_CLI_PATH, "--mono", ...input.args], {
+    const child = spawn(process.execPath, cliArgs, {
       cwd: input.workDir ?? process.cwd(),
       shell: false,
       windowsHide: true,

@@ -289,10 +289,14 @@ export function useDutyChat(agentId: string | null): DutyChatApi {
               const next = [...prev];
               const last = next[next.length - 1];
               if (last?.role === "agent") {
-                next[next.length - 1] = {
-                  ...last,
-                  content: `${last.content}${appendToken ? "\n" : ""}[工具 ${name} ${status === "running" ? "执行中…" : "完成"}]${appendToken ? "" : "\n"}`,
-                };
+                const marker = `[工具 ${name} ${status === "running" ? "执行中…" : "完成"}]`;
+                // 完成时把同一工具最后一次「执行中…」就地改写：否则每个调用都会留两行
+                const running = `[工具 ${name} 执行中…]`;
+                const at = status === "running" ? -1 : last.content.lastIndexOf(running);
+                const content = at >= 0
+                  ? last.content.slice(0, at) + marker + last.content.slice(at + running.length)
+                  : `${last.content}${appendToken ? "\n" : ""}${marker}${appendToken ? "" : "\n"}`;
+                next[next.length - 1] = { ...last, content };
               }
               appendToken = "";
               return next;

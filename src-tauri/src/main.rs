@@ -27,9 +27,57 @@ struct MomokaServerState {
 
 const PROBE_BASE_PORT: u16 = 8888;
 const PROBE_TRIES: u16 = 10; // 8888..=8897
-const PROBE_INTERVAL_MS: u64 = 200;
 /// 每个候选端口上等 sidecar 变成健康的时长（含冷启动）
-const HEALTH_WAIT_MS: u64 = 3_000;
+const HEALTH_WAIT_MS: u64 = 4_000;
+
+/// 日志文件：release 是 GUI 子系统（没有控制台），eprintln 等于丢进黑洞，
+/// 所以"启动闪退"必须靠落盘才能查。路径与后端数据目录一致。
+static LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
+
+fn data_dir() -> PathBuf {
+  if let Ok(dir) = std::env::var("MOMOKA_DATA_DIR") {
+    if !dir.trim().is_empty() {
+      return PathBuf::from(dir);
+    }
+  }
+  let home = std::env::var("USERPROFILE")
+    .or_else(|_| std::env::var("HOME"))
+    .unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+  PathBuf::from(home).join(".momoka").join("data")
+}
+
+fn log_file_path() -> PathBuf {
+  LOG_FILE
+    .get_or_init(|| {
+      let dir = data_dir().join("logs");
+      let _ = fs::create_dir_all(&dir);
+      dir.join("sidecar.log")
+    })
+    .clone()
+}
+
+/// 同一条日志同时进 stderr（dev 可见）与日志文件（发布版唯一线索）。
+fn log(message: impl AsRef<str>) {
+  let message = message.as_ref();
+  eprintln!("{message}");
+  let stamp = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or(0);
+  if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(log_file_path()) {
+    let _ = writeln!(file, "[{stamp}] {message}");
+  }
+}
+
+/// 上一轮日志太大了就先挪走，保留一轮足够定位问题。
+fn rotate_log() {
+  let path = log_file_path();
+  if let Ok(meta) = fs::metadata(&path) {
+    if meta.len() > 256 * 1024 {
+      let _ = fs::rename(&path, path.with_extension("1.log"));
+    }
+  }
+}
 
 /// sidecar 与主可执行文件同目录：开发时是 target/<profile>/，安装后是安装目录。
 fn resolve_sidecar_path() -> Result<PathBuf, String> {
@@ -80,7 +128,7 @@ fn kill_previous_sidecar() {
   if let Ok(text) = fs::read_to_string(&pid_file) {
     if let Ok(pid) = text.trim().parse::<u32>() {
       if pid != std::process::id() {
-        eprintln!("[sidecar] killing leftover sidecar pid={pid}");
+        log(format!("[sidecar] killing leftover sidecar pid={pid}"));
         kill_pid(pid);
       }
     }
@@ -100,7 +148,7 @@ fn remember_sidecar_pid(pid: u32) {
 fn shutdown_sidecar() {
   let pid = SIDECAR_PID.lock().ok().and_then(|guard| *guard);
   if let Some(pid) = pid {
-    eprintln!("[sidecar] shutting down pid={pid}");
+    log(format!("[sidecar] shutting down pid={pid}"));
     kill_pid(pid);
   }
   let _ = fs::remove_file(sidecar_pid_file());
@@ -113,11 +161,8 @@ fn main() {
   tauri::Builder::default()
     .setup(move |app| {
       let port_file = std::env::temp_dir().join("arona-chest.momoka.port");
-      // 清理可能残留的旧端口文件与孤儿 sidecar
+      // 清掉上一轮的端口文件（孤儿 sidecar 的清理挪到后台线程，别拖慢窗口出现）
       let _ = fs::remove_file(&port_file);
-      kill_previous_sidecar();
-      // 等一下端口释（taskkill 是同步的，但监听 socket 需要极短时间关闭）
-      thread::sleep(Duration::from_millis(300));
 
       // sidecar 与主可执行文件同目录（v2 的 externalBin 会放到同一目录）。
       // 缺文件属于安装/构建错误，直接在启动期报出来。
@@ -126,19 +171,47 @@ fn main() {
       let port_file_for_thread = port_file.clone();
       let resolved_for_thread = resolved_port.clone();
 
-      // 启动 + 健康探测全部放到后台线程，并且**带端口重试**：
-      // Windows 上进程被强杀后可能留下归属已死 PID 的残留监听（实测：PID 不存在但端口
-      // 仍 EADDRINUSE），只靠“先试着绑一下”挑端口并不可靠；而 sidecar 在端口被占时
-      // 会故意直接失败（防多实例写坏 agents.json）。所以在每个候选端口上实起实探，
-      // 失败就收掉这个子进程、换下一个端口。
+      // 启动 + 健康探测全部放到后台线程。
+      //
+      // 顺序刻意分成两步：
+      // 1) 先扫一遍候选端口，若已有健康的 MOMOKA 就**复用它**——绝不起第二个实例
+      //    （两个实例会并发写同一份 agents.json，而那份文件没有文件锁）；
+      // 2) 否则逐个候选端口拉起 sidecar，端口能不能用由 sidecar 自己判断（失败会立刻退出）。
+      //    不预先 bind 一下猜：实测别的进程只占着 127.0.0.1:8889 时，我们自己
+      //    bind 0.0.0.0:8889 会成功，而 sidecar 会失败——猜错就会白杀一个子进程，
+      //    而强杀 bun 后端会留下归属已死 PID 的残留监听（8888 幽灵就是这么来的）。
       thread::Builder::new()
         .name("moduty.sidecar-boot".to_string())
         .spawn(move || {
+          rotate_log();
+          log(format!(
+            "[boot] sidecar={} data_dir={} log={}",
+            sidecar_path.display(),
+            data_dir().display(),
+            log_file_path().display()
+          ));
           kill_previous_sidecar();
           thread::sleep(Duration::from_millis(300));
+
+          // 1) 端口上已有健康的后端 → 复用，不再起第二个
           for offset in 0..PROBE_TRIES {
             let port = PROBE_BASE_PORT + offset;
-            eprintln!("[sidecar] spawning {} on port {port}", sidecar_path.display());
+            if probe_health(port) {
+              log(format!("[boot] 复用已在运行的 MOMOKA 后端（port {port}）"));
+              if let Err(err) = fs::write(&port_file_for_thread, port.to_string()) {
+                log(format!("[probe] write port file failed: {err}"));
+              }
+              if let Ok(mut guard) = resolved_for_thread.lock() {
+                *guard = Some(port);
+              }
+              return;
+            }
+          }
+
+          // 2) 逐个候选端口拉起 sidecar
+          for offset in 0..PROBE_TRIES {
+            let port = PROBE_BASE_PORT + offset;
+            log(format!("[sidecar] spawning {} on port {port}", sidecar_path.display()));
             let mut child = match Command::new(&sidecar_path)
               .env("PORT", port.to_string())
               .stdout(Stdio::piped())
@@ -147,7 +220,7 @@ fn main() {
             {
               Ok(child) => child,
               Err(err) => {
-                eprintln!("[sidecar] spawn failed: {err}");
+                log(format!("[sidecar] spawn failed: {err}"));
                 break;
               }
             };
@@ -156,42 +229,49 @@ fn main() {
             if let Some(stdout) = child.stdout.take() {
               thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                  eprintln!("[sidecar] {line}");
+                  log(format!("[sidecar] {line}"));
                 }
               });
             }
             if let Some(stderr) = child.stderr.take() {
               thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                  eprintln!("[sidecar:err] {line}");
+                  log(format!("[sidecar:err] {line}"));
                 }
               });
             }
 
-            if wait_for_health(port, Duration::from_millis(HEALTH_WAIT_MS)) {
+            if let BootOutcome::Alive = wait_for_boot(port, Duration::from_millis(HEALTH_WAIT_MS), &mut child) {
               remember_sidecar_pid(child.id());
               if let Err(err) = fs::write(&port_file_for_thread, port.to_string()) {
-                eprintln!("[probe] write port file failed: {err}");
+                log(format!("[probe] write port file failed: {err}"));
               }
               if let Ok(mut guard) = resolved_for_thread.lock() {
                 *guard = Some(port);
               }
-              eprintln!("[probe] momoka-server alive on :{port}; port file written");
+              log(format!("[probe] momoka-server alive on :{port}; port file written"));
               // 守着子进程退出（应用退出时会主动收掉它）
               let status = child.wait();
-              eprintln!("[sidecar] exited: {status:?}");
+              log(format!("[sidecar] exited: {status:?}"));
               return;
             }
 
-            eprintln!("[sidecar] port {port} never became healthy; killing pid={}", child.id());
-            kill_pid(child.id());
-            let _ = child.wait();
+            // 只有"还活着但没变健康"才需要收掉；自己已经退出的别再碰——
+            // 对 bun 后端做强杀会留下归属已死 PID 的残留监听，那正是我们要避免的。
+            match child.try_wait() {
+              Ok(Some(status)) => log(format!("[sidecar] port {port} 不可用（{status:?}），换下一个")),
+              _ => {
+                log(format!("[sidecar] port {port} 超时未就绪，收掉 pid={}", child.id()));
+                kill_pid(child.id());
+                let _ = child.wait();
+              }
+            }
           }
-          eprintln!(
+          log(format!(
             "[sidecar] gave up: no healthy backend in {}..{}",
             PROBE_BASE_PORT,
             PROBE_BASE_PORT + PROBE_TRIES - 1
-          );
+          ));
         })
         .map_err(|e| format!("failed to spawn sidecar bootstrap thread: {e}"))?;
 
@@ -204,7 +284,7 @@ fn main() {
       // 不补的话，未打包 / target\debug 运行时发出的 toast 会被 Windows 静默丢弃（不报错、不显示）。
       #[cfg(windows)]
       if let Err(error) = notify::ensure_identity() {
-        eprintln!("[notify] ensure_identity failed: {error}");
+        log(format!("[notify] ensure_identity failed: {error}"));
       }
 
       // 尖刀验证：在后台线程里跑多 webview + CDP 检查，跑完写报告并退出应用
@@ -267,7 +347,7 @@ fn notify_toast(
 #[tauri::command]
 fn get_momoka_port(state: tauri::State<MomokaServerState>) -> Result<u16, String> {
   // 诊断用：前端每次解析 API base 都会走到这里（保留，便于排查“界面连不上后端”）
-  eprintln!("[port] get_momoka_port invoked");
+  log("[port] get_momoka_port invoked");
   if let Ok(content) = fs::read_to_string(&state.port_file) {
     if let Ok(port) = content.trim().parse::<u16>() {
       return Ok(port);
@@ -281,20 +361,40 @@ fn get_momoka_port(state: tauri::State<MomokaServerState>) -> Result<u16, String
   Err("momoka-server not ready yet (port probe still in progress)".to_string())
 }
 
-/// 轮询等待某个端口上的后端变成健康（含冷启动时间）。
-fn wait_for_health(port: u16, timeout: Duration) -> bool {
-  let started = std::time::Instant::now();
-  while started.elapsed() < timeout {
-    if probe_health(port) {
-      return true;
-    }
-    thread::sleep(Duration::from_millis(PROBE_INTERVAL_MS));
-  }
-  false
+/// sidecar 在候选端口上的归宿。
+enum BootOutcome {
+  /// 健康，可以采用
+  Alive,
+  /// 没起来（端口被占 / 启动崩了 / 超时），原因写日志
+  Failed(String),
 }
 
-/// 同步 TCP 探测 + 最小 HTTP GET：连接 + 写入 HTTP/1.0 请求 + 读首行。
-/// 返回 true 表示收到了 200 OK。
+/// 等 sidecar 在某个端口上变健康，同时盯着它是不是**自己已经退出**。
+///
+/// 为什么不能只等健康：端口被占时 sidecar 会立刻退出（几十毫秒），那才是它给出的
+/// "这个端口不能用"权威判断——比我们预先 bind 一下猜要准（实测：别的进程只占着
+/// 127.0.0.1:8889 时，我们自己 bind 0.0.0.0:8889 会成功，而 sidecar 会失败）。
+/// 盯 early-exit 还能避免为注定失败的尝试白等一次完整超时，更避免去强杀一个还活着的
+/// 子进程：强杀 bun 后端会留下残留监听，那正是 8888 幽灵的来源。
+fn wait_for_boot(port: u16, timeout: Duration, child: &mut std::process::Child) -> BootOutcome {
+  let started = std::time::Instant::now();
+  loop {
+    if probe_health(port) {
+      return BootOutcome::Alive;
+    }
+    match child.try_wait() {
+      Ok(Some(status)) => return BootOutcome::Failed(format!("exited early: {status:?}")),
+      Ok(None) => {}
+      Err(err) => return BootOutcome::Failed(format!("try_wait failed: {err}")),
+    }
+    if started.elapsed() >= timeout {
+      return BootOutcome::Failed(format!("timeout after {}ms", timeout.as_millis()));
+    }
+    thread::sleep(Duration::from_millis(150));
+  }
+}
+
+/// 同步 TCP 探测 + 最小 HTTP GET，返回 true 表示确认对面是 MOMOKA 后端。
 fn probe_health(port: u16) -> bool {
   let addr = match format!("127.0.0.1:{port}").to_socket_addrs() {
     Ok(mut it) => match it.next() {
@@ -311,26 +411,29 @@ fn probe_health(port: u16) -> bool {
   if stream.write_all(req.as_bytes()).is_err() {
     return false;
   }
-  let mut buf = Vec::with_capacity(256);
-  let mut chunk = [0u8; 128];
-  // 限读：避免 sidecar 偶发慢响应拖死探测
-  let read_limit = Duration::from_millis(300);
-  let _ = stream.set_read_timeout(Some(read_limit));
-  loop {
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+  // 必须一直读到**响应体**才可能看到 MOMOKA：只读到首行（HTTP/1.0 200 OK）就下结论，
+  // 会把一个真在跑的后端判成"没起来"，进而去强杀它——每次误判都会新留一个幽灵监听。
+  let mut buf: Vec<u8> = Vec::with_capacity(512);
+  let mut chunk = [0u8; 512];
+  let deadline = std::time::Instant::now() + Duration::from_millis(800);
+  while std::time::Instant::now() < deadline && buf.len() < 4096 {
     match stream.read(&mut chunk) {
       Ok(0) => break,
       Ok(n) => {
         buf.extend_from_slice(&chunk[..n]);
-        if buf.windows(2).any(|w| w == b"\r\n") && buf.len() > 16 {
-          break;
-        }
-        if buf.len() > 1024 {
-          break;
+        if health_payload_ok(&buf) {
+          return true;
         }
       }
       Err(_) => break,
     }
   }
-  let s = String::from_utf8_lossy(&buf);
-  s.contains("200") && s.contains("OK")
+  health_payload_ok(&buf)
+}
+
+/// 认得出是我们的后端，而不是"任何回了 200 的 HTTP 服务"。
+fn health_payload_ok(buf: &[u8]) -> bool {
+  let text = String::from_utf8_lossy(buf);
+  text.contains("200") && text.contains("MOMOKA")
 }

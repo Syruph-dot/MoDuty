@@ -11,6 +11,7 @@ import { abortAllChatStreams } from "./http/chat-streams.js";
 import { createOpenAICompatibleModelClient } from "./model-client.js";
 import { WorkspaceManager } from "./workspace-manager.js";
 import { defaultPaths, loadLocalEnvSync, resolveProjectRoot } from "./config.js";
+import { DEFAULT_PORT_BASE, DEFAULT_PORT_TRIES, describeSkipped, pickPort } from "./port-select.js";
 
 export interface CreateMomokaServerOptions {
   projectRoot?: string;
@@ -59,21 +60,47 @@ export function createMomokaServer(options: CreateMomokaServerOptions = {}) {
     machine,
     server,
     listen() {
-      const basePort = options.port ?? Number(process.env.PORT ?? 8888);
       const host = options.host ?? process.env.HOST ?? "0.0.0.0";
-      const maxTries = Math.max(1, options.portTries ?? 10);
-      return listenWithFallback(server, basePort, host, maxTries, options.portFile).then((result) => {
-        // 存量会话 transcript 回填（异步，不阻塞启动与请求）
-        void agent.sessionManager.ensureTranscripts().catch((error: unknown) => {
-          console.warn(`警告: 回填会话 transcript 失败: ${error instanceof Error ? error.message : String(error)}`);
+      const maxTries = Math.max(1, options.portTries ?? DEFAULT_PORT_TRIES);
+      // 显式给了端口就严格按它来（Tauri 壳自己挑好端口再传 PORT 进来，端口不可用时它要能立刻发现）；
+      // 没给端口就自己挑一个：不能简单地“被占就失败”，因为 Windows 上强杀进程会留下
+      // 归属已死 PID 的残留监听（实测 8888/8889），写死端口的表现就是“启动即闪退”。
+      const explicitPort = options.port ?? (process.env.PORT ? Number(process.env.PORT) : undefined);
+      const start = (port: number) =>
+        listenWithFallback(server, port, host, maxTries, options.portFile).then((result) => {
+          // 存量会话 transcript 回填（异步，不阻塞启动与请求）
+          void agent.sessionManager.ensureTranscripts().catch((error: unknown) => {
+            console.warn(`警告: 回填会话 transcript 失败: ${error instanceof Error ? error.message : String(error)}`);
+          });
+          return result;
         });
-        return result;
+      if (explicitPort != null) {
+        return start(explicitPort);
+      }
+      return pickPort({ base: DEFAULT_PORT_BASE, tries: maxTries, host }).then((pick) => {
+        const skipped = describeSkipped(pick.skipped);
+        if (pick.kind === "momoka") {
+          throw new Error(
+            `端口 ${pick.port} 上已有一个 MOMOKA 后端在运行，不再启动第二个（两个实例会并发写同一份 agents.json）。\n` +
+              `如需另起一个，请用 PORT=<其它端口> 显式指定；若那个是残留的旧后端，先停掉它。`,
+          );
+        }
+        if (pick.kind === "none") {
+          throw new Error(
+            `从 ${DEFAULT_PORT_BASE} 起的 ${maxTries} 个端口都被占用：\n${skipped}\n` +
+              `请用 PORT=<可用端口> 指定一个，或先释放占用。`,
+          );
+        }
+        if (skipped) {
+          console.warn(`以下端口被跳过：\n${skipped}`);
+        }
+        return start(pick.port as number);
       });
     },
   };
 }
 
-/** 监听一个端口；被占用则递增 basePort，最多 maxTries 次。成功后把端口写到 portFile（如果指定） */
+/** 在指定端口上监听；被占用则直接失败（多实例会写坏 agents.json，不能默默换端口）。成功后把端口写到 portFile（如果指定） */
 /**
  * 跨进程不成立的状态：进程重启后一律回到 idle。
  * 幂等，失败只告警——启动复位不该拦住服务起来。
@@ -110,14 +137,16 @@ function listenWithFallback(
       const port = basePort + attempt;
       const onError = (err: NodeJS.ErrnoException) => {
         server.off("listening", onListening);
-        if (err.code === "EADDRINUSE") {
-          // 端口被占用时直接失败，而不是递增端口再起一个实例。
+        if (err.code === "EADDRINUSE" || err.code === "EACCES") {
+          // 端口被占用时直接失败，而不是默默换端口再起一个实例。
           // 多实例会并发读写同一份 agents.json（无文件锁），是注册表被清空/损坏的根因。
+          // EACCES 在 Windows 上通常就是这件事：旧进程被强杀后内核里残留的监听还在（PID 已消失）。
           reject(
             new Error(
-              `Port ${port} is already in use. Another MOMOKA server instance may still be running. ` +
-                `Stop the existing instance first (run-all.ps1 / npm run dev cleans port ${basePort}, or kill the process bound to ${port}) ` +
-                `before starting a new one.`,
+              `Port ${port} is already in use (${err.code}). Another MOMOKA server instance may still be running, ` +
+                `or a stale listening socket left behind by a killed process. ` +
+                `Check it with \`netstat -ano | findstr :${port}\`: if that PID no longer exists, only a reboot frees the port; ` +
+                `otherwise stop the instance or start on another port.`,
             ),
           );
         } else {
@@ -181,6 +210,8 @@ if (invokedFile && currentFile === invokedFile && process.env.MOMOKA_SERVER_NO_A
     .listen()
     .catch((err: unknown) => {
       console.error(err);
-      process.exit(1);
+      // 不用 process.exit() 硬退：拒绝启动时可能还有正在关闭的 socket/timer，
+      // 硬退出会触发 libuv 的 UV_HANDLE_CLOSING 断言（噪音）。事件循环一空自然退出。
+      process.exitCode = 1;
     });
 }

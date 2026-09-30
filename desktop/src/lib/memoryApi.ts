@@ -22,6 +22,7 @@ export interface MemoryView {
   superseded_by: string | null;
   supersedes: string | null;
   valid_until: string | null;
+  derived_experiences?: Array<{ id: string; title: string }>;
   access_count: number;
   created_at: string;
   last_accessed_at: string | null;
@@ -32,6 +33,16 @@ export interface MemoryListFilters {
   type?: string;
   status?: string;
   q?: string;
+}
+
+export interface MemoryCreateInput {
+  content: string;
+  type: MemoryTypeView;
+  status: MemoryStatusView;
+  confidence: number;
+  scope: "user" | "project" | "agent" | "session";
+  scope_id?: string;
+  valid_until?: string | null;
 }
 
 export interface WorkExperienceView {
@@ -56,6 +67,18 @@ export async function listMemories(filters: MemoryListFilters = {}): Promise<Mem
   if (!response.ok) throw new Error(`加载记忆失败：HTTP ${response.status}`);
   const body = (await response.json()) as { memories?: MemoryView[] };
   return body.memories ?? [];
+}
+
+export async function createMemory(input: MemoryCreateInput): Promise<MemoryView> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/memory`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`创建记忆失败：HTTP ${response.status}`);
+  const body = (await response.json()) as { memory: MemoryView };
+  return body.memory;
 }
 
 export async function patchMemory(id: string, patch: { content?: string; type?: MemoryTypeView; status?: MemoryStatusView; confidence?: number }): Promise<MemoryView> {

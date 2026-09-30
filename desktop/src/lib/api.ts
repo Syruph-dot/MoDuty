@@ -224,6 +224,7 @@ export interface MomokaSettingsView {
   modelPool: ModelPoolEntryView[];
   tierDefaults: TierDefaultsView;
   agent_persona?: string;
+  cross_workspace_experience_recall: boolean;
 }
 
 /** 读取当前设置（v2：模型池 + 默认指针 + 默认人格） */
@@ -241,6 +242,7 @@ export async function updateSettings(input: {
   modelPool?: ModelPoolEntryView[];
   tierDefaults?: Partial<TierDefaultsView>;
   agent_persona?: string | null;
+  cross_workspace_experience_recall?: boolean;
 }): Promise<void> {
   const base = await awaitApiBase();
   await jsonOrThrow(

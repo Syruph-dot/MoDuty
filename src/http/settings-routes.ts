@@ -42,6 +42,7 @@ export async function handleSettingsRoutes(
       sandbox_enabled: ctx.agent.getSandboxEnabled(),
       modelPool: settings.modelPool,
       tierDefaults: settings.tierDefaults,
+      cross_workspace_experience_recall: settings.crossWorkspaceExperienceRecall ?? false,
       ...(settings.agentPersona ? { agent_persona: settings.agentPersona } : {}),
     });
     return true;
@@ -51,6 +52,7 @@ export async function handleSettingsRoutes(
       modelPool?: ModelPoolEntry[];
       tierDefaults?: Partial<TierDefaults>;
       agent_persona?: string | null;
+      cross_workspace_experience_recall?: unknown;
       // v1 兼容：不再支持单组写入，收到时给出指引
       apiKey?: string;
       baseUrl?: string;
@@ -62,7 +64,7 @@ export async function handleSettingsRoutes(
       });
       return true;
     }
-    const patch: { modelPool?: ModelPoolEntry[]; tierDefaults?: Partial<TierDefaults>; agentPersona?: string | null } = {};
+    const patch: { modelPool?: ModelPoolEntry[]; tierDefaults?: Partial<TierDefaults>; agentPersona?: string | null; crossWorkspaceExperienceRecall?: boolean } = {};
     if (Array.isArray(body.modelPool)) {
       patch.modelPool = body.modelPool.map((item) => ({ ...item, baseUrl: item.baseUrl?.trim() ?? "", model: item.model?.trim() ?? "" }));
     }
@@ -78,6 +80,13 @@ export async function handleSettingsRoutes(
     const persona = typeof body.agent_persona === "string" ? body.agent_persona.trim() : body.agent_persona ?? undefined;
     if (body.agent_persona !== undefined) {
       patch.agentPersona = persona || null;
+    }
+    if (body.cross_workspace_experience_recall !== undefined) {
+      if (typeof body.cross_workspace_experience_recall !== "boolean") {
+        json(response, 400, { error: "cross_workspace_experience_recall must be a boolean" });
+        return true;
+      }
+      patch.crossWorkspaceExperienceRecall = body.cross_workspace_experience_recall;
     }
     await saveSettings(patch);
     json(response, 200, { ok: true });

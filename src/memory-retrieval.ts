@@ -72,11 +72,18 @@ export function isRecallable(entry: RecallableEntry, includeInactive: boolean): 
 }
 
 function keywordsOf(topic: string): string[] {
-  return topic
-    .toLowerCase()
+  const lowered = topic.toLowerCase();
+  const wholeTerms = lowered
     .split(/[\s,，。;；:：/\\]+/u)
     .map((word) => word.trim())
     .filter((word) => word.length >= 2);
+  const stopBigrams = new Set(["如何", "怎样", "怎么", "是否", "时候", "什么", "这个", "那个", "可以", "请问"]);
+  const runs = lowered.match(/[\u4e00-\u9fff]{2,}/gu) ?? [];
+  const bigrams = runs.flatMap((run) => {
+    const chars = [...run];
+    return chars.slice(0, -1).map((char, index) => char + chars[index + 1]).filter((pair) => !stopBigrams.has(pair));
+  });
+  return [...new Set([...wholeTerms, ...bigrams])].slice(0, 32);
 }
 
 /**
@@ -89,21 +96,30 @@ export function scoreEntry<T extends RecallableEntry>(
 ): ScoredMemory<T> | null {
   const now = (options.now ?? (() => new Date()))();
   const halfLifeDays = options.halfLifeDays ?? DEFAULT_HALF_LIFE_DAYS;
+  if (typeof entry.validUntil === "string" && Date.parse(entry.validUntil) <= now.getTime()) return null;
   const topicLower = topic.trim().toLowerCase();
   if (!topicLower) return null;
 
   const contentLower = entry.content.toLowerCase();
   const topicField = (entry.topic ?? "").toLowerCase();
+  const cjkQuery = /[\u4e00-\u9fff]/u.test(topicLower);
+  const compactTopic = cjkQuery ? topicLower.replace(/\s+/gu, "") : "";
+  const compactContent = cjkQuery ? contentLower.replace(/\s+/gu, "") : "";
+  const compactTopicField = cjkQuery ? topicField.replace(/\s+/gu, "") : "";
   const why: string[] = [];
   let score = 0;
 
-  const hitContent = contentLower.includes(topicLower);
-  const hitTopicField = topicField.includes(topicLower);
+  const hitContent = contentLower.includes(topicLower) || (cjkQuery && compactContent.includes(compactTopic));
+  const hitTopicField = topicField.includes(topicLower) || (cjkQuery && compactTopicField.includes(compactTopic));
   if (hitContent || hitTopicField) {
     score += 3;
     why.push(`整串命中「${topic}」${hitContent ? "（内容）" : "（主题字段）"}`);
   }
-  const keywordHits = keywordsOf(topicLower).filter((keyword) => contentLower.includes(keyword) || topicField.includes(keyword));
+  const keywordHits = keywordsOf(topicLower).filter((keyword) =>
+    contentLower.includes(keyword)
+      || topicField.includes(keyword)
+      || (cjkQuery && (compactContent.includes(keyword.replace(/\s+/gu, "")) || compactTopicField.includes(keyword.replace(/\s+/gu, "")))),
+  );
   if (keywordHits.length > 0) {
     score += keywordHits.length;
     why.push(`关键词命中：${keywordHits.join("/")}`);

@@ -50,6 +50,8 @@ export interface MomokaSettings {
   tierDefaults: TierDefaults;
   /** 全局默认 Agent 人格（role 未自定义时的“我是谁/怎么干活”描述）；未设置用内置默认 */
   agentPersona?: string;
+  /** Explicit opt-in to recall work experiences from other workspaces. */
+  crossWorkspaceExperienceRecall?: boolean;
 }
 
 /** v1 遗留信息（仅当用户还没保存过 v2 时通过迁移合成，供诊断展示） */
@@ -68,6 +70,7 @@ interface RawSettingsFile {
   modelPool?: unknown;
   tierDefaults?: { high?: unknown; low?: unknown; exact?: unknown };
   agentPersona?: unknown;
+  crossWorkspaceExperienceRecall?: unknown;
   // v1 字段
   apiKey?: unknown;
   baseUrl?: unknown;
@@ -142,7 +145,7 @@ async function readRaw(): Promise<RawSettingsFile | null> {
 export async function loadSettings(): Promise<MomokaSettings> {
   const raw = await readRaw();
   if (!raw) {
-    return { modelPool: [], tierDefaults: emptyDefaults() };
+    return { modelPool: [], tierDefaults: emptyDefaults(), crossWorkspaceExperienceRecall: false };
   }
 
   if (Array.isArray(raw.modelPool)) {
@@ -152,6 +155,7 @@ export async function loadSettings(): Promise<MomokaSettings> {
     return {
       modelPool: pool,
       tierDefaults: normalizeTierDefaults(raw.tierDefaults),
+      crossWorkspaceExperienceRecall: raw.crossWorkspaceExperienceRecall === true,
       ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
         ? { agentPersona: raw.agentPersona }
         : {}),
@@ -175,6 +179,7 @@ export async function loadSettings(): Promise<MomokaSettings> {
         },
       ],
       tierDefaults: { high: LEGACY_ENTRY_ID, low: null, exact: null },
+      crossWorkspaceExperienceRecall: raw.crossWorkspaceExperienceRecall === true,
       ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
         ? { agentPersona: raw.agentPersona }
         : {}),
@@ -184,6 +189,7 @@ export async function loadSettings(): Promise<MomokaSettings> {
   return {
     modelPool: [],
     tierDefaults: emptyDefaults(),
+    crossWorkspaceExperienceRecall: raw.crossWorkspaceExperienceRecall === true,
     ...(typeof raw.agentPersona === "string" && raw.agentPersona.trim()
       ? { agentPersona: raw.agentPersona }
       : {}),
@@ -206,6 +212,7 @@ export async function saveSettings(patch: {
   modelPool?: ModelPoolEntry[];
   tierDefaults?: Partial<TierDefaults>;
   agentPersona?: string | null;
+  crossWorkspaceExperienceRecall?: boolean;
 }): Promise<void> {
   const current = await loadSettings();
   const raw = await readRaw();
@@ -248,6 +255,7 @@ export async function saveSettings(patch: {
       : current.agentPersona
         ? { agentPersona: current.agentPersona }
         : {}),
+    crossWorkspaceExperienceRecall: patch.crossWorkspaceExperienceRecall ?? current.crossWorkspaceExperienceRecall ?? false,
   };
   const payload = raw && Array.isArray((raw as RawSettingsFile).modelPool)
     ? next // 已是 v2

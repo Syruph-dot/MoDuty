@@ -60,6 +60,7 @@ export default function SettingsScreen() {
   const [defaults, setDefaults] = useState<TierDefaultsView>({ high: null, low: null, exact: null });
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [agentPersona, setAgentPersona] = useState("");
+  const [crossWorkspaceExperienceRecall, setCrossWorkspaceExperienceRecall] = useState(false);
   const [personaDirty, setPersonaDirty] = useState(false);
   const [shellVerb, setShellVerb] = useState<ShellVerbStatusView | null>(null);
   const [shellVerbBusy, setShellVerbBusy] = useState(false);
@@ -87,6 +88,7 @@ export default function SettingsScreen() {
       setDefaults(settings.tierDefaults ?? { high: null, low: null, exact: null });
       setSandboxEnabled(settings.sandbox_enabled);
       setAgentPersona(settings.agent_persona ?? "");
+      setCrossWorkspaceExperienceRecall(settings.cross_workspace_experience_recall === true);
       setPersonaDirty(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -277,6 +279,23 @@ export default function SettingsScreen() {
       setPersonaDirty(false);
       void load();
     } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveCrossWorkspaceExperienceRecall = async (enabled: boolean) => {
+    const previous = crossWorkspaceExperienceRecall;
+    setCrossWorkspaceExperienceRecall(enabled);
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await updateSettings({ cross_workspace_experience_recall: enabled });
+      setSaved(true);
+    } catch (err) {
+      setCrossWorkspaceExperienceRecall(previous);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
@@ -660,6 +679,27 @@ export default function SettingsScreen() {
                       {personaDirty ? "有未保存修改" : "已同步"}
                     </span>
                   </div>
+                </div>
+              </div>
+            </section>
+            <section className="settings-group">
+              <h3 className="settings-group__title">工作经验召回范围</h3>
+              <div className="settings-card">
+                <div className="settings-row">
+                  <div className="settings-row__grow">
+                    <div className="settings-row__label">允许跨工作区召回工作经验</div>
+                    <div className="settings-row__desc">关闭时只检索当前工作区且有来源会话的经验；开启后允许从其它工作区和无会话来源的经验中召回，并在本轮显示来源。</div>
+                  </div>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={crossWorkspaceExperienceRecall}
+                      disabled={saving}
+                      onChange={(event) => void saveCrossWorkspaceExperienceRecall(event.target.checked)}
+                      aria-label="允许跨工作区召回工作经验"
+                    />
+                    {crossWorkspaceExperienceRecall ? "已允许" : "仅当前工作区"}
+                  </label>
                 </div>
               </div>
             </section>

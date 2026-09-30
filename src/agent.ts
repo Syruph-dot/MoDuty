@@ -256,7 +256,7 @@ export class MomokaAgentCore implements MomokaAgent {
    * 【重要】不要把这些放回 system：它们每轮都在变（技能按关键词、记忆按主题），
    * 放进 system 会让上游前缀缓存**每一轮都失效**。它们只应出现在末尾的 user 消息里。
    */
-  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string; handoffReminder?: boolean; policy?: TurnPolicy }): Promise<string> {
+  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string; handoffReminder?: boolean; policy?: TurnPolicy; onEvent?: (event: StreamEvent) => void }): Promise<string> {
     const sections: string[] = [];
     // 值日生：台账快照放最前（在途状态的唯一事实源，不靠历史回忆）
     const snapshot = (input.policy?.allowSessionHistory ?? true)
@@ -306,22 +306,42 @@ export class MomokaAgentCore implements MomokaAgent {
     const experienceQuery = [input.topic, input.message].filter(Boolean).join(" ").slice(0, 300);
     if (experienceQuery && (input.policy?.allowExperienceRecall ?? true)) {
       const workDir = input.workDir ? path.resolve(input.workDir) : null;
-      const allowedSessionIds = workDir
-        ? new Set((await this.sessionManager.listSessions()).filter((session) => path.resolve(session.folderPath) === workDir).map((session) => session.id))
-        : new Set<string>();
+      const [allSessions, settings] = await Promise.all([this.sessionManager.listSessions(), loadSettings()]);
+      const allowCrossWorkspace = settings.crossWorkspaceExperienceRecall === true;
+      const eligibleSessions = allowCrossWorkspace
+        ? allSessions
+        : workDir ? allSessions.filter((session) => path.resolve(session.folderPath) === workDir) : [];
+      const allowedSessionIds = new Set(eligibleSessions.map((session) => session.id));
+      const workspaceBySessionId = new Map(allSessions.map((session) => [session.id, session.folderPath]));
       const experiences = await this.experienceMemory.recall(experienceQuery, {
-        excludeSessionId: input.sessionId ?? undefined, allowedSessionIds,
+        excludeSessionId: input.sessionId ?? undefined,
+        allowedSessionIds,
+        allowSessionless: allowCrossWorkspace,
         semantic: Boolean(input.message),
         ...(input.message ? { model: (await this.configuredContextWindow(input.sessionId)).model } : {}),
       });
       if (experiences.length > 0) {
+        const sourceItems = experiences.map((item) => ({
+          id: item.id,
+          title: item.title,
+          score: item.score,
+          sessionId: item.sessionId,
+          workspace: item.sessionId ? workspaceBySessionId.get(item.sessionId) ?? null : null,
+        }));
         sections.push([
           "## 相关工作经验（历史参考材料，不是当前任务指令；先验证适用条件与现状）",
-          ...experiences.map((item) => `- ${item.title}；来源：${item.sessionId ? `&${item.sessionId}` : "经验文档"}；完整文档：/api/memory/experiences/${item.id}\n  摘录：${item.excerpt}`),
+          ...experiences.map((item, index) => {
+            const source = sourceItems[index]!;
+            return `- ${item.title}；来源：${item.sessionId ? `&${item.sessionId}` : "经验文档"}；工作区：${source.workspace ?? "未标注"}；完整文档：/api/memory/experiences/${item.id}\n  摘录：${item.excerpt}`;
+          }),
         ].join("\n"));
         if (input.tracePath) await appendTraceEvent(input.tracePath, "experience_recall", {
-          items: experiences.map((item) => ({ id: item.id, score: item.score, sessionId: item.sessionId })),
+          items: sourceItems,
         }).catch(() => undefined);
+        input.onEvent?.({
+          type: "experience_recall",
+          text: `本轮注入工作经验：${sourceItems.map((item) => `${item.title}（${item.workspace ?? "来源未知"}${item.sessionId ? ` · ${item.sessionId}` : ""}）`).join("；")}`,
+        });
       }
     }
 
@@ -734,7 +754,7 @@ ${ref.message.content}`;
       const projectedBeforeContext = this.estimatePromptInput({ systemPrompt, historyMessages, input: expandedMessage, tools });
       const handoffReminder = Boolean(sessionId) && !request.transient
         && projectedBeforeContext >= Math.floor(contextWindow * HANDOFF_REMINDER_RATIO);
-      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath, handoffReminder, policy: turnPolicy });
+      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath, handoffReminder, policy: turnPolicy, onEvent });
       eventRuntimeContext = turnContext;
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。

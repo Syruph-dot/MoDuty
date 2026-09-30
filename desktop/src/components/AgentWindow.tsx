@@ -388,6 +388,7 @@ export default function AgentWindow({
   const [handoffExpanded, setHandoffExpanded] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [policyNotice, setPolicyNotice] = useState<string | null>(null);
+  const [experienceNotice, setExperienceNotice] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1127,6 +1128,7 @@ export default function AgentWindow({
     }
     setStreamError(null);
     setPolicyNotice(null);
+    setExperienceNotice(null);
     setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString() }]);
     setRedirectReady(false);
     setStreaming(true);
@@ -1210,6 +1212,7 @@ export default function AgentWindow({
             });
           },
           onPolicyNotice: (notice) => setPolicyNotice(notice),
+          onExperienceRecall: (notice) => setExperienceNotice(notice),
           onApprovalRequested: () => {
             // 审批联动由 ApprovalPanel（ISS-09）处理；磁贴会经 agent_state 事件转 waiting_approval
           },
@@ -1666,6 +1669,7 @@ export default function AgentWindow({
         ) : null}
 
         {policyNotice ? <p className="agent-window__policy-notice" role="status">{policyNotice}</p> : null}
+        {experienceNotice ? <p className="agent-window__policy-notice" role="status">{experienceNotice}</p> : null}
         {streamError ? <p className="agent-window__error" role="alert">{streamError}</p> : null}
       </div>
 

@@ -215,9 +215,10 @@ export function consolidateEntry<T extends MemoryEntryLike>(
   }
 
   // 2) 同主题相反结论 → 取代
+  const conflictThreshold = incomingType === "preference" ? 0.35 : CONFLICT_OVERLAP;
   const conflict = live.find(
     (entry) =>
-      overlapRatio(entry.content, incoming.content) >= CONFLICT_OVERLAP
+      overlapRatio(entry.content, incoming.content) >= conflictThreshold
       && hasNegation(entry.content) !== hasNegation(incoming.content),
   );
   const newId = options.idFactory();

@@ -2,7 +2,7 @@ import type { MemoryStatus, MemoryType } from "../memory-extract.js";
 import { MomokaHttpError } from "../agent.js";
 import { json, readJsonBody } from "./http-utils.js";
 import type { RouteContext } from "./route-context.js";
-import type { LongTermMemoryEntry } from "../memory.js";
+import { PROJECT_SCOPE, USER_SCOPE, type LongTermMemoryEntry, type MemoryScope, type MemoryScopeRef } from "../memory.js";
 
 const MEMORY_TYPES: MemoryType[] = ["episode", "fact", "preference", "procedure", "decision"];
 const MEMORY_STATUSES: MemoryStatus[] = ["candidate", "active", "superseded", "rejected"];
@@ -49,6 +49,43 @@ export async function handleMemoryRoutes(
 ): Promise<boolean> {
   const store = ctx.agent.memoryStore;
 
+  if (url.pathname === "/api/memory" && request.method === "POST") {
+    const body = await readJsonBody(request);
+    const content = typeof body.content === "string" ? body.content.trim() : "";
+    if (!content || content.length > 20_000) throw new MomokaHttpError(400, "content must contain 1 to 20000 characters");
+    const type = body.type === undefined ? "preference" : String(body.type);
+    if (!MEMORY_TYPES.includes(type as MemoryType)) throw new MomokaHttpError(400, `type must be one of ${MEMORY_TYPES.join(", ")}`);
+    const scope = body.scope === undefined ? "user" : String(body.scope);
+    if (!["user", "project", "agent", "session"].includes(scope)) throw new MomokaHttpError(400, "scope must be user, project, agent, or session");
+    const scopeId = scope === "user" || scope === "project" ? scope : String(body.scope_id ?? "").trim();
+    if (!/^[A-Za-z0-9_-]{1,120}$/u.test(scopeId)) throw new MomokaHttpError(400, "scope_id is required for agent/session scope and must be a safe identifier");
+    const confidence = body.confidence === undefined ? 0.8 : Number(body.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new MomokaHttpError(400, "confidence must be between 0 and 1");
+    const status = body.status === undefined ? "candidate" : String(body.status);
+    if (!MEMORY_STATUSES.includes(status as MemoryStatus)) throw new MomokaHttpError(400, `status must be one of ${MEMORY_STATUSES.join(", ")}`);
+    const validUntil = body.valid_until == null ? undefined : String(body.valid_until).trim();
+    if (validUntil && !Number.isFinite(Date.parse(validUntil))) throw new MomokaHttpError(400, "valid_until must be a valid date string");
+    const ref: MemoryScopeRef = scope === "user"
+      ? USER_SCOPE
+      : scope === "project"
+        ? PROJECT_SCOPE
+        : { scope: scope as MemoryScope, scopeId };
+    const result = await store.rememberTyped({
+      content,
+      type: type as MemoryType,
+      confidence,
+      sourceRefs: [],
+      ...(validUntil ? { validUntil } : {}),
+    }, ref, { source: "explicit", topic: typeof body.topic === "string" ? body.topic.trim().slice(0, 200) : "" });
+    let entry = result.entry;
+    if (entry && entry.status !== status) {
+      entry = await store.updateEntry(entry.id, { status: status as MemoryStatus }) ?? entry;
+    }
+    if (!entry) throw new MomokaHttpError(500, "Memory was written but could not be read back");
+    json(response, 201, { memory: toSnake(entry), action: result.action });
+    return true;
+  }
+
   if (url.pathname === "/api/memory" && request.method === "GET") {
     const scope = url.searchParams.get("scope");
     const type = url.searchParams.get("type");
@@ -63,10 +100,21 @@ export async function handleMemoryRoutes(
     if (status) entries = entries.filter((entry) => (entry.status ?? "active") === status);
     if (keyword) entries = entries.filter((entry) => entry.content.toLowerCase().includes(keyword));
     entries.sort((a, b) => String(b.lastAccessedAt ?? b.createdAt).localeCompare(String(a.lastAccessedAt ?? a.createdAt)));
+    const experiences = await ctx.agent.experienceMemory.list();
+    const memories = entries.slice(0, limit).map((entry) => {
+      const outputIds = (entry.sourceRefs ?? [])
+        .map((source) => source.split("#", 1)[0] ?? "")
+        .filter((source) => source.startsWith("out:"))
+        .map((source) => source.slice("out:".length));
+      const relatedExperiences = experiences
+        .filter((experience) => outputIds.some((outputId) => experience.id.endsWith(`-${outputId}`)))
+        .map(({ id, title }) => ({ id, title }));
+      return { ...toSnake(entry), derived_experiences: relatedExperiences };
+    });
 
     json(response, 200, {
       total: entries.length,
-      memories: entries.slice(0, limit).map(toSnake),
+      memories,
       filters: { scope, type, status, q: keyword || null },
     });
     return true;

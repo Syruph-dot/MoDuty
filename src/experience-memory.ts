@@ -261,7 +261,7 @@ export class ExperienceMemoryService {
    *
    * 走索引缓存：编辑与删除立即生效（mtime 变即重读），但稳态下不重复读盘。
    */
-  async recall(query: string, options: { limit?: number; charBudget?: number; excludeSessionId?: string; allowedSessionIds?: ReadonlySet<string>; semantic?: boolean; model?: string } = {}): Promise<RecalledExperience[]> {
+  async recall(query: string, options: { limit?: number; charBudget?: number; excludeSessionId?: string; allowedSessionIds?: ReadonlySet<string>; allowSessionless?: boolean; semantic?: boolean; model?: string } = {}): Promise<RecalledExperience[]> {
     const terms = experienceTerms(query);
     if (terms.length === 0) return [];
     const candidates: RecalledExperience[] = [];
@@ -270,6 +270,7 @@ export class ExperienceMemoryService {
       if (entry.failed) continue;
       if (entry.sessionId && entry.sessionId === options.excludeSessionId) continue;
       if (entry.sessionId && options.allowedSessionIds && !options.allowedSessionIds.has(entry.sessionId)) continue;
+      if (!entry.sessionId && options.allowSessionless === false) continue;
       const paragraphs = entry.paragraphs;
       const reusable = paragraphs.find((part) => /可复用|适用边界|操作知识/u.test(part)) ?? paragraphs.find((part) => !part.startsWith("#")) ?? "";
       semanticPool.push({ id: entry.id, title: entry.title, excerpt: reusable.replace(/\s+/gu, " ").slice(0, 550), sessionId: entry.sessionId, score: 0.5, preview: entry.preview.slice(0, 160) });

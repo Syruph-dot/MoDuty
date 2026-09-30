@@ -48,6 +48,7 @@ export type StreamEvent =
   | { type: "tool_start"; name: string; args: string }
   | { type: "tool_result"; name: string; result: string }
   | { type: "policy_notice"; text: string }
+  | { type: "experience_recall"; text: string }
   | { type: "approval_requested"; name: string; args: string; result: string }
   | { type: "question_requested"; name: string; args: string; result: string };
 

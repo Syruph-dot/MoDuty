@@ -6,6 +6,7 @@ export interface ChatStreamHandlers {
   onToolStart(name: string, args: string): void;
   onToolResult(name: string, result: string): void;
   onPolicyNotice?(text: string): void;
+  onExperienceRecall?(text: string): void;
   onApprovalRequested(name: string, args: string): void;
   onQuestionRequested?(name: string, args: string): void;
   onDone(): void;
@@ -66,6 +67,9 @@ export async function runChatStream(
             break;
           case "policy_notice":
             handlers.onPolicyNotice?.(String(frame.text ?? ""));
+            break;
+          case "experience_recall":
+            handlers.onExperienceRecall?.(String(frame.text ?? ""));
             break;
           case "approval_requested":
             handlers.onApprovalRequested(String(frame.name ?? ""), String(frame.args ?? "{}"));

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import QuickRefManager from "./QuickRefManager";
 
 import {
+  createMemory,
   deleteMemory,
   listMemories,
   patchMemory,
@@ -11,6 +12,7 @@ import {
   updateWorkExperience,
   deleteWorkExperience,
   type MemoryStatusView,
+  type MemoryCreateInput,
   type MemoryTypeView,
   type MemoryView,
   type WorkExperienceDocument,
@@ -55,6 +57,15 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
   const [keyword, setKeyword] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [newContent, setNewContent] = useState("");
+  const [newScope, setNewScope] = useState<MemoryCreateInput["scope"]>("user");
+  const [newScopeId, setNewScopeId] = useState("");
+  const [newType, setNewType] = useState<MemoryTypeView>("preference");
+  const [newStatus, setNewStatus] = useState<MemoryStatusView>("candidate");
+  const [newConfidence, setNewConfidence] = useState(0.8);
+  const [newValidUntil, setNewValidUntil] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -152,6 +163,42 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const inspectDerivedExperience = async (experience: { id: string; title: string }) => {
+    setPanel("experiences");
+    await openExperience({ ...experience, preview: "", updatedAt: "" });
+  };
+
+  const saveNewMemory = async (): Promise<void> => {
+    const content = newContent.trim();
+    if (!content) return;
+    if ((newScope === "agent" || newScope === "session") && !newScopeId.trim()) {
+      setError("Agent / Session 作用域需要填写对应 ID。");
+      return;
+    }
+    setCreateBusy(true);
+    setError(null);
+    try {
+      await createMemory({
+        content,
+        scope: newScope,
+        ...(newScope === "agent" || newScope === "session" ? { scope_id: newScopeId.trim() } : {}),
+        type: newType,
+        status: newStatus,
+        confidence: newConfidence,
+        ...(newValidUntil ? { valid_until: new Date(`${newValidUntil}T23:59:59`).toISOString() } : {}),
+      });
+      setCreateOpen(false);
+      setNewContent("");
+      setNewScopeId("");
+      setNewValidUntil("");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
   const removeExperience = async () => {
     if (!selectedExperience || !window.confirm(`删除工作经验「${selectedExperience.title}」？`)) return;
     try {
@@ -224,7 +271,62 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
         <button type="button" className="btn btn--ghost btn--sm" onClick={() => void load()} aria-label="刷新记忆列表">
           ⟳ 刷新
         </button>
+        <button type="button" className="btn btn--primary btn--sm" onClick={() => setCreateOpen((open) => !open)}>
+          {createOpen ? "取消新建" : "新建记忆"}
+        </button>
       </div>
+      ) : null}
+
+      {panel === "memories" && createOpen ? (
+        <form
+          className="memory-screen__create-form"
+          onSubmit={(event) => { event.preventDefault(); void saveNewMemory(); }}
+        >
+          <label className="memory-screen__create-content">
+            <span>记忆内容</span>
+            <textarea value={newContent} onChange={(event) => setNewContent(event.target.value)} rows={3} maxLength={20_000} required />
+          </label>
+          <label>
+            <span>作用域</span>
+            <select value={newScope} onChange={(event) => setNewScope(event.target.value as MemoryCreateInput["scope"])}>
+              <option value="user">user（全局）</option>
+              <option value="project">project（项目）</option>
+              <option value="agent">agent</option>
+              <option value="session">session</option>
+            </select>
+          </label>
+          {newScope === "agent" || newScope === "session" ? (
+            <label>
+              <span>{newScope} ID</span>
+              <input value={newScopeId} onChange={(event) => setNewScopeId(event.target.value)} placeholder={newScope === "agent" ? "agt_…" : "ses_…"} required />
+            </label>
+          ) : null}
+          <label>
+            <span>类型</span>
+            <select value={newType} onChange={(event) => setNewType(event.target.value as MemoryTypeView)}>
+              {Object.entries(TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>初始状态</span>
+            <select value={newStatus} onChange={(event) => setNewStatus(event.target.value as MemoryStatusView)}>
+              <option value="candidate">候选（不自动生效）</option>
+              <option value="active">生效</option>
+            </select>
+          </label>
+          <label>
+            <span>置信度</span>
+            <input type="number" min="0" max="1" step="0.05" value={newConfidence} onChange={(event) => setNewConfidence(Number(event.target.value))} />
+          </label>
+          <label>
+            <span>有效至</span>
+            <input type="date" value={newValidUntil} onChange={(event) => setNewValidUntil(event.target.value)} />
+          </label>
+          <div className="memory-screen__create-actions">
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => setCreateOpen(false)}>取消</button>
+            <button type="submit" className="btn btn--primary btn--sm" disabled={createBusy}>{createBusy ? "保存中…" : "保存记忆"}</button>
+          </div>
+        </form>
       ) : null}
 
       {error ? <p className="memory-screen__error" role="alert">{error}</p> : null}
@@ -272,6 +374,17 @@ export default function MemoryScreen({ onClose }: { onClose: () => void }) {
               {memory.source_refs.length > 0 ? <span className="memory-card__refs">来源 {memory.source_refs.join(", ")}</span> : <span className="memory-card__refs">无来源标注</span>}
               {memory.supersedes ? <span className="memory-card__link">取代了 {memory.supersedes}</span> : null}
               {memory.superseded_by ? <span className="memory-card__link">已被 {memory.superseded_by} 取代</span> : null}
+              {memory.valid_until ? <span className="memory-card__link">有效至 {new Date(memory.valid_until).toLocaleDateString("zh-CN")}</span> : null}
+              {memory.status === "rejected" && (memory.derived_experiences?.length ?? 0) > 0 ? (
+                <div className="memory-card__derived-warning" role="status">
+                  此记忆派生的工作经验仍可能被召回：
+                  {memory.derived_experiences!.map((experience) => (
+                    <button key={experience.id} type="button" onClick={() => void inspectDerivedExperience(experience)}>
+                      {experience.title}（编辑或删除）
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <span className="memory-card__spacer" />
               <select
                 className="memory-card__select"

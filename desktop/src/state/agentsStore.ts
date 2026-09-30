@@ -241,12 +241,18 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
     try {
       await apiDeleteAgent(id);
       useTileStore.getState().removeTile(id);
-      set((state) => ({
-        agents: state.agents.filter((agent) => agent.id !== id),
-        openAgentIds: state.openAgentIds.filter((openId) => openId !== id),
-        pinnedIds: state.pinnedIds.filter((pid) => pid !== id),
-        archivedIds: state.archivedIds.filter((aid) => aid !== id),
-      }));
+      set((state) => {
+        const pinnedIds = state.pinnedIds.filter((pid) => pid !== id);
+        const archivedIds = state.archivedIds.filter((aid) => aid !== id);
+        // 治理状态同样要落盘，否则 localStorage 会残留已删 Agent 的钉住/归档引用
+        persistMgmtPrefs({ ...readMgmt(), pinnedIds, archivedIds });
+        return {
+          agents: state.agents.filter((agent) => agent.id !== id),
+          openAgentIds: state.openAgentIds.filter((openId) => openId !== id),
+          pinnedIds,
+          archivedIds,
+        };
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set({ error: `删除 Agent 失败: ${message}` });
@@ -391,8 +397,10 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   },
 
   setGroupBy(groupBy) {
+    // activeWorkspace 在本动作里被重置为 "all"，落盘必须一起写回重置后的值；
+    // 否则 localStorage 保留旧工作区，重载后分组墙会带着失效的 activeKey 空掉。
     set(() => {
-      persistMgmtPrefs({ ...readMgmt(), groupBy });
+      persistMgmtPrefs({ ...readMgmt(), groupBy, activeWorkspace: "all" });
       return { groupBy, activeWorkspace: "all" };
     });
   },
@@ -462,12 +470,17 @@ export const useAgentsStore = create<AgentsStore>()((set) => ({
   },
 
   purgeMgmtForAgent(id) {
-    set((state) => ({
-      pinnedIds: state.pinnedIds.filter((pid) => pid !== id),
-      archivedIds: state.archivedIds.filter((aid) => aid !== id),
-      collapsedWorkspaces: state.collapsedWorkspaces,
-      filters: state.filters,
-    }));
+    set((state) => {
+      const pinnedIds = state.pinnedIds.filter((pid) => pid !== id);
+      const archivedIds = state.archivedIds.filter((aid) => aid !== id);
+      persistMgmtPrefs({ ...readMgmt(), pinnedIds, archivedIds });
+      return {
+        pinnedIds,
+        archivedIds,
+        collapsedWorkspaces: state.collapsedWorkspaces,
+        filters: state.filters,
+      };
+    });
   },
 }));
 

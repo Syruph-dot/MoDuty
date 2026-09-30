@@ -32,7 +32,10 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
   openBrowserIds: [],
 
   async hydrate() {
-    const browsers = await listBrowsers().catch(() => []);
+    // 读取失败 ≠ 服务端为空：失败时直接放弃本次对账，保留本地磁贴（含分组归属），
+    // 否则瞬时错误会当成“服务端已删”而把所有 browser 磁贴落盘清除。
+    const browsers = await listBrowsers().catch(() => null);
+    if (browsers === null) return;
     const tiles = useTileStore.getState();
     // 服务端现存 browser → 确保有磁贴；v3 里残留的 browser 磁贴（服务端已删）→ 清理
     const serverIds = new Set(browsers.map((b) => b.id));

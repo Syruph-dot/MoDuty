@@ -451,13 +451,10 @@ export const useTileStore = create<TileStore>()((set, get) => ({
   createGroup(ids, name) {
     const id = `grp_${Math.random().toString(16).slice(2, 10)}`;
     set((state) => {
-      const group: TileGroup = {
-        id,
-        name: name ?? `组 ${state.groups.length + 1}`,
-        order: state.groups.length,
-      };
       const tiles = { ...state.tiles };
       const placed: TileGridMap = {};
+      const vacated: string[] = [];
+      let moved = 0;
       // 逐个矩形感知入座：与已放入者求 firstFree
       for (const tileId of ids) {
         const tile = tiles[tileId];
@@ -465,10 +462,23 @@ export const useTileStore = create<TileStore>()((set, get) => ({
         const slot = firstFree(placed, 0, tile.grid.w, tile.grid.h);
         const grid = { col: slot.col, row: slot.row, w: tile.grid.w, h: tile.grid.h };
         placed[tileId] = grid;
+        vacated.push(tile.groupId);
         tiles[tileId] = { ...tile, groupId: id, grid };
+        moved += 1;
       }
-      const groups = [...state.groups, group];
+      // 没有任何磁贴真正入组时不建空组（避免留下永远无成员的幽灵组）
+      if (moved === 0) return {};
+      const group: TileGroup = {
+        id,
+        name: name ?? `组 ${state.groups.length + 1}`,
+        order: state.groups.length,
+      };
       const normalized = normalizeBands(tiles, [id]);
+      // 成员被移空的原组要自动解散并回收 order（未分组带不受影响）
+      let groups = [...state.groups, group];
+      for (const oldGroupId of [...new Set(vacated)]) {
+        groups = dissolveEmptyGroup({ groups, tiles: normalized }, oldGroupId);
+      }
       persist({ groups, tiles: normalized });
       return { tiles: normalized, groups };
     });

@@ -257,6 +257,10 @@
 }
 
 .agent-window__compact-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin: 8px 12px;
   padding: 9px 11px;
   border-left: 3px solid #e08888;
@@ -776,6 +780,45 @@
   background: rgba(63, 125, 190, 0.12);
   color: rgba(220, 238, 255, 0.9);
   font-size: 12px;
+}
+
+.agent-window__compact-error button {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 208, 208, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-window__redirect-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(232, 237, 247, 0.72);
+  font-size: 11px;
+}
+
+.agent-window__redirect-status code {
+  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d6e4ff;
+  user-select: text;
+}
+
+.agent-window__redirect-status button {
+  padding: 3px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: #b7d2ff;
+  font: inherit;
+  cursor: pointer;
 }
 
 /* 消息气泡 */

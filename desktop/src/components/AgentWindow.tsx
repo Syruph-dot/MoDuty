@@ -58,6 +58,8 @@ interface SessionSearchHit {
   snippet: string;
   workspace: string;
   archived: boolean;
+  compact_handoff_match?: boolean;
+  compact_covered_turn_count?: number;
   message_count: number;
   last_message_at: string;
 }
@@ -383,8 +385,11 @@ export default function AgentWindow({
   const [compactCheckpoint, setCompactCheckpoint] = useState<CompactHandoffView | null>(null);
   const [compactBusy, setCompactBusy] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
+  const [compactErrorCanRetry, setCompactErrorCanRetry] = useState(false);
   const [redirectReady, setRedirectReady] = useState(false);
+  const [redirectPath, setRedirectPath] = useState(`.momoka/handoffs/${agent.session_id}.md`);
   const [redirectBusy, setRedirectBusy] = useState(false);
+  const [redirectPathCopied, setRedirectPathCopied] = useState(false);
   const [handoffExpanded, setHandoffExpanded] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [policyNotice, setPolicyNotice] = useState<string | null>(null);
@@ -441,8 +446,9 @@ export default function AgentWindow({
     try {
       const base = await awaitApiBase();
       const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/redirect`);
-      const data = (await res.json()) as { ready?: boolean };
+      const data = (await res.json()) as { ready?: boolean; relativePath?: string };
       setRedirectReady(res.ok && data.ready === true);
+      if (typeof data.relativePath === "string" && data.relativePath) setRedirectPath(data.relativePath);
     } catch {
       setRedirectReady(false);
     }
@@ -452,6 +458,7 @@ export default function AgentWindow({
     if (!redirectReady || redirectBusy || streaming) return;
     setRedirectBusy(true);
     setCompactError(null);
+    setCompactErrorCanRetry(false);
     try {
       const base = await awaitApiBase();
       const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/redirect`, { method: "POST" });
@@ -468,26 +475,57 @@ export default function AgentWindow({
     }
   };
 
+  const copyRedirectPath = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(redirectPath);
+      setRedirectPathCopied(true);
+      window.setTimeout(() => setRedirectPathCopied(false), 1200);
+    } catch {
+      setCompactError("无法复制交接路径，请手动选中路径复制。");
+      setCompactErrorCanRetry(false);
+    }
+  };
+
   const compactConversation = async (): Promise<void> => {
     if (compactBusy || streaming) return;
     setCompactBusy(true);
     setCompactError(null);
+    setCompactErrorCanRetry(false);
     try {
       const base = await awaitApiBase();
-      const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/compact`, { method: "POST" });
-      const data = (await res.json().catch(() => ({}))) as {
-        checkpoint?: CompactHandoffView;
-        error?: string;
-      };
-      if (!res.ok) throw new Error(data.error || `Compact 失败（HTTP ${res.status}）`);
-      if (!data.checkpoint) throw new Error("Compact 返回中没有 handoff checkpoint");
-      setCompactCheckpoint(data.checkpoint);
-      setHandoffExpanded(true);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/compact`, { method: "POST" });
+        const data = (await res.json().catch(() => ({}))) as {
+          checkpoint?: CompactHandoffView;
+          error?: string;
+        };
+        if (!res.ok) {
+          const message = data.error || `Compact 失败（HTTP ${res.status}）`;
+          if (attempt === 0 && /returned an empty handoff/iu.test(message)) continue;
+          throw new Error(localizeCompactError(message, attempt > 0));
+        }
+        if (!data.checkpoint) throw new Error("Compact 未返回摘要；原始 transcript 未修改，可重试。");
+        setCompactCheckpoint(data.checkpoint);
+        setHandoffExpanded(true);
+        setCompactErrorCanRetry(false);
+        return;
+      }
     } catch (error) {
-      setCompactError(error instanceof Error ? error.message : "Compact 失败");
+      setCompactError(localizeCompactError(error instanceof Error ? error.message : "Compact 失败", true));
+      setCompactErrorCanRetry(true);
     } finally {
       setCompactBusy(false);
     }
+  };
+
+  const localizeCompactError = (message: string, retried: boolean): string => {
+    if (/empty handoff/iu.test(message)) {
+      return `压缩模型没有生成有效摘要。原始 transcript 未修改${retried ? "，系统已自动重试一次" : ""}；仍失败时可再次点击 Compact。`;
+    }
+    if (/transcript was left unchanged|no checkpoint was saved/iu.test(message)) {
+      return `Compact 未保存摘要：${message}。原始 transcript 已保留，可重试。`;
+    }
+    return message;
   };
 
   /** 下载会话记录：GET /api/sessions/:id/export?format=… → Blob → 浏览器下载 */
@@ -730,12 +768,16 @@ export default function AgentWindow({
   /** 命中跳转：当前会话 → 原地滚动高亮；其他会话 → 打开对应 Agent 窗口后跳转 */
   const jumpFromHit = async (hit: SessionSearchHit): Promise<void> => {
     const latestTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[hit.matchedTurns.length - 1]![1] : 0;
-    if (latestTurn <= 0) return;
+    if (latestTurn <= 0 && !hit.compact_handoff_match) return;
     if (hit.id === agent.session_id) {
       setSearchOpen(false);
       setSearchQuery("");
       setSearchHits([]);
-      jumpToTurn(latestTurn);
+      if (latestTurn > 0) jumpToTurn(latestTurn);
+      else {
+        void loadCompactHandoff();
+        setHandoffExpanded(true);
+      }
       return;
     }
     let targetAgent = agents.find((candidate) => candidate.session_id === hit.id);
@@ -748,7 +790,7 @@ export default function AgentWindow({
       setSearchMsg("未找到对应 Agent，无法跳转");
       return;
     }
-    requestJump({ sessionId: hit.id, turn: latestTurn });
+    if (latestTurn > 0) requestJump({ sessionId: hit.id, turn: latestTurn });
     setSearchOpen(false);
     setSearchQuery("");
     setSearchHits([]);
@@ -1539,7 +1581,7 @@ export default function AgentWindow({
                     <button
                       type="button"
                       className="agent-window__search-hit-main"
-                      disabled={latestTurn <= 0}
+                      disabled={latestTurn <= 0 && !hit.compact_handoff_match}
                       onClick={() => jumpFromHit(hit)}
                     >
                       <span className="agent-window__search-hit-name">
@@ -1550,6 +1592,7 @@ export default function AgentWindow({
                       <span className="agent-window__search-hit-meta">
                         {hit.workspace || "工作区未知"} · {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息
                         {latestTurn > 0 ? ` · 跳到 Turn ${latestTurn}` : ""}
+                        {hit.compact_handoff_match ? ` · Compact 摘要命中（覆盖 ${hit.compact_covered_turn_count ?? "?"} 轮）` : ""}
                       </span>
                       {hit.snippet ? <span className="agent-window__search-hit-snippet">{hit.snippet}</span> : null}
                     </button>
@@ -1597,7 +1640,21 @@ export default function AgentWindow({
             ) : null}
           </section>
         ) : null}
-        {compactError ? <div className="agent-window__compact-error" role="alert">{compactError}</div> : null}
+        {compactError ? (
+          <div className="agent-window__compact-error" role="alert">
+            <span>{compactError}</span>
+            {compactErrorCanRetry ? <button type="button" disabled={compactBusy || streaming} onClick={() => void compactConversation()}>重试 Compact</button> : null}
+          </div>
+        ) : null}
+        {!embedded && subject.kind === "agent" && subject.id === agent.id ? (
+          <div className="agent-window__redirect-status" role="status">
+            <span>{redirectReady ? "Redirect 交接文件已就绪" : "Redirect 等待交接文件"}</span>
+            <code>{redirectPath}</code>
+            <span>{redirectReady ? "可以创建接续会话" : "请写入非空文件后刷新状态"}</span>
+            <button type="button" onClick={() => void copyRedirectPath()}>{redirectPathCopied ? "已复制" : "复制路径"}</button>
+            <button type="button" onClick={() => void loadRedirectStatus()}>刷新状态</button>
+          </div>
+        ) : null}
         {messages.length === 0 ? (
           <p className="agent-window__empty">还没有消息——发送第一条开始对话。</p>
         ) : (

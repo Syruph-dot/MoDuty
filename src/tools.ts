@@ -1158,7 +1158,8 @@ export async function executeToolCall(
       const sid = await resolveSessionId(String(args.id ?? ""), sessionManager, agentRegistry);
       const from = Number(args.from ?? 1);
       const to = Number(args.to ?? 0);
-      return await sessionManager.readSessionTranscript(sid, from, to);
+      const transcript = await sessionManager.readSessionTranscript(sid, from, to);
+      return `来源会话：&${sid}\n${transcript}`;
     } catch (error) {
       return formatToolError(error, "读取会话区间失败");
     }

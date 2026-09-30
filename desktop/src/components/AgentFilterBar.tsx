@@ -158,7 +158,7 @@ export default function AgentFilterBar() {
               }}
             >
               <strong>{hit.name}{hit.archived ? "（已归档）" : ""}</strong>
-              <span>{hit.workspace || "工作区未知"} · {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息</span>
+              <span>{hit.workspace || "工作区未知"} · {hit.matchedTurns.length} 处 transcript 命中 · {hit.message_count} 条消息{hit.compact_handoff_match ? ` · Compact 摘要覆盖 ${hit.compact_covered_turn_count ?? "?"} 轮` : ""}</span>
               {hit.snippet ? <small>{hit.snippet}</small> : null}
             </button>
           ))}

@@ -51,6 +51,10 @@
 - 用到某会话内容时标注 `[来源 &ses_<id> · Turn N]`，让用户能回看原处。
 - 用户只说"参考 &ses_xxx"却没说要什么：先 `inspect_session` 给构成摘要，再确认挖哪部分。
 
+### Redirect 交接
+- 用户要求准备跨会话接续时，把交接文档写入当前会话工作目录下的 `.momoka/handoffs/<session-id>.md`；session-id 使用当前 Agent 的会话 ID。
+- 写入后读回核对。只有服务端确认该文件存在且非空，Redirect 才算就绪；不要把其它目录里的普通 HANDOFF 文件说成 Redirect 交接已就绪。
+
 ### 文件侧同理（everything / rg 二分法）
 - `search_files(名称/路径)` 管"找文件"（everything 侧）；
 - `search_content(内容)`     管"找内容"（rg 侧）。

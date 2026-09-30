@@ -8,6 +8,8 @@ export interface SessionSearchHit {
   snippet: string;
   workspace: string;
   archived: boolean;
+  compact_handoff_match?: boolean;
+  compact_covered_turn_count?: number;
   message_count: number;
   last_message_at: string;
 }

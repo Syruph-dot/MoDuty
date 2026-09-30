@@ -801,6 +801,31 @@ export class SessionManager {
       const score = (meta.get(session.id) ?? 0) + detail.score;
       if (score > 0) hits.push(this.toSearchHit(session, score, detail.turnRanges, detail.snippet));
     }
+
+    for (const session of sessions) {
+      const checkpoint = await this.getCompactHandoff(session.id);
+      if (!checkpoint?.handoff.trim()) continue;
+      const matchingNeedles = needles.filter((needle) => checkpoint.handoff.toLocaleLowerCase().includes(needle)
+        || (cjkSearch && compactCjkText(checkpoint.handoff).includes(compactCjkText(needle))));
+      if (matchingNeedles.length === 0) continue;
+      const matchingLine = checkpoint.handoff.split(/\r?\n/u).reverse().find((line) =>
+        matchingNeedles.some((needle) => line.toLocaleLowerCase().includes(needle)
+          || (cjkSearch && compactCjkText(line).includes(compactCjkText(needle)))),
+      );
+      const snippet = (matchingLine ?? checkpoint.handoff.split(/\r?\n/u).find((line) => line.trim()) ?? "").trim().slice(0, 160);
+      const existing = hits.find((hit) => hit.id === session.id);
+      if (existing) {
+        existing.score = Number(existing.score) + matchingNeedles.length;
+        existing.snippet = snippet || String(existing.snippet ?? "");
+        existing.compact_handoff_match = true;
+        existing.compact_covered_turn_count = checkpoint.coveredTurnCount;
+      } else {
+        hits.push(this.toSearchHit(session, matchingNeedles.length, [], snippet, {
+          compact_handoff_match: true,
+          compact_covered_turn_count: checkpoint.coveredTurnCount,
+        }));
+      }
+    }
     hits.sort((a, b) => Number(b.score) - Number(a.score));
     return hits.slice(0, limit);
   }
@@ -874,7 +899,13 @@ export class SessionManager {
     return { score: matched.length, turnRanges, snippet };
   }
 
-  private toSearchHit(session: SessionRecord, score: number, matchedTurns: Array<[number, number]>, snippet: string): Record<string, unknown> {
+  private toSearchHit(
+    session: SessionRecord,
+    score: number,
+    matchedTurns: Array<[number, number]>,
+    snippet: string,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
     return {
       id: session.id,
       name: session.name,
@@ -885,6 +916,7 @@ export class SessionManager {
       snippet,
       message_count: session.messageCount,
       last_message_at: session.lastMessageAt,
+      ...extra,
     };
   }
 

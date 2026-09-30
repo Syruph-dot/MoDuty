@@ -904,6 +904,13 @@ ${ref.message.content}`;
       }
       throw error;
     }
+    const blockedAttempts = (result.toolCalls ?? []).filter((call) => blockedToolNames.includes(call.tool));
+    if (blockedAttempts.length > 0) {
+      const names = [...new Set(blockedAttempts.map((call) => call.tool))];
+      const note = `【运行边界说明】本轮尝试调用受限工具 ${names.join("、")}，均在执行前被拦截，未执行。`;
+      result = { ...result, output: `${result.output.trim()}\n\n${note}`.trim() };
+      await appendTraceEvent(tracePath, "blocked_tool_summary", { tools: names, count: blockedAttempts.length }).catch(() => undefined);
+    }
     await this.recordRunUsage(result, sessionId);
     await appendTraceEvent(tracePath, "final_answer", { response: result.output, usage: result.usage });
     await this.memoryStore.recordOutput({ outputId, prompt: message, response: result.output, topic, matchedSkills: [], toolCalls: result.toolCalls ?? [], sessionId });

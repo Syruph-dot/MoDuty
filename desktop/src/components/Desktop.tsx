@@ -1255,6 +1255,16 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
         </p>
       ) : null}
 
+      {!openMode && !loading && !error && agents.length === 0 && browsers.length === 0 && widgets.length === 0 && groups.length === 0 ? (
+        <div className="tile-wall__filter-empty" role="status">
+          <h2>桌面还是空的</h2>
+          <p>创建一个 Agent，开始处理你的第一个任务。</p>
+          <button type="button" className="btn btn--ghost" onClick={() => openNewAgent()}>
+            创建 Agent
+          </button>
+        </div>
+      ) : null}
+
       {/* free 模式内容层见下方 .tile-wall__content（同时承担撑宽 + 橡皮筋位移） */}
       {/* grouped 视图（方案 B）：按工作区分组，X 轴分列布局 */}
       {!openMode && groupedMode ? (

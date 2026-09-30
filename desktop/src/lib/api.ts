@@ -1,5 +1,17 @@
 import type { Agent, BrowserInfo, QuestionSetView } from "../types";
 
+export interface SessionSearchHit {
+  id: string;
+  name: string;
+  score: number;
+  matchedTurns: Array<[number, number]>;
+  snippet: string;
+  workspace: string;
+  archived: boolean;
+  message_count: number;
+  last_message_at: string;
+}
+
 /**
  * API base 解析（异步）：
  * - 优先级：
@@ -81,6 +93,14 @@ export async function listAgents(): Promise<Agent[]> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(await fetch(`${base}/api/agents`), "GET /api/agents")) as { agents: Agent[] };
   return data.agents;
+}
+
+export async function searchSessions(query: string): Promise<SessionSearchHit[]> {
+  const base = await awaitApiBase();
+  const response = await fetch(`${base}/api/sessions/search?q=${encodeURIComponent(query)}`);
+  if (!response.ok) throw new Error(`会话内容检索失败：HTTP ${response.status}`);
+  const data = (await response.json()) as { hits: SessionSearchHit[] };
+  return data.hits ?? [];
 }
 
 export async function createAgent(input: { name: string; workspace_dir?: string; model?: string }): Promise<Agent> {

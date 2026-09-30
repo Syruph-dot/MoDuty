@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -12,7 +12,6 @@ import {
   messageFromDisk,
   buildTurns,
   turnsToTranscript,
-  appendTurnToTranscript,
 } from "./serialization.js";
 import type { CompactHandoffCheckpoint } from "./compact-handoff.js";
 
@@ -38,6 +37,14 @@ async function ripgrepAvailable(): Promise<boolean> {
     ripgrepReady = false;
   }
   return ripgrepReady;
+}
+
+function compactCjkText(value: string): string {
+  return value.toLocaleLowerCase().replace(/\s+/gu, "");
+}
+
+function containsCjk(value: string): boolean {
+  return /[\u3400-\u9fff]/u.test(value);
 }
 
 /** 跑一次 rg：正常返回 stdout（无命中时为空串）；rg 不可用/超时返回 null 由调用方回落 */
@@ -100,6 +107,7 @@ function shortId(prefix: string): string {
 export class SessionManager {
   readonly sessionsDir: string;
   private readonly sessionsFile: string;
+  private readonly transcriptCache = new Map<string, string>();
 
   constructor(memoryDir: string) {
     this.sessionsDir = path.join(memoryDir, ".sessions");
@@ -242,7 +250,7 @@ export class SessionManager {
         ...(isFirstMessage ? { draft: false } : {}),
       });
       // 增量 transcript：仅当该消息使某个 turn 完成时追加
-      await this.maybeAppendTurnTranscript(sessionId).catch(() => undefined);
+      await this.syncTranscriptToMessages(sessionId).catch(() => undefined);
     });
     return message;
   }
@@ -396,29 +404,20 @@ export class SessionManager {
         lastMessageAt: message.timestamp,
       });
       // 收尾时尝试追加完成的 turn 到 transcript
-      await this.maybeAppendTurnTranscript(sessionId).catch(() => undefined);
+      await this.syncTranscriptToMessages(sessionId).catch(() => undefined);
     });
   }
 
-  /** 检查是否有新完成的 turn，若有则增量追加到 transcript.md */
-  private async maybeAppendTurnTranscript(sessionId: string): Promise<void> {
+  /** 完成消息落盘后，将可搜索 transcript 与规范消息记录对齐。 */
+  private async syncTranscriptToMessages(sessionId: string): Promise<void> {
     const session = await this.getSession(sessionId);
     if (!session) return;
+    await this.ensureTranscriptCurrent(sessionId, session);
     const messages = await this.getStoredMessages(sessionId);
-    const turns = buildTurns(messages);
-    const lastAppendedId = session.lastCompletedTurnId;
-    const newCompleted = turns.filter((t) => t.completed && t.id !== lastAppendedId);
-    if (newCompleted.length === 0) return;
-    const transcriptPath = this.transcriptPath(sessionId);
-    const appended = newCompleted.map(appendTurnToTranscript).join("");
-    if (!appended) return;
-    await withFileLock(transcriptPath, async () => {
-      let existing = "";
-      try { existing = await readFile(transcriptPath, "utf8"); } catch { /* ignore */ }
-      await atomicWrite(transcriptPath, existing + appended);
-    });
-    const latest = newCompleted[newCompleted.length - 1];
-    await this.updateSession(sessionId, { lastCompletedTurnId: latest.id });
+    const latest = [...buildTurns(messages)].reverse().find((turn) => turn.completed);
+    if (latest && latest.id !== session.lastCompletedTurnId) {
+      await this.updateSession(sessionId, { lastCompletedTurnId: latest.id });
+    }
   }
 
   // ---- 会话检索 / 检视 / 读取（Session-as-a-Resource）----
@@ -431,19 +430,59 @@ export class SessionManager {
     return path.join(this.sessionsDir, sessionId, "turns.json");
   }
 
-  /** 回填缺失 transcript.md（存量会话迁移/懒生成用），返回新建数量。 */
+  /** 回填缺失或与原始消息不一致的 transcript.md，返回修复数量。 */
   async ensureTranscripts(): Promise<number> {
     const sessions = await this.listSessions();
-    let created = 0;
+    let repaired = 0;
     for (const session of sessions) {
       try {
-        await readFile(this.transcriptPath(session.id), "utf8");
+        if (await this.ensureTranscriptCurrent(session.id, session)) repaired += 1;
       } catch {
-        await this.regenerateTranscript(session.id);
-        created += 1;
+        // 一个会话损坏不应让其它会话的索引无法修复。
       }
     }
-    return created;
+    return repaired;
+  }
+
+  private async ensureTranscriptCurrent(sessionId: string, knownSession?: SessionRecord): Promise<boolean> {
+    const transcriptPath = this.transcriptPath(sessionId);
+    return await withFileLock(transcriptPath, async () => {
+      const session = knownSession ?? await this.getSession(sessionId);
+      if (!session) return false;
+      const messagePath = this.messagesPath(sessionId);
+      const [messageStat, transcriptStat] = await Promise.all([
+        stat(messagePath).catch(() => null),
+        stat(transcriptPath).catch(() => null),
+      ]);
+      const signature = [
+        messageStat ? `${messageStat.mtimeMs}:${messageStat.size}` : "missing-messages",
+        transcriptStat ? `${transcriptStat.mtimeMs}:${transcriptStat.size}` : "missing-transcript",
+        session.name,
+        session.goal,
+        session.createdAt,
+      ].join("|");
+      if (this.transcriptCache.get(sessionId) === signature) return false;
+
+      const messages = await this.getStoredMessages(sessionId);
+      const turns = buildTurns(messages);
+      const canonical = turnsToTranscript(turns, session.name, sessionId, session.goal, session.createdAt);
+      const existing = await readFile(transcriptPath, "utf8").catch(() => null);
+      if (existing === canonical) {
+        this.transcriptCache.set(sessionId, signature);
+        return false;
+      }
+      await atomicWrite(transcriptPath, canonical);
+      const updatedStat = await stat(transcriptPath).catch(() => null);
+      const updatedSignature = [
+        messageStat ? `${messageStat.mtimeMs}:${messageStat.size}` : "missing-messages",
+        updatedStat ? `${updatedStat.mtimeMs}:${updatedStat.size}` : "missing-transcript",
+        session.name,
+        session.goal,
+        session.createdAt,
+      ].join("|");
+      this.transcriptCache.set(sessionId, updatedSignature);
+      return true;
+    });
   }
 
   /** 重新生成 transcript.md（基于 Turn，仅输出 completed 轮次） */
@@ -454,6 +493,7 @@ export class SessionManager {
     const content = turnsToTranscript(turns, session?.name ?? sessionId, sessionId, session?.goal ?? "", session?.createdAt ?? "");
     const filePath = this.transcriptPath(sessionId);
     await withFileLock(filePath, () => atomicWrite(filePath, content));
+    this.transcriptCache.delete(sessionId);
     // 同步更新 lastCompletedTurnId
     const lastCompleted = [...turns].reverse().find((t) => t.completed);
     if (lastCompleted) {
@@ -669,7 +709,10 @@ export class SessionManager {
   async searchContentInSession(sessionId: string | undefined, query: string): Promise<Array<{ session: string; line: number; text: string }>> {
     const needle = query.trim();
     if (!needle) return [];
-    if (await ripgrepAvailable()) {
+    if (sessionId) await this.ensureTranscriptCurrent(sessionId);
+    else await this.ensureTranscripts();
+    const cjkSearch = containsCjk(needle);
+    if (!cjkSearch && await ripgrepAvailable()) {
       const args = [
         "--line-number", "--ignore-case", "--fixed-strings", "--no-ignore", "--hidden",
         "--glob", "transcript.md", "--max-count", "20",
@@ -691,7 +734,8 @@ export class SessionManager {
     }
     const results: Array<{ session: string; line: number; text: string }> = [];
     const ids = sessionId ? [sessionId] : (await this.listSessions()).map((session) => session.id);
-    const lowered = needle.toLowerCase();
+    const lowered = needle.toLocaleLowerCase();
+    const compactNeedle = cjkSearch ? compactCjkText(needle) : "";
     for (const id of ids) {
       let content = await readFile(this.transcriptPath(id), "utf8").catch(() => null);
       if (!content) {
@@ -700,7 +744,7 @@ export class SessionManager {
       }
       if (!content) continue;
       content.split("\n").forEach((text, idx) => {
-        if (text.toLowerCase().includes(lowered)) {
+        if (text.toLocaleLowerCase().includes(lowered) || (cjkSearch && compactCjkText(text).includes(compactNeedle))) {
           results.push({ session: id, line: idx + 1, text: text.slice(0, 300) });
         }
       });
@@ -716,26 +760,34 @@ export class SessionManager {
    * 以保持原有返回结构；rg 不可用时回落到全量 JS 扫描。
    */
   async searchSessions(query: string, limit = 20, extraKeywords: string[] = []): Promise<Array<Record<string, unknown>>> {
+    await this.ensureTranscripts();
     const sessions = await this.listSessions();
     const keywords = [query, ...extraKeywords].map((item) => item.trim()).filter(Boolean);
     if (keywords.length === 0) {
       return sessions.slice(0, limit).map((session) => this.toSearchHit(session, 0, [], ""));
     }
-    const needles = keywords.map((item) => item.toLowerCase());
+    const needles = keywords.map((item) => item.toLocaleLowerCase());
+    const cjkSearch = needles.some(containsCjk);
+    const compactNeedles = cjkSearch ? needles.map(compactCjkText) : [];
 
     // 元数据层命中：名字 +5 / goal +3（对每个关键词分别累加）
     const meta = new Map<string, number>();
     for (const session of sessions) {
       let score = 0;
       for (const needle of needles) {
-        if (session.name.toLowerCase().includes(needle)) score += 5;
-        if (session.goal.toLowerCase().includes(needle)) score += 3;
+        const normalizedNeedle = cjkSearch ? compactCjkText(needle) : "";
+        const nameMatch = session.name.toLocaleLowerCase().includes(needle)
+          || (cjkSearch && compactCjkText(session.name).includes(normalizedNeedle));
+        const goalMatch = session.goal.toLocaleLowerCase().includes(needle)
+          || (cjkSearch && compactCjkText(session.goal).includes(normalizedNeedle));
+        if (nameMatch) score += 5;
+        if (goalMatch) score += 3;
       }
       if (score > 0) meta.set(session.id, score);
     }
 
     // 内容层候选：rg 命中文件（并集）∪ 元数据命中；rg 不可用时退化为全部会话
-    const counts = await this.countHitsWithRipgrep(keywords);
+    const counts = cjkSearch ? null : await this.countHitsWithRipgrep(keywords);
     const candidateIds = counts
       ? [...new Set([...counts.keys(), ...meta.keys()])]
       : sessions.map((session) => session.id);
@@ -745,7 +797,7 @@ export class SessionManager {
     for (const id of candidateIds) {
       const session = byId.get(id);
       if (!session) continue;
-      const detail = await this.scoreTranscript(session.id, needles);
+      const detail = await this.scoreTranscript(session.id, needles, compactNeedles);
       const score = (meta.get(session.id) ?? 0) + detail.score;
       if (score > 0) hits.push(this.toSearchHit(session, score, detail.turnRanges, detail.snippet));
     }
@@ -780,6 +832,7 @@ export class SessionManager {
   private async scoreTranscript(
     sessionId: string,
     needles: string[],
+    compactNeedles: string[] = [],
   ): Promise<{ score: number; turnRanges: Array<[number, number]>; snippet: string }> {
     let content = await readFile(this.transcriptPath(sessionId), "utf8").catch(() => null);
     if (content === null) {
@@ -788,52 +841,45 @@ export class SessionManager {
     }
     if (content === null) return { score: 0, turnRanges: [], snippet: "" };
 
-    let score = 0;
-    const turnRanges: Array<[number, number]> = [];
-    let snippet = "";
-    let rangeStart = -1;
-    const segmentTitleRe = /^## Turn (\d+)/;
-    const lines = content.split("\n");
-    let segment: string[] = [];
-    let segmentNo = 0;
-    const flushSegment = () => {
-      if (segment.length === 0 || segmentNo === 0) {
-        segment = [];
-        return;
+    const turnBodies = new Map<number, string[]>();
+    let currentTurn: number | null = null;
+    for (const line of content.split("\n")) {
+      const title = line.match(/^## Turn (\d+)/u);
+      if (title) {
+        currentTurn = Number(title[1]);
+        if (!turnBodies.has(currentTurn)) turnBodies.set(currentTurn, []);
       }
-      const body = segment.join("\n").toLowerCase();
-      if (needles.some((needle) => body.includes(needle))) {
-        score += 1;
-        if (!snippet) {
-          const firstText = segment.find((line) => !line.startsWith("## ") && !line.startsWith("🔧 ") && line.trim());
-          snippet = (firstText ?? segment[0] ?? "").slice(0, 160);
-        }
-        if (rangeStart === -1) rangeStart = segmentNo;
-      } else if (rangeStart !== -1) {
-        turnRanges.push([rangeStart, segmentNo - 1]);
-        rangeStart = -1;
-      }
-      segment = [];
-    };
-    for (const line of lines) {
-      const titleMatch = line.match(segmentTitleRe);
-      if (titleMatch) {
-        flushSegment();
-        segmentNo = Number(titleMatch[1]);
-        segment.push(line);
-      } else {
-        segment.push(line);
-      }
+      if (currentTurn !== null) turnBodies.get(currentTurn)!.push(line);
     }
-    flushSegment();
-    if (rangeStart !== -1) turnRanges.push([rangeStart, segmentNo]);
-    return { score, turnRanges, snippet };
+
+    const matched: number[] = [];
+    let snippet = "";
+    for (const [turnNo, lines] of [...turnBodies].sort(([left], [right]) => left - right)) {
+      const body = lines.join("\n");
+      const isMatch = needles.some((needle) => body.toLocaleLowerCase().includes(needle))
+        || compactNeedles.some((needle) => compactCjkText(body).includes(needle));
+      if (!isMatch) continue;
+      matched.push(turnNo);
+      const firstText = lines.find((line) => !line.startsWith("## ") && !line.startsWith("🔧 ") && line.trim());
+      // Keep the newest matching turn so broad queries surface the current version first.
+      snippet = (firstText ?? lines[0] ?? "").slice(0, 160);
+    }
+
+    const turnRanges: Array<[number, number]> = [];
+    for (const turnNo of matched) {
+      const previous = turnRanges[turnRanges.length - 1];
+      if (previous && turnNo <= previous[1] + 1) previous[1] = Math.max(previous[1], turnNo);
+      else turnRanges.push([turnNo, turnNo]);
+    }
+    return { score: matched.length, turnRanges, snippet };
   }
 
   private toSearchHit(session: SessionRecord, score: number, matchedTurns: Array<[number, number]>, snippet: string): Record<string, unknown> {
     return {
       id: session.id,
       name: session.name,
+      workspace: session.folderPath,
+      archived: Boolean(session.archived),
       score,
       matchedTurns,
       snippet,

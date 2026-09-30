@@ -768,6 +768,16 @@
   padding: 8px 12px;
 }
 
+.agent-window__policy-notice {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(110, 180, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(63, 125, 190, 0.12);
+  color: rgba(220, 238, 255, 0.9);
+  font-size: 12px;
+}
+
 /* 消息气泡 */
 
 .msg {

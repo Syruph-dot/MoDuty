@@ -68,6 +68,58 @@
   user-select: none;
 }
 
+.filter-bar__session-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.filter-bar__session-state,
+.filter-bar__session-error {
+  color: rgba(232, 237, 247, 0.58);
+  font-size: 12px;
+}
+
+.filter-bar__session-error {
+  color: #f09b9b;
+}
+
+.filter-bar__session-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e8edf7;
+  text-align: left;
+  cursor: pointer;
+}
+
+.filter-bar__session-hit:hover {
+  border-color: rgba(79, 140, 255, 0.55);
+  background: rgba(79, 140, 255, 0.1);
+}
+
+.filter-bar__session-hit strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.filter-bar__session-hit span,
+.filter-bar__session-hit small {
+  overflow: hidden;
+  color: rgba(232, 237, 247, 0.6);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .filter-chip {
   height: 28px;
   padding: 0 12px;

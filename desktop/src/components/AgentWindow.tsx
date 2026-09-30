@@ -56,6 +56,8 @@ interface SessionSearchHit {
   score: number;
   matchedTurns: Array<[number, number]>;
   snippet: string;
+  workspace: string;
+  archived: boolean;
   message_count: number;
   last_message_at: string;
 }
@@ -385,6 +387,7 @@ export default function AgentWindow({
   const [redirectBusy, setRedirectBusy] = useState(false);
   const [handoffExpanded, setHandoffExpanded] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [policyNotice, setPolicyNotice] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -725,13 +728,13 @@ export default function AgentWindow({
 
   /** 命中跳转：当前会话 → 原地滚动高亮；其他会话 → 打开对应 Agent 窗口后跳转 */
   const jumpFromHit = async (hit: SessionSearchHit): Promise<void> => {
-    const firstTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[0][0] : 0;
-    if (firstTurn <= 0) return;
+    const latestTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[hit.matchedTurns.length - 1]![1] : 0;
+    if (latestTurn <= 0) return;
     if (hit.id === agent.session_id) {
       setSearchOpen(false);
       setSearchQuery("");
       setSearchHits([]);
-      jumpToTurn(firstTurn);
+      jumpToTurn(latestTurn);
       return;
     }
     let targetAgent = agents.find((candidate) => candidate.session_id === hit.id);
@@ -744,7 +747,7 @@ export default function AgentWindow({
       setSearchMsg("未找到对应 Agent，无法跳转");
       return;
     }
-    requestJump({ sessionId: hit.id, turn: firstTurn });
+    requestJump({ sessionId: hit.id, turn: latestTurn });
     setSearchOpen(false);
     setSearchQuery("");
     setSearchHits([]);
@@ -1123,6 +1126,7 @@ export default function AgentWindow({
       return;
     }
     setStreamError(null);
+    setPolicyNotice(null);
     setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString() }]);
     setRedirectReady(false);
     setStreaming(true);
@@ -1205,6 +1209,7 @@ export default function AgentWindow({
               return next;
             });
           },
+          onPolicyNotice: (notice) => setPolicyNotice(notice),
           onApprovalRequested: () => {
             // 审批联动由 ApprovalPanel（ISS-09）处理；磁贴会经 agent_state 事件转 waiting_approval
           },
@@ -1525,22 +1530,23 @@ export default function AgentWindow({
             <ul className="agent-window__search-results">
               {searchHits.map((hit) => {
                 const isCurrent = hit.id === agent.session_id;
-                const firstTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[0][0] : 0;
+                const latestTurn = hit.matchedTurns.length > 0 ? hit.matchedTurns[hit.matchedTurns.length - 1]![1] : 0;
                 return (
                   <li key={hit.id} className="agent-window__search-hit">
                     <button
                       type="button"
                       className="agent-window__search-hit-main"
-                      disabled={firstTurn <= 0}
+                      disabled={latestTurn <= 0}
                       onClick={() => jumpFromHit(hit)}
                     >
                       <span className="agent-window__search-hit-name">
                         {hit.name}
                         {isCurrent ? <em className="agent-window__search-hit-tag">当前会话</em> : null}
+                        {hit.archived ? <em className="agent-window__search-hit-tag">已归档</em> : null}
                       </span>
                       <span className="agent-window__search-hit-meta">
-                        {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息
-                        {firstTurn > 0 ? ` · 跳到 Turn ${firstTurn}` : ""}
+                        {hit.workspace || "工作区未知"} · {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息
+                        {latestTurn > 0 ? ` · 跳到 Turn ${latestTurn}` : ""}
                       </span>
                       {hit.snippet ? <span className="agent-window__search-hit-snippet">{hit.snippet}</span> : null}
                     </button>
@@ -1659,6 +1665,7 @@ export default function AgentWindow({
           </div>
         ) : null}
 
+        {policyNotice ? <p className="agent-window__policy-notice" role="status">{policyNotice}</p> : null}
         {streamError ? <p className="agent-window__error" role="alert">{streamError}</p> : null}
       </div>
 

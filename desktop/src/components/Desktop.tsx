@@ -549,6 +549,25 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     centerPendingRef.current = id;
   }, []);
 
+  useEffect(() => {
+    const onOpenSession = (event: Event): void => {
+      const sessionId = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (!sessionId) return;
+      void (async () => {
+        let target = useAgentsStore.getState().agents.find((agent) => agent.session_id === sessionId);
+        if (!target) {
+          await useAgentsStore.getState().load();
+          target = useAgentsStore.getState().agents.find((agent) => agent.session_id === sessionId);
+        }
+        if (!target) return;
+        requestCenter(target.id);
+        onOpen(target);
+      })();
+    };
+    window.addEventListener("momoka:open-session", onOpenSession);
+    return () => window.removeEventListener("momoka:open-session", onOpenSession);
+  }, [onOpen, requestCenter]);
+
   /** 把视口平滑滚到某个已打开磁贴所在 X（卡片中心对齐视口中心）——双击标题栏用 */
   const centerTileX = useCallback(
     (id: string) => {

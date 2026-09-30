@@ -13,6 +13,7 @@ import {
   type TimeRangeKey,
 } from "../lib/agentFilter";
 import type { AgentState } from "../types";
+import { searchSessions, type SessionSearchHit } from "../lib/api";
 
 const STATE_KEYS: AgentState[] = ["idle", "running", "waiting_approval", "requiring_input", "completed", "error"];
 const TIME_RANGE_KEYS: TimeRangeKey[] = ["all", "today", "week", "month", "older"];
@@ -41,7 +42,28 @@ export default function AgentFilterBar() {
   const toggleFilterBar = useAgentsStore((state) => state.toggleFilterBar);
 
   const [draft, setDraft] = useState(filters.query);
+  const [sessionHits, setSessionHits] = useState<SessionSearchHit[]>([]);
+  const [sessionSearchError, setSessionSearchError] = useState("");
+  const [sessionSearchBusy, setSessionSearchBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const searchSessionBody = async (query: string): Promise<void> => {
+    if (!query) {
+      setSessionHits([]);
+      setSessionSearchError("");
+      return;
+    }
+    setSessionSearchBusy(true);
+    setSessionSearchError("");
+    try {
+      setSessionHits(await searchSessions(query));
+    } catch (error) {
+      setSessionHits([]);
+      setSessionSearchError(error instanceof Error ? error.message : "会话内容检索失败");
+    } finally {
+      setSessionSearchBusy(false);
+    }
+  };
 
   // 打开时同步草稿并聚焦
   useEffect(() => {
@@ -83,9 +105,13 @@ export default function AgentFilterBar() {
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              setFilterQuery(draft.trim());
+              const query = draft.trim();
+              setFilterQuery(query);
+              void searchSessionBody(query);
             } else if (event.key === "Escape") {
               setDraft("");
+              setSessionHits([]);
+              setSessionSearchError("");
             }
           }}
         />
@@ -114,6 +140,30 @@ export default function AgentFilterBar() {
           ×
         </button>
       </div>
+
+      {sessionSearchBusy || sessionSearchError || sessionHits.length > 0 ? (
+        <div className="filter-bar__session-results" aria-live="polite">
+          <span className="filter-bar__label">会话正文</span>
+          {sessionSearchBusy ? <span className="filter-bar__session-state">检索中…</span> : null}
+          {sessionSearchError ? <span className="filter-bar__session-error">{sessionSearchError}</span> : null}
+          {sessionHits.map((hit) => (
+            <button
+              key={hit.id}
+              type="button"
+              className="filter-bar__session-hit"
+              title={hit.workspace}
+              onClick={() => {
+                clearFilters();
+                window.dispatchEvent(new CustomEvent("momoka:open-session", { detail: { id: hit.id } }));
+              }}
+            >
+              <strong>{hit.name}{hit.archived ? "（已归档）" : ""}</strong>
+              <span>{hit.workspace || "工作区未知"} · {hit.matchedTurns.length} 处命中 · {hit.message_count} 条消息</span>
+              {hit.snippet ? <small>{hit.snippet}</small> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div className="filter-bar__row">
         {/* 时间段（单选） */}

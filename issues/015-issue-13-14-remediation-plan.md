@@ -50,3 +50,19 @@ Findings: UX-013-A, B, C; UX-014-C, Q, S, V.
 - Keep each slice in a separate, revertible commit and do not merge to `main` in this task.
 - Run type/build checks after code changes. The issue reports are browser/Vite evidence; a native Tauri experience check remains required before integrating the Tauri branch into `main`.
 - Preserve the existing issue reports as evidence; update this plan with commit hashes and any deferred acceptance item before completing the work.
+
+## Execution record — 2026-09-30
+
+All findings listed in Issues 13 and 14 were addressed on `tauri-v2-browser-embed`; no findings were deferred in this implementation pass.
+
+- `563984e` fixes GraphWidget API-base resolution.
+- `4d64651` adds the empty-desktop Agent entry point.
+- `add03e9` enforces per-request access/recall/capture boundaries and aligns the multi-keyword tool schema.
+- `cd0bcd0` repairs transcript indexing and turn ranges; exposes body search, compact-summary hits, workspace/archive provenance, and source relations.
+- `b053944` clarifies neutral address, assumptions, dependency dates, and action-item states.
+- `1e0309b` adds scoped/expiring memory creation, Chinese recall, preference conflict handling, opt-in cross-workspace experience recall, rejected-memory links, and visible experience provenance.
+- `ed28ecf` localizes/retries empty Compact handoffs and exposes the Redirect path/status.
+- `b54e746` reports blocked tool attempts in the final answer.
+- `0b0a930` shows experience excerpts and applicability in run status.
+
+`npm run build:server` and `npm run desktop:build` passed after the final code changes. Tests were not run. The Tauri-native experience check is still required before merging this branch into `main`; no branch merge was performed here.

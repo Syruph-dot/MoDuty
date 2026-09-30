@@ -406,6 +406,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
               },
               context.sessionManager,
               context.agentRegistry,
+              context.blockedToolNames,
             );
             recordToolCall(checkpoint, { key, name: tool, args, result });
             if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);

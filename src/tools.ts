@@ -559,7 +559,11 @@ const TOOL_ARGUMENT_SCHEMAS = {
   browse_close: z.object({ browser_id: z.string().min(1) }).strict(),
   web_search: z.object({ query: z.string().min(1), max_results: z.number().int().positive().max(20).optional() }).strict(),
   inspect_session: z.object({ id: z.string().min(1) }).strict(),
-  search_sessions: z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).strict(),
+  search_sessions: z.object({
+    query: z.string().min(1),
+    keywords: z.array(z.string().min(1)).max(10).optional(),
+    limit: z.number().int().positive().max(50).optional(),
+  }).strict(),
   read_session: z.object({ id: z.string().min(1), from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional() }).strict(),
   search_content: z.object({ id: z.string().min(1).optional(), query: z.string().min(1) }).strict(),
   search_files: z.object({ query: z.string().min(1), scope: z.string().optional() }).strict(),
@@ -1069,7 +1073,13 @@ export async function executeToolCall(
   approvalOrigin?: ApprovalOrigin,
   sessionManager?: SessionManager,
   agentRegistry?: AgentRegistry,
+  blockedToolNames: readonly string[] = [],
 ): Promise<string> {
+  if (blockedToolNames.includes(name)) {
+    const reason = `本轮请求已禁止该类访问，工具 ${name} 已拦截，未执行。`;
+    await appendTraceEvent(tracePath, "tool_blocked", { name, reason }).catch(() => undefined);
+    return reason;
+  }
   const schema = TOOL_ARGUMENT_SCHEMAS[name as keyof typeof TOOL_ARGUMENT_SCHEMAS];
   if (!schema) {
     return `Error: unknown tool '${name}'.`;

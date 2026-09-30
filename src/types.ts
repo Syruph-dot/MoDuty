@@ -47,6 +47,7 @@ export type StreamEvent =
   | { type: "reasoning"; text: string }
   | { type: "tool_start"; name: string; args: string }
   | { type: "tool_result"; name: string; result: string }
+  | { type: "policy_notice"; text: string }
   | { type: "approval_requested"; name: string; args: string; result: string }
   | { type: "question_requested"; name: string; args: string; result: string };
 
@@ -102,6 +103,8 @@ export interface ModelRunContext {
    * 让「提示词只允许 run_momoka_cli」的约束落到工具层——模型看不到的工具就调不了。
    */
   tools?: readonly unknown[];
+  /** Tool names rejected at execution time by an explicit per-request user boundary. */
+  blockedToolNames?: readonly string[];
   /** 流式/进度事件回调（SSE 转发用） */
   onEvent?: (event: StreamEvent) => void;
   /** 外部取消信号（客户端断开/超时） */

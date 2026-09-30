@@ -41,6 +41,7 @@ import { initSettings, isSandboxEnabled as getSandboxFlag, setSandboxEnabled as 
 import { loadSettings } from "./settings-store.js";
 import { ExperienceMemoryService, type ExperienceEvent } from "./experience-memory.js";
 import { buildHandoffReminder, redirectHandoffStatus } from "./redirect-handoff.js";
+import { blockedToolsForTurnPolicy, hasTurnPolicyRestrictions, resolveTurnPolicy, type TurnPolicy } from "./turn-policy.js";
 import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunContext, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
 interface MomokaAgentOptions {
@@ -160,10 +161,21 @@ export class MomokaAgentCore implements MomokaAgent {
    * 按会话归属 Agent 的 kind 裁剪本轮模型可见工具表：值日生（dispatcher）只保留调度类白名单
    * （toolSpecsForKind），让「提示词只允许 run_momoka_cli」落到工具层；其余角色返回 undefined = 全量。
    */
-  private async toolsForSession(sessionId: string | null | undefined): Promise<readonly unknown[] | undefined> {
-    if (!sessionId || !this.agentRegistry) return undefined;
-    const record = await this.agentRegistry.agentBySessionId(sessionId);
-    return isDispatcherAgent(record) ? toolSpecsForKind("dispatcher") : undefined;
+  private async toolsForSession(
+    sessionId: string | null | undefined,
+    blockedToolNames: readonly string[] = [],
+  ): Promise<readonly unknown[] | undefined> {
+    let tools: readonly unknown[] | undefined;
+    if (sessionId && this.agentRegistry) {
+      const record = await this.agentRegistry.agentBySessionId(sessionId);
+      if (isDispatcherAgent(record)) tools = toolSpecsForKind("dispatcher");
+    }
+    if (blockedToolNames.length === 0) return tools;
+    const available = tools ?? TOOL_SPECS;
+    return available.filter((spec) => {
+      const name = (spec as { function?: { name?: unknown } }).function?.name;
+      return typeof name !== "string" || !blockedToolNames.includes(name);
+    });
   }
 
   /**
@@ -244,10 +256,12 @@ export class MomokaAgentCore implements MomokaAgent {
    * 【重要】不要把这些放回 system：它们每轮都在变（技能按关键词、记忆按主题），
    * 放进 system 会让上游前缀缓存**每一轮都失效**。它们只应出现在末尾的 user 消息里。
    */
-  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string; handoffReminder?: boolean }): Promise<string> {
+  private async buildTurnContext(input: { workDir?: string; topic?: string; message?: string; sessionId?: string | null; tracePath?: string; handoffReminder?: boolean; policy?: TurnPolicy }): Promise<string> {
     const sections: string[] = [];
     // 值日生：台账快照放最前（在途状态的唯一事实源，不靠历史回忆）
-    const snapshot = await this.buildDispatcherSnapshot(input.sessionId);
+    const snapshot = (input.policy?.allowSessionHistory ?? true)
+      ? await this.buildDispatcherSnapshot(input.sessionId)
+      : null;
     if (snapshot) sections.push(snapshot);
     // 自我身份：执行者要用 id 才能读自己的历史/搜自己的会话，不给就会靠猜（实测烧掉一整轮）
     const self = await this.buildSelfIdentityBlock(input.sessionId);
@@ -274,7 +288,7 @@ export class MomokaAgentCore implements MomokaAgent {
     }
 
     // 长期记忆：按作用域链混合检索 → 预算裁剪 → 带召回理由与来源注入
-    if (input.topic) {
+    if (input.topic && (input.policy?.allowLongTermRecall ?? true)) {
       const refs = await this.memoryRefsForSession(input.sessionId);
       const recalled = await this.memoryStore.recallScopes(input.topic, refs, MEMORY_RECALL_BUDGET);
       if (recalled.length > 0) {
@@ -290,7 +304,7 @@ export class MomokaAgentCore implements MomokaAgent {
     }
 
     const experienceQuery = [input.topic, input.message].filter(Boolean).join(" ").slice(0, 300);
-    if (experienceQuery) {
+    if (experienceQuery && (input.policy?.allowExperienceRecall ?? true)) {
       const workDir = input.workDir ? path.resolve(input.workDir) : null;
       const allowedSessionIds = workDir
         ? new Set((await this.sessionManager.listSessions()).filter((session) => path.resolve(session.folderPath) === workDir).map((session) => session.id))
@@ -309,6 +323,16 @@ export class MomokaAgentCore implements MomokaAgent {
           items: experiences.map((item) => ({ id: item.id, score: item.score, sessionId: item.sessionId })),
         }).catch(() => undefined);
       }
+    }
+
+    if (input.policy && hasTurnPolicyRestrictions(input.policy)) {
+      const boundaries = [
+        !input.policy.allowWorkspaceReads ? "- 本轮禁止读取项目文件；文件读取工具已在运行时禁用。" : "",
+        !input.policy.allowSessionHistory ? "- 本轮禁止检索或引用历史会话；相关工具与自动召回已禁用。" : "",
+        !input.policy.allowLongTermRecall || !input.policy.allowExperienceRecall ? "- 本轮禁止注入长期记忆与工作经验。" : "",
+        !input.policy.allowExperienceCapture ? "- 本轮禁止保存长期记忆或自动工作经验。" : "",
+      ].filter(Boolean);
+      sections.unshift(`## 本轮用户边界（运行时已执行）\n${boundaries.join("\n")}`);
     }
 
     if (input.handoffReminder && input.sessionId) sections.push(buildHandoffReminder(input.sessionId));
@@ -599,6 +623,24 @@ ${ref.message.content}`;
     const expandedMessage = await this.expandMessageRefs(message);
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
     const topic = request.topic?.trim() || message.slice(0, 80);
+    const turnPolicy = resolveTurnPolicy(message);
+    const blockedToolNames = blockedToolsForTurnPolicy(turnPolicy);
+    if (hasTurnPolicyRestrictions(turnPolicy)) {
+      const appliedBoundaries = [
+        !turnPolicy.allowWorkspaceReads ? "项目文件读取已禁用" : "",
+        !turnPolicy.allowSessionHistory ? "历史会话检索与召回已禁用" : "",
+        !turnPolicy.allowLongTermRecall || !turnPolicy.allowExperienceRecall ? "长期记忆与工作经验召回已禁用" : "",
+        !turnPolicy.allowExperienceCapture ? "本轮经验保存已禁用" : "",
+      ].filter(Boolean);
+      await appendTraceEvent(tracePath, "turn_policy_applied", {
+        allowWorkspaceReads: turnPolicy.allowWorkspaceReads,
+        allowSessionHistory: turnPolicy.allowSessionHistory,
+        allowLongTermRecall: turnPolicy.allowLongTermRecall,
+        allowExperienceRecall: turnPolicy.allowExperienceRecall,
+        allowExperienceCapture: turnPolicy.allowExperienceCapture,
+      }).catch(() => undefined);
+      request.onEvent?.({ type: "policy_notice", text: `本轮访问边界已执行：${appliedBoundaries.join("；")}。` });
+    }
     // 流式落盘：agent 输出随 token 增量写入会话日志。
     // 连接只是在线投影——前端断开/收起磁贴不影响写入，重开窗口即读到进行中内容。
     // 同时记录 tool/text 顺序时间线（timeline）与分段文本（segments），
@@ -681,7 +723,7 @@ ${ref.message.content}`;
     const turnMode = resolveTurnMode(request);
     try {
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
-      const tools = await this.toolsForSession(sessionId);
+      const tools = await this.toolsForSession(sessionId, blockedToolNames);
       const { model, contextWindow, fallbackFrom } = await this.configuredContextWindow(sessionId);
       if (fallbackFrom) {
         await appendTraceEvent(tracePath, "model_fallback", { requested: fallbackFrom, used: model }).catch(() => undefined);
@@ -692,7 +734,7 @@ ${ref.message.content}`;
       const projectedBeforeContext = this.estimatePromptInput({ systemPrompt, historyMessages, input: expandedMessage, tools });
       const handoffReminder = Boolean(sessionId) && !request.transient
         && projectedBeforeContext >= Math.floor(contextWindow * HANDOFF_REMINDER_RATIO);
-      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath, handoffReminder });
+      const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath, handoffReminder, policy: turnPolicy });
       eventRuntimeContext = turnContext;
       // 尾部顺序：模式块（本轮是对话还是系统唤醒）→ 动态上下文/台账快照 → 用户请求。
       // 模式块必须在最前：它决定本轮是否扮演，先看到它才不会把人格带到系统轮里。
@@ -748,6 +790,7 @@ ${ref.message.content}`;
             const runResult = await this.options.modelClient.run(attemptPrompt, {
               systemPrompt, topic, model, workDir, tracePath, sessionId, runId, matchedSkills: [], requestKind: "chat",
               tools,
+              blockedToolNames,
               outputTokenLimit,
               historyMessages,
               onEvent, signal: request.signal,
@@ -867,7 +910,7 @@ ${ref.message.content}`;
       completedAt = completedMessage.timestamp;
     }
     const completedToolCalls = result.toolCalls ?? [];
-    if (sessionId && !request.transient && completedToolCalls.length > 0) {
+    if (sessionId && !request.transient && completedToolCalls.length > 0 && turnPolicy.allowExperienceCapture) {
       const isDispatchResult = completedToolCalls.some((call) => call.tool === "run_momoka_cli");
       const dispatchRefs = completedToolCalls.flatMap((call) => [...`${call.args}\n${call.result}`.matchAll(/dsp_[A-Za-z0-9_-]+/gu)].map((match) => match[0]));
       const runtimeRefs = [...eventRuntimeContext.matchAll(/\b(?:mem|dsp|ses|msg)_[A-Za-z0-9_-]+\b/gu)].map((match) => match[0]);
@@ -888,6 +931,10 @@ ${ref.message.content}`;
           })),
         ],
       });
+    } else if (!turnPolicy.allowExperienceCapture) {
+      await appendTraceEvent(tracePath, "experience_capture_skipped", {
+        reason: "current request prohibited memory or experience saving",
+      }).catch(() => undefined);
     }
     await saveRunSnapshot({ runId, workDir: workDir ?? this.projectRoot, tracePath, sessionId: sessionId ?? undefined }).catch(async (error: unknown) => {
       await appendTraceEvent(tracePath, "snapshot_failed", { message: error instanceof Error ? error.message : String(error) });

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { awaitApiBase } from "../../lib/api";
 
 /**
  * GraphWidget —— 会话关系力导向图 (Phase 3)
@@ -75,7 +76,7 @@ export default function GraphWidget() {
   const loadGraphData = async () => {
     setLoading(true);
     try {
-      const base = (globalThis as { __MOMOKA_BASE__?: string }).__MOMOKA_BASE__ ?? "http://localhost:8888";
+      const base = await awaitApiBase();
       const res = await fetch(`${base}/api/graph/sessions`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();

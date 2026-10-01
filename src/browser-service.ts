@@ -376,13 +376,21 @@ export class BrowserService {
    * 观察页面：生成 AX 风格快照树 + ref 映射。
    * 轻量实现（参考 agent-browser snapshot.js）：收集可交互/文本元素，
    * 每个元素生成唯一 CSS selector；ref = [i] 序号，click/fill 可用 ref 或 selector。
+   *
+   * 首次为空时会短暂重试：`navigate` 用 domcontentloaded 返回时，SPA 往往还没渲染出内容，
+   * 立即 observe 会得到空快照，模型会误以为页面不可操作。这里补上重试，
+   * 等价于 Playwright 路径的自动等待。
    */
   async snapshot(id: string, maxNodes = 120): Promise<SnapshotTree | null> {
     const session = this.requireSession(id);
     if (!session) {
       return null;
     }
-    const items = await session.snapshot(maxNodes);
+    let items = await session.snapshot(maxNodes);
+    for (let attempt = 0; attempt < 8 && items.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      items = await session.snapshot(maxNodes);
+    }
 
     const lines: string[] = [];
     const refs: Record<string, string> = {};

@@ -84,6 +84,11 @@ export function setApiBaseForTests(base: string): void {
   _apiBasePromise = Promise.resolve(base);
 }
 
+/** 是否跑在 Tauri 壳里（原生 webview 桥只在壳里可用；浏览器 dev 入口用不了） */
+export function isTauriShell(): boolean {
+  return inTauri();
+}
+
 async function jsonOrThrow(res: Response, label: string): Promise<unknown> {
   if (!res.ok) {
     throw new Error(`${label} failed: ${res.status} ${res.statusText}`);
@@ -337,7 +342,7 @@ export async function listBrowsers(): Promise<BrowserInfo[]> {
   return data.browsers;
 }
 
-export async function createBrowser(input: { name?: string; mode?: "persistent" | "incognito" }): Promise<BrowserInfo> {
+export async function createBrowser(input: { name?: string; mode?: "persistent" | "incognito"; embedded?: boolean }): Promise<BrowserInfo> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
     await fetch(`${base}/api/browsers`, {

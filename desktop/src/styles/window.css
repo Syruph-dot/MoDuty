@@ -2638,3 +2638,10 @@
   font-size: 10px;
   color: rgb(150, 210, 255);
 }
+
+/* 磁贴内嵌浏览器：这块矩形会被原生子 webview 盖住，DOM 只留占位提示 */
+.browser-window__placeholder--embedded {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+}
+.browser-window__placeholder--embedded p { opacity: 0.55; font-size: 12px; }

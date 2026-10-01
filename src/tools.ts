@@ -12,6 +12,7 @@ import { appendTraceEvent } from "./trace.js";
 import { createSandboxShellRunner } from "./sandbox.js";
 import { isSandboxEnabled } from "./settings.js";
 import { browserService, toBrowserFriendlyError } from "./browser-service.js";
+import { formatSearchHits, webSearch } from "./web-search.js";
 import { getDispatchHandler } from "./dispatch-bridge.js";
 import { isDispatcherAgent } from "./agent-registry.js";
 import type { SessionManager } from "./session-manager.js";
@@ -1483,27 +1484,9 @@ async function executeBrowserTool(name: string, args: Record<string, unknown>): 
         const query = String(args.query ?? "");
         const maxResults = Math.min(Math.max(Number(args.max_results ?? 10), 1), 20);
         if (!query) return "错误: query 不能为空";
-        const searchBrowserId = await browserService.getOrCreateSearchBrowser();
-        const url = "https://lite.duckduckgo.com/lite/?q=" + encodeURIComponent(query);
-        await browserService.navigate(searchBrowserId, url, "domcontentloaded");
-        const snapshot = await browserService.snapshot(searchBrowserId);
-        if (!snapshot) return "错误: 搜索浏览器未就绪";
-        const lines = snapshot.tree.split("\n").filter(l => l.trim());
-        const results = [];
-        for (const line of lines) {
-          const match = line.match(/\[(\d+)\] link (.+?) <(.+)>/);
-          if (match) {
-            const [, idx, title, selector] = match;
-            const ref = "[" + idx + "]";
-            const url = snapshot.refs[ref];
-            if (url && url.startsWith("http")) {
-              results.push({ title: title.trim(), url });
-              if (results.length >= maxResults) break;
-            }
-          }
-        }
-        if (results.length === 0) return "未找到相关结果";
-        return "搜索结果（前 " + results.length + " 条）：\n" + results.map((r, i) => (i + 1) + ". " + r.title + "\n   " + r.url).join("\n\n");
+        // 纯 HTTP 检索，不经过受管浏览器（见 src/web-search.ts 的说明）
+        const hits = await webSearch(query, { maxResults });
+        return formatSearchHits(hits);
       }
       default:
         return `未知浏览器工具: ${name}`;

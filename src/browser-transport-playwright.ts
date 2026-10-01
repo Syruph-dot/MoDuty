@@ -189,6 +189,12 @@ export const playwrightTransport: BrowserTransport = {
 
   async launch(options: BrowserLaunchOptions): Promise<BrowserSession> {
     const { executablePath } = resolveBrowserExecutable();
+    if (!executablePath) {
+      // 不静默回落：executablePath 为 undefined 时 Playwright 会改用自带的
+      // headless shell（指纹与系统 Edge 完全不同，实测 332ms vs 648ms），
+      // 排查“用的哪个浏览器”时会被彻底带偏。
+      throw new Error("没有找到可用的 Edge / Chrome 可执行文件；请在 EDGE/Chrome 安装后重试，或用 MOMOKA_BROWSER_TRANSPORT=cdp");
+    }
     const context = await chromium.launchPersistentContext(options.profileDir ?? "", {
       executablePath,
       headless: options.headless ?? true,

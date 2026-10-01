@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { browserAction, createBrowser as apiCreateBrowser, deleteBrowser as apiDeleteBrowser, listBrowsers } from "../lib/api";
 import { spawnXToCol } from "../lib/persistTiles";
+import { webviewBridgeInfo } from "../lib/webviewBridge";
 import { useTileStore } from "./tileStore";
 import type { BrowserInfo, TileGrid } from "../types";
 import type { BrowserServiceEvent } from "../lib/browserEvents";
@@ -52,7 +53,14 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
   },
 
   async createBrowser(input) {
-    const browser = await apiCreateBrowser({ mode: input.mode ?? "persistent", name: input.name });
+    // 判断是否走磁贴内嵌：只有 Tauri 壳里才有原生 webview 桥；
+    // 浏览器 dev 入口（无壳）继续用外部浏览器 + 帧流投影
+    const bridge = await webviewBridgeInfo();
+    const browser = await apiCreateBrowser({
+      mode: input.mode ?? "persistent",
+      name: input.name,
+      ...(bridge.enabled ? { embedded: true } : {}),
+    });
     useTileStore.getState().ensureTile(browser.id, "browser", { colHint: spawnXToCol(0) });
     set((state) => ({ browsers: [browser, ...state.browsers] }));
     return browser;

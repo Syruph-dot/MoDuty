@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { awaitApiBase, browserAction } from "../lib/api";
+import { setWebviewBounds, setWebviewVisible, toPhysicalRect, webviewLabelFor } from "../lib/webviewBridge";
 import { useBrowserStore } from "../state/browserStore";
 import type { BrowserInfo } from "../types";
 
@@ -22,6 +23,8 @@ export interface BrowserViewController {
   navigate: (rawUrl?: string) => Promise<void>;
   refresh: () => void;
   clickFrame: (event: React.MouseEvent<HTMLImageElement>) => void;
+  /** 磁贴内嵌：画面由原生子 webview 直接绘制，DOM 里只留一个矩形占位 */
+  embedded: boolean;
 }
 
 export function useBrowserView(browser: BrowserInfo): BrowserViewController {
@@ -49,6 +52,11 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
         }
       } catch (error) {
         setStreamError(error instanceof Error ? error.message : String(error));
+      }
+      if (browser.embedded) {
+        // 磁贴内嵌：页面是原生子 webview，不在 DOM 里，也没有帧流可订阅。
+        // 矩形跟随与显隐由 BrowserView 的同步循环负责（见下面的 useNativeWebview）。
+        return;
       }
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -131,11 +139,61 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
     });
   };
 
-  return { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame };
+  return { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame, embedded: browser.embedded === true };
+}
+
+/**
+ * 把原生子 webview 钉在占位元素的矩形上。
+ *
+ * 三个必须成立的点：
+ * 1. 坐标是**物理像素**（乘 devicePixelRatio）；
+ * 2. 原生视图不参与 DOM 层级，永远盖在 React 上层，所以工具条必须在矩形之外（本组件的
+ *    工具栏是独立的一行，天然满足）；
+ * 3. 宿主隐藏/滑出视口时必须显式 `set_visible(false)`，否则“窗口关了页面还在”。
+ *
+ * 用 rAF 跟框而不是只靠 ResizeObserver：磁贴是拖拽定位的，位置变化不触发 size 观察。
+ */
+function useNativeWebview(enabled: boolean, browserId: string, targetRef: React.RefObject<HTMLDivElement | null>): void {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const label = webviewLabelFor(browserId);
+    let raf = 0;
+    let lastBounds = "";
+    let shown = false;
+
+    const tick = (): void => {
+      const el = targetRef.current;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const physical = toPhysicalRect(rect);
+        const inViewport = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+        const key = `${physical.x},${physical.y},${physical.w},${physical.h}`;
+        if (key !== lastBounds) {
+          lastBounds = key;
+          void setWebviewBounds(label, physical).catch(() => undefined);
+        }
+        if (inViewport !== shown) {
+          shown = inViewport;
+          void setWebviewVisible(label, inViewport).catch(() => undefined);
+        }
+        void dpr;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      // 宿主卸载（关窗口 / 切走标签）时把原生视图收起来——React 管不到它
+      void setWebviewVisible(label, false).catch(() => undefined);
+    };
+  }, [enabled, browserId, targetRef]);
 }
 
 export default function BrowserView({ browser }: { browser: BrowserInfo }) {
-  const { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame } = useBrowserView(browser);
+  const { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame, embedded } = useBrowserView(browser);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  useNativeWebview(embedded, browser.id, viewportRef);
 
   return (
     <div className="browser-view">
@@ -160,8 +218,13 @@ export default function BrowserView({ browser }: { browser: BrowserInfo }) {
         </form>
       </div>
 
-      <div className="browser-window__viewport">
-        {frame ? (
+      <div className="browser-window__viewport" ref={viewportRef}>
+        {embedded ? (
+          // 内嵌：这块矩形会被原生子 webview 盖住，DOM 里不需要画任何东西
+          <div className="browser-window__placeholder browser-window__placeholder--embedded">
+            <p>{streamError ? `内嵌视图错误：${streamError}` : "页面由原生 webview 直接绘制"}</p>
+          </div>
+        ) : frame ? (
           <img
             className="browser-window__frame"
             src={frame}

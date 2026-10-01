@@ -541,24 +541,6 @@ export class BrowserService {
     return { ...runtime.info };
   }
 
-  /** 获取或创建共享的搜索专用浏览器（incognito 模式，避免污染用户主浏览器 profile） */
-  private searchBrowserId: string | null = null;
-
-  async getOrCreateSearchBrowser(): Promise<string> {
-    if (this.searchBrowserId) {
-      const info = this.getInfo(this.searchBrowserId);
-      if (info && info.state === "ready") {
-        return this.searchBrowserId;
-      }
-      // 如果已存在但状态异常，清理重建
-      await this.closeInstance(this.searchBrowserId).catch(() => undefined);
-    }
-    const created = await this.createInstance({ name: "搜索专用", mode: "incognito" });
-    this.searchBrowserId = created.id;
-    await this.launch(created.id);
-    return created.id;
-  }
-
   async closeAll(): Promise<void> {
     for (const id of [...this.instances.keys()]) {
       await this.closeInstance(id);

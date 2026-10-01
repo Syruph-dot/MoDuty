@@ -14,6 +14,9 @@ import {
   turnsToTranscript,
 } from "./serialization.js";
 import type { CompactHandoffCheckpoint } from "./compact-handoff.js";
+import type { ExternalSessionSource, SessionSource, SourceRef } from "./session-source.js";
+import { MODUTY_SOURCE, SOURCE_LABELS, isExternalSessionSource, isSessionSource } from "./session-source.js";
+import type { ImportedMessage } from "./session-sources/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -81,6 +84,27 @@ export interface SessionRecord {
   archivedAt?: string;
   /** 是否为草稿态（首条消息前不入列表） */
   draft?: boolean;
+  /**
+   * 会话来源；缺省（老数据）视为 "moduty"。
+   * 非 moduty 的会话是外部来源的**只读镜像**，见 session-sources/。
+   */
+  source?: SessionSource;
+  /** 外部来源引用（仅导入镜像有）；同步时据此比对指纹判断是否需要更新 */
+  sourceRef?: SourceRef;
+  /** 只读镜像：禁止在 MoDuty 内改写或继续对话 */
+  readOnly?: boolean;
+}
+
+/** 导入一条外部来源会话快照所需的输入 */
+export interface ImportedSessionInput {
+  /** 由 externalSessionId() 确定性生成的会话 id */
+  sessionId: string;
+  source: ExternalSessionSource;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ImportedMessage[];
+  sourceRef: SourceRef;
 }
 
 export interface SessionMessage {
@@ -137,6 +161,7 @@ export class SessionManager {
       messageCount: 0,
       lastMessageAt: now,
       turnIndex: 1,
+      source: MODUTY_SOURCE,
       draft: true,
     };
     return await withFileLock(this.sessionsFile, async () => {
@@ -227,8 +252,22 @@ export class SessionManager {
     await atomicWriteJson(filePath, deduped.map(messageToDisk));
   }
 
+  /**
+   * 只读镜像保护：镜像会话的正文由外部来源同步维护，MoDuty 侧的写入一律拒绝。
+   *
+   * 放在数据层而不是逐条路由上——`/api/sessions` 是各来源的聚合，镜像会出现在
+   * 机器人与速查条目等选择器里，任何一条写入路径漏掉检查都会静默改写镜像。
+   * 导入自身走 `importSessionSnapshot`（直接写 writeMessagesUpsert），不经这里。
+   */
+  private async assertSessionWritable(sessionId: string): Promise<void> {
+    if (await this.isSessionReadOnly(sessionId)) {
+      throw new Error(`Session is a read-only mirror of an external source: ${sessionId}`);
+    }
+  }
+
   /** 追加消息（非流式）：幂等 upsert + 更新会话元数据 + 增量 transcript */
   async addMessage(sessionId: string, role: string, content: string, extra: Record<string, unknown> = {}): Promise<StoredMessage> {
+    await this.assertSessionWritable(sessionId);
     const messages = await this.getStoredMessages(sessionId);
     const message: StoredMessage = {
       id: shortId("msg"),
@@ -264,6 +303,7 @@ export class SessionManager {
 
   /** 开始一条流式 agent 消息：先落盘空消息（status=streaming），返回消息 id */
   async beginStreamingMessage(sessionId: string): Promise<StoredMessage> {
+    await this.assertSessionWritable(sessionId);
     const message: StoredMessage = {
       id: shortId("msg"),
       role: "agent",
@@ -507,6 +547,8 @@ export class SessionManager {
    * 返回被截断后的消息数组（用于前端重新渲染）。
    */
   async truncateMessages(sessionId: string, fromMessageId: string): Promise<StoredMessage[]> {
+    // 只读镜像不允许改写正文：截断后本地就被改成了另一个会话，而源侧并不知道
+    await this.assertSessionWritable(sessionId);
     return await withFileLock(this.messagesPath(sessionId), async () => {
       const messages = await this.getStoredMessages(sessionId);
       const index = messages.findIndex((m) => m.id === fromMessageId);
@@ -931,6 +973,85 @@ export class SessionManager {
     }
   }
 
+  /** 会话是否为外部来源的只读镜像（镜像不允许在 MoDuty 内改写或继续对话） */
+  async isSessionReadOnly(sessionId: string): Promise<boolean> {
+    return (await this.getSession(sessionId))?.readOnly === true;
+  }
+
+  /**
+   * 写入一条外部来源会话的只读镜像（幂等 upsert）。
+   *
+   * 幂等来自两处确定性命名：会话 id 由 externalSessionId() 生成，消息 id 由
+   * `msg_<sessionId>_<序号>` 生成。因此重复 Sync/备份只会覆盖同一条会话，不会产生副本。
+   *
+   * 正文整体覆盖而不合并：镜像要跟随源侧变化（源里删掉的轮次也必须消失）。
+   */
+  async importSessionSnapshot(input: ImportedSessionInput): Promise<{ created: boolean; turnCount: number }> {
+    if (!isSafeSessionId(input.sessionId)) {
+      throw new Error(`Invalid imported session id: ${input.sessionId}`);
+    }
+    const messages: StoredMessage[] = input.messages.map((message, index) => ({
+      id: `msg_${input.sessionId}_${String(index + 1).padStart(4, "0")}`,
+      role: message.role,
+      content: message.content,
+      timestamp: message.timestamp,
+      status: "done" as const,
+      ...(message.toolCalls?.length ? { toolCalls: message.toolCalls } : {}),
+      ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+      ...(message.model ? { model: message.model } : {}),
+    }));
+    const turns = buildTurns(messages);
+    const lastCompleted = [...turns].reverse().find((turn) => turn.completed);
+    const goal = `[${SOURCE_LABELS[input.source]}] ${input.title}`.trim();
+
+    const created = await withFileLock(this.sessionsFile, async () => {
+      const sessions = await this.listSessions(true);
+      const existing = sessions.find((item) => item.id === input.sessionId);
+      if (!existing) {
+        const record: SessionRecord = {
+          id: input.sessionId,
+          name: input.title || input.sessionId,
+          goal,
+          folderPath: "",
+          createdAt: input.createdAt,
+          messageCount: messages.length,
+          lastMessageAt: input.updatedAt,
+          turnIndex: turns.length + 1,
+          draft: false,
+          source: input.source,
+          sourceRef: input.sourceRef,
+          readOnly: true,
+          ...(lastCompleted ? { lastCompletedTurnId: lastCompleted.id } : {}),
+        };
+        await this.writeSessions([record, ...sessions]);
+        return true;
+      }
+      const updated: SessionRecord = {
+        ...existing,
+        name: input.title || existing.name,
+        goal,
+        messageCount: messages.length,
+        lastMessageAt: input.updatedAt,
+        turnIndex: turns.length + 1,
+        draft: false,
+        source: input.source,
+        sourceRef: input.sourceRef,
+        readOnly: true,
+        ...(lastCompleted ? { lastCompletedTurnId: lastCompleted.id } : {}),
+      };
+      await this.writeSessions(sessions.map((item) => (item.id === input.sessionId ? updated : item)));
+      return false;
+    });
+
+    await withFileLock(this.messagesPath(input.sessionId), async () => {
+      await this.writeMessagesUpsert(input.sessionId, messages);
+    });
+    this.transcriptCache.delete(input.sessionId);
+    await this.ensureTranscriptCurrent(input.sessionId).catch(() => undefined);
+    await this.refreshGraphAfterWrite(input.sessionId);
+    return { created, turnCount: turns.length };
+  }
+
   private messagesPath(sessionId: string): string {
     return path.join(this.sessionsDir, sessionId, "messages.json");
   }
@@ -990,6 +1111,24 @@ function sessionFromDisk(raw: Record<string, unknown>): SessionRecord {
     lastCompletedTurnId: raw.last_completed_turn_id ? String(raw.last_completed_turn_id) : raw.lastCompletedTurnId ? String(raw.lastCompletedTurnId) : undefined,
     archived: raw.archived === true,
     archivedAt: raw.archived_at ? String(raw.archived_at) : raw.archivedAt ? String(raw.archivedAt) : undefined,
+    source: isSessionSource(raw.source) ? raw.source : undefined,
+    sourceRef: sourceRefFromDisk(raw.source_ref ?? raw.sourceRef),
+    readOnly: raw.read_only === true || raw.readOnly === true ? true : undefined,
+  };
+}
+
+function sourceRefFromDisk(raw: unknown): SourceRef | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const kind = obj.kind;
+  if (!isExternalSessionSource(kind)) return undefined;
+  return {
+    kind,
+    externalId: String(obj.externalId ?? obj.external_id ?? ""),
+    sourcePath: String(obj.sourcePath ?? obj.source_path ?? ""),
+    fingerprint: String(obj.fingerprint ?? ""),
+    importedAt: String(obj.importedAt ?? obj.imported_at ?? ""),
+    syncedAt: String(obj.syncedAt ?? obj.synced_at ?? ""),
   };
 }
 
@@ -1006,6 +1145,9 @@ function sessionToDisk(session: SessionRecord): Record<string, unknown> {
     last_completed_turn_id: session.lastCompletedTurnId,
     archived: session.archived,
     archived_at: session.archivedAt,
+    source: session.source,
+    source_ref: session.sourceRef,
+    read_only: session.readOnly,
   };
 }
 

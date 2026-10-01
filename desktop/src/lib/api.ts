@@ -607,9 +607,148 @@ export interface SessionOptionView {
   last_message_at: string;
 }
 
-export async function listSessionOptions(): Promise<SessionOptionView[]> {
+/**
+ * 会话选择器候选。
+ *
+ * 默认只给 moduty 本地会话：`/api/sessions` 是各来源的聚合，外部镜像动辄上千条，
+ * 全塞进机器人/速查条目的选择器会把可用项淹没。需要聚合时显式传 includeExternal。
+ */
+export async function listSessionOptions(options: { includeExternal?: boolean } = {}): Promise<SessionOptionView[]> {
   const base = await awaitApiBase();
-  const res = await fetch(`${base}/api/sessions`);
+  const res = await fetch(`${base}/api/sessions${options.includeExternal ? "" : "?source=moduty"}`);
   const data = (await jsonOrThrow(res, "list sessions")) as { sessions?: SessionOptionView[] };
   return data.sessions ?? [];
+}
+
+/* ============================================================
+ * 会话来源（Session Sources）：设置页「会话来源」区域
+ * ============================================================ */
+
+export type SessionSourceView = "moduty" | "claude" | "codex" | "proma";
+export type ExternalSourceView = Exclude<SessionSourceView, "moduty">;
+
+export interface SourceJobView {
+  id: string;
+  source: ExternalSourceView;
+  kind: "sync" | "backup" | "archive";
+  status: "running" | "done" | "error";
+  started_at: string;
+  finished_at: string | null;
+  total: number;
+  processed: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+  failed: Array<{ external_id: string; title: string; reason: string }>;
+  error: string | null;
+  origin: string | null;
+}
+
+export interface SourceOverviewView {
+  source: ExternalSourceView;
+  label: string;
+  available: boolean;
+  root: string;
+  reason: string | null;
+  imported_count: number;
+  last_sync_at: string | null;
+  job: SourceJobView | null;
+}
+
+export interface SourcesView {
+  sources: SourceOverviewView[];
+  local: { total: number; by_source: Record<SessionSourceView, number> };
+}
+
+export interface SourceSessionRowView {
+  external_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number | null;
+  workspace: string | null;
+  archived: boolean;
+  imported: boolean;
+  needs_update: boolean;
+  session_id: string | null;
+}
+
+export interface SourceSessionsView {
+  source: ExternalSourceView;
+  total: number;
+  matched: number;
+  offset: number;
+  limit: number;
+  items: SourceSessionRowView[];
+}
+
+/** 来源接口统一走这里：把后端的 { error } 文案透出来，而不是只给一个状态码 */
+async function sourceRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}${path}`, init);
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    const message = typeof detail?.error === "string" ? detail.error : `${res.status} ${res.statusText}`;
+    throw new Error(message);
+  }
+  return (await res.json()) as T;
+}
+
+/** 三个外部来源的探测状态与本地镜像统计（不做列表，开销很小） */
+export function fetchSources(): Promise<SourcesView> {
+  return sourceRequest<SourcesView>("/api/sources");
+}
+
+/** 列出某来源的会话；列表阶段不解析正文，message_count 可能为 null */
+export function listSourceSessions(
+  source: ExternalSourceView,
+  options: { query?: string; filter?: "all" | "new" | "changed" | "imported"; offset?: number; limit?: number } = {},
+): Promise<SourceSessionsView> {
+  const params = new URLSearchParams();
+  if (options.query?.trim()) params.set("query", options.query.trim());
+  if (options.filter && options.filter !== "all") params.set("filter", options.filter);
+  if (options.offset) params.set("offset", String(options.offset));
+  if (options.limit) params.set("limit", String(options.limit));
+  const qs = params.toString();
+  return sourceRequest<SourceSessionsView>(`/api/sources/${source}/sessions${qs ? `?${qs}` : ""}`);
+}
+
+/** 整源同步：导入「新增 + 已变更」，返回后台作业；进度用 fetchSourceJob 轮询 */
+export function startSourceSync(source: ExternalSourceView): Promise<{ job: SourceJobView; started: boolean }> {
+  return sourceRequest(`/api/sources/${source}/sync`, { method: "POST" });
+}
+
+/** 备份指定会话到 MoDuty 本地 */
+export function startSourceBackup(source: ExternalSourceView, ids: string[]): Promise<{ job: SourceJobView; started: boolean }> {
+  return sourceRequest(`/api/sources/${source}/backup`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function fetchSourceJob(source: ExternalSourceView): Promise<{ job: SourceJobView | null }> {
+  return sourceRequest(`/api/sources/${source}/job`);
+}
+
+/** 从 Proma 官方迁移压缩包（整个 .proma 目录的 ZIP）导入 */
+export function importPromaArchive(archivePath: string): Promise<{ job: SourceJobView; started: boolean; archive_root: string }> {
+  return sourceRequest("/api/sources/proma/import-archive", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: archivePath }),
+  });
+}
+
+export interface ArchiveCandidateView {
+  path: string;
+  name: string;
+  size_bytes: number;
+  mtime_ms: number;
+}
+
+/** 扫常见位置（下载/桌面/文档/家目录）列出候选迁移压缩包 */
+export async function fetchPromaArchiveCandidates(): Promise<ArchiveCandidateView[]> {
+  const data = await sourceRequest<{ candidates?: ArchiveCandidateView[] }>("/api/sources/proma/archives");
+  return data.candidates ?? [];
 }

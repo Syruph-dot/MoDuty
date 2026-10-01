@@ -4,6 +4,8 @@ import { MomokaHttpError } from "../http-error.js";
 import { gone, json, readJsonBody } from "./http-utils.js";
 import type { RouteContext } from "./route-context.js";
 import { judgeToSnake, sessionToSnake } from "./serialization.js";
+import { parseSourceFilter } from "./source-routes.js";
+import { sourceOf } from "../session-source.js";
 
 /**
  * 遗留 session 轨道（旧 chat.html 时代 web UI）。
@@ -25,7 +27,11 @@ export async function handleSessionRoutes(
   const agent = ctx.agent;
 
   if (request.method === "GET" && url.pathname === "/api/sessions") {
-    json(response, 200, { sessions: (await agent.sessionManager.listSessions()).map(sessionToSnake) });
+    // ?source= 可选：按会话来源筛选（moduty / claude / codex / proma）
+    const sourceFilter = parseSourceFilter(url.searchParams.get("source"));
+    const sessions = await agent.sessionManager.listSessions();
+    const filtered = sourceFilter ? sessions.filter((session) => sourceOf(session) === sourceFilter) : sessions;
+    json(response, 200, { sessions: filtered.map(sessionToSnake) });
     return true;
   }
   if (request.method === "POST" && url.pathname === "/api/sessions") {

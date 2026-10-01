@@ -12,6 +12,7 @@ import type { RouteContext } from "./http/route-context.js";
 import { handleDispatchBridge, orchestrationOf, startDispatchStallScanner, wireAgentStatePersistence } from "./http/agent-orchestration.js";
 import { setDispatchHandler } from "./dispatch-bridge.js";
 import { handleSettingsRoutes } from "./http/settings-routes.js";
+import { handleSourceRoutes } from "./http/source-routes.js";
 import { handleSessionRoutes } from "./http/session-routes.js";
 import { handleQuickRefRoutes } from "./http/quickref-routes.js";
 import { handleRelationRoutes } from "./http/relation-routes.js";
@@ -87,6 +88,7 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
     }
 
     if (await handleSettingsRoutes(ctx, request, response, url)) return;
+    if (await handleSourceRoutes(ctx, request, response, url)) return;
     if (await handleRelationRoutes(ctx, request, response, url)) return;
     if (await handleQuickRefRoutes(ctx, request, response, url)) return;
     if (await handleSessionRoutes(ctx, request, response, url)) return;

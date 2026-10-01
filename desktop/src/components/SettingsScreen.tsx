@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import BotSettingsPanel from "./BotSettingsPanel";
+import SourcePanel from "./SourcePanel";
 import { useDialogStore } from "../state/dialogStore";
 import { notifyNative } from "../lib/nativeNotify";
 import {
@@ -22,10 +23,11 @@ import {
   type TierDefaultsView,
 } from "../lib/api";
 
-type SettingsTab = "models" | "bots" | "runtime" | "about";
+type SettingsTab = "models" | "sources" | "bots" | "runtime" | "about";
 
 const NAV_ITEMS: Array<{ key: SettingsTab; label: string; icon?: string }> = [
   { key: "models", label: "模型与轨道" },
+  { key: "sources", label: "会话来源" },
   { key: "bots", label: "远程机器人" },
   { key: "runtime", label: "运行时" },
   { key: "about", label: "关于" },
@@ -525,6 +527,7 @@ export default function SettingsScreen() {
           </>
         ) : null}
 
+        {tab === "sources" ? <SourcePanel /> : null}
         {tab === "bots" ? (
           <>
             <h2 className="settings-main__title">远程机器人</h2>

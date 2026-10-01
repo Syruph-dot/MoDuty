@@ -1,6 +1,7 @@
 import { assessmentToSnake, evolutionProposalToSnake, reflectionToSnake } from "../casing.js";
 import type { ContextStatsSnake } from "../agent-state.js";
 import type { SessionRecord } from "../session-manager.js";
+import type { SessionSource, SourceRef } from "../session-source.js";
 import type { AgentRecord, ChatResponse, ContextStats, JudgeResponse, RunRecord } from "../types.js";
 
 /**
@@ -70,6 +71,11 @@ export function sessionToSnake(session: {
   createdAt: string;
   messageCount: number;
   lastMessageAt: string;
+  archived?: boolean;
+  archivedAt?: string;
+  source?: SessionSource;
+  sourceRef?: SourceRef;
+  readOnly?: boolean;
 }): Record<string, unknown> {
   return {
     id: session.id,
@@ -79,6 +85,21 @@ export function sessionToSnake(session: {
     created_at: session.createdAt,
     message_count: session.messageCount,
     last_message_at: session.lastMessageAt,
+    // 老会话没有 source 字段，一律视为 moduty（与 sourceOf 保持同一口径）
+    source: session.source ?? "moduty",
+    source_ref: session.sourceRef
+      ? {
+          kind: session.sourceRef.kind,
+          external_id: session.sourceRef.externalId,
+          source_path: session.sourceRef.sourcePath,
+          fingerprint: session.sourceRef.fingerprint,
+          imported_at: session.sourceRef.importedAt,
+          synced_at: session.sourceRef.syncedAt,
+        }
+      : null,
+    read_only: session.readOnly === true,
+    ...(session.archived !== undefined ? { archived: session.archived } : {}),
+    ...(session.archivedAt !== undefined ? { archived_at: session.archivedAt } : {}),
   };
 }
 

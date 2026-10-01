@@ -245,7 +245,19 @@ pub fn open(app: &AppHandle, spec: Value) -> Result<Value, String> {
     let parsed = url.parse().map_err(|err| format!("URL 解析失败（{url}）：{err}"))?;
     let mut builder = WebviewBuilder::new(label_for_thread.clone(), WebviewUrl::External(parsed))
       .incognito(incognito)
-      .devtools(devtools);
+      .devtools(devtools)
+      // 下载不做接管，但必须留下痕迹：WebView2 的下载默认没有 UI 反馈点，
+      // 不打日志的话“点了下载没反应”无法排查。返回 true 表示走默认行为。
+      .on_download(|_webview, event| {
+        match event {
+          tauri::webview::DownloadEvent::Requested { url, .. } => log_line(&format!("[bridge] 下载请求：{url}")),
+          tauri::webview::DownloadEvent::Finished { url, success, .. } => {
+            log_line(&format!("[bridge] 下载结束：{url} success={success}"))
+          }
+          _ => log_line("[bridge] 下载事件（未知类型）"),
+        }
+        true
+      });
     if let Some(dir) = profile_dir {
       builder = builder.data_directory(PathBuf::from(dir));
     }

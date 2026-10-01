@@ -27,8 +27,8 @@ struct MomokaServerState {
   resolved_port: Mutex<Option<u16>>,
 }
 
-const PROBE_BASE_PORT: u16 = 8888;
-const PROBE_TRIES: u16 = 10; // 8888..=8897
+const PROBE_BASE_PORT: u16 = 7238;
+const PROBE_TRIES: u16 = 10; // 7238..=7247
 /// 每个候选端口上等 sidecar 变成健康的时长（含冷启动）
 const HEALTH_WAIT_MS: u64 = 4_000;
 

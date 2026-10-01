@@ -5,7 +5,7 @@
     1) node.exe / esbuild.exe whose command line matches:
        - "MoDuty" project path
        - dev-server.mjs / dev-all.mjs / vite / tsx watch / esbuild (MoDuty dev stack)
-    2) any process listening on MoDuty dev ports 8888 / 5173 / 1420 (fallback)
+    2) any process listening on MoDuty dev ports 7238 / 6429 / 1420 (fallback)
   Unrelated Node (mcp-remote, other workspaces, remotion, MOMOKA_TS standalone) is NOT touched.
   Usage:
     .\stop-dev.ps1          # list then kill
@@ -37,7 +37,7 @@ foreach ($name in $killNames) {
 }
 
 # --- 2. port fallback: anything owning MoDuty dev ports ---
-foreach ($port in @(8888, 5173, 1420)) {
+foreach ($port in @(7238, 6429, 1420)) {
     Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
         $pidOwner = $_.OwningProcess
         $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pidOwner" -ErrorAction SilentlyContinue
@@ -79,7 +79,7 @@ foreach ($t in $targets) {
 Start-Sleep -Milliseconds 400
 
 # report ports after cleanup
-foreach ($port in @(8888, 5173, 1420)) {
+foreach ($port in @(7238, 6429, 1420)) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) { Write-Host ("[!] port {0} still busy" -f $port) -ForegroundColor Magenta }
     else { Write-Host ("[ok] port {0} free" -f $port) -ForegroundColor Green }

@@ -19,8 +19,8 @@ export interface SessionSearchHit {
  * - 优先级：
  *   1) VITE_MOMOKA_API 显式覆盖（构建期注入）—— 同步值，立即返回
  *   2) Tauri webview → 调用 Rust 命令 get_momoka_port 拿真实端口，拼出 http://127.0.0.1:{port}
- *      （后端 sidecar 启动时端口会从 8888 起递增找空位）
- *   3) 浏览器 dev → 空串（走 Vite dev proxy /api → :8888）
+ *      （后端 sidecar 启动时端口会从 7238 起递增找空位）
+ *   3) 浏览器 dev → 空串（走 Vite dev proxy /api → :7238）
  *
  * 结果按 Promise 缓存：整个应用生命周期只解析一次。
  */
@@ -68,8 +68,8 @@ export function awaitApiBase(): Promise<string> {
       }
     }
     if (inMomokaShell()) {
-      // momoka-shell (WebKitGTK) 固定连 8888
-      return "http://127.0.0.1:8888";
+      // momoka-shell (WebKitGTK) 固定连 7238
+      return "http://127.0.0.1:7238";
     }
     return ""; // 浏览器 dev：Vite dev proxy
   })().catch((error: unknown) => {

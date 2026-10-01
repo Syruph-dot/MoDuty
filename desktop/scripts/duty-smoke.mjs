@@ -6,13 +6,13 @@ const CDP_PORT = 9241;
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const userData = await mkdtemp(path.join(tmpdir(), "momoka-duty-"));
-const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", "--no-first-run", `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userData}`, "http://localhost:5173/"], { stdio: "ignore", windowsHide: true });
+const chrome = spawn(CHROME, ["--headless=new", "--disable-gpu", "--no-first-run", `--remote-debugging-port=${CDP_PORT}`, `--user-data-dir=${userData}`, "http://localhost:6429/"], { stdio: "ignore", windowsHide: true });
 let ws;
 try {
   let version;
   for (let i = 0; i < 50 && !version; i += 1) { try { version = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json(); } catch { await sleep(200); } }
   if (!version) throw new Error("CDP not reachable");
-  const target = await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?${encodeURIComponent("http://localhost:5173/")}`, { method: "PUT" }).then((r) => r.json());
+  const target = await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?${encodeURIComponent("http://localhost:6429/")}`, { method: "PUT" }).then((r) => r.json());
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   let id = 0; const pending = new Map();

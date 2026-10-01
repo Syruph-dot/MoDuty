@@ -5,7 +5,7 @@ import path from "node:path";
 
 const CDP_PORT = 9229;
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const PAGE = "http://localhost:5173/";
+const PAGE = "http://localhost:6429/";
 const AGENT_ID = process.argv[2] ?? "agt_9a1ab1893da7";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const userData = await mkdtemp(path.join(tmpdir(), "momoka-tl-"));

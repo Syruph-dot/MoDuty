@@ -15,12 +15,12 @@
  *   momoka status（服务健康 + 各状态 Agent 数 + 台账未结单）
  *   momoka help
  *
- * 无第三方依赖（Node 18+ 原生 fetch）。环境变量 MOMOKA_URL 可覆盖后端地址（默认 http://localhost:8888）。
+ * 无第三方依赖（Node 18+ 原生 fetch）。环境变量 MOMOKA_URL 可覆盖后端地址（默认 http://localhost:7238）。
  * --mono 强制纯文本输出（工具调用时自动加）；默认 TTY 时彩色。
  */
 import { spawn } from "node:child_process";
 
-const BASE = process.env.MOMOKA_URL ?? "http://localhost:8888";
+const BASE = process.env.MOMOKA_URL ?? "http://localhost:7238";
 const MONO = process.argv.includes("--mono");
 /** 是否把 reasoning 流也打出来（默认关：手机/工具输出里太吵） */
 const SHOW_REASONING = process.argv.includes("--reasoning");

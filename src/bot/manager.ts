@@ -79,7 +79,7 @@ interface PendingAsk {
 const ASK_TTL_MS = 24 * 60 * 60 * 1000;
 
 function selfBaseUrl(): string {
-  return process.env.MOMOKA_URL ?? `http://127.0.0.1:${process.env.PORT ?? 8888}`;
+  return process.env.MOMOKA_URL ?? `http://127.0.0.1:${process.env.PORT ?? 7238}`;
 }
 
 async function getJson<T>(pathname: string): Promise<T | null> {

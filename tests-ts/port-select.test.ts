@@ -5,12 +5,17 @@
  * dev 后端写死 8888 就"启动即闪退"。这里用真实 socket 覆盖三种判定：
  * 空闲 → 直接用；已有 MOMOKA → 拒绝（多实例会写坏 agents.json）；
  * 被别的服务占着（模拟幽灵监听）→ 跳过换下一个。
+ *
+ * 2026-10-01 又补了一轮“真实 listen”的回归网：打包版 sidecar 跑在 Bun 上，
+ * `node:net` 的探测 bind 与 `node:http` 的 listen 结论会不一致（"预检说空闲"的
+ * 端口一用就报 EADDRINUSE）。所以挑端口的最终判据必须是真的 listen，而不是预检，
+ * 下面用真实端口占位 + 真实请求把这条性质钉住。
  */
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { test } from "node:test";
 
-import { inspectPort, pickPort } from "../src/port-select.js";
+import { inspectPort, listenOnFirstAvailable, listenOnPort, pickPort } from "../src/port-select.js";
 
 /** 起一个最小 HTTP 服务；respond 决定它像不像 MOMOKA。 */
 function listen(port: number, respond: (path: string) => { body: string; status?: number }): Promise<Server> {
@@ -112,5 +117,74 @@ test("pickPort 一路被占到底时给出 none，并带上跳过原因", async 
     for (const server of servers) {
       await close(server);
     }
+  }
+});
+
+test("listenOnFirstAvailable 用真实 listen 逐个试：被占的跳过，且换端口后真的能服务", async () => {
+  const base = await freePort();
+  // 占住 base，逼它换端口。这正是旧实现会翻车的地方："探到空闲"的端口一到真正 listen 就报 EADDRINUSE。
+  const blocker = await listen(base, () => ({ body: "occupied" }));
+  const server = createServer((_request, response) => response.end("MOMOKA OK"));
+  try {
+    const bound = await listenOnFirstAvailable(server, base, 5, "127.0.0.1");
+    assert.equal(bound.port, base + 1);
+    assert.deepEqual(
+      bound.skipped.map((item) => item.port),
+      [base],
+    );
+    assert.match(bound.skipped[0].detail, /EADDRINUSE/);
+    // 失败一次后再 listen 的 server 必须真的在服务（只断言"换到了 base+1"不够）
+    const response = await fetch(`http://127.0.0.1:${bound.port}/api/health`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "MOMOKA OK");
+  } finally {
+    await close(server);
+    await close(blocker);
+  }
+});
+
+test("listenOnFirstAvailable 一路被占到底时报错，并列出是哪些端口", async () => {
+  const base = await freePort();
+  const blockers = await Promise.all([
+    listen(base, () => ({ body: "occupied" })),
+    listen(base + 1, () => ({ body: "occupied" })),
+  ]);
+  const server = createServer();
+  try {
+    await assert.rejects(() => listenOnFirstAvailable(server, base, 2, "127.0.0.1"), (error: Error) => {
+      assert.match(error.message, new RegExp(`从 ${base} 起的 2 个端口都监听不了`));
+      assert.match(error.message, new RegExp(String(base + 1)));
+      return true;
+    });
+  } finally {
+    await close(server);
+    for (const blocker of blockers) {
+      await close(blocker);
+    }
+  }
+});
+
+test("listenOnPort 被占用时直接失败（显式 PORT 的语义，Tauri 壳依赖它）", async () => {
+  const base = await freePort();
+  const blocker = await listen(base, () => ({ body: "occupied" }));
+  const server = createServer();
+  try {
+    await assert.rejects(() => listenOnPort(server, base, "127.0.0.1"), /already in use/);
+  } finally {
+    await close(server);
+    await close(blocker);
+  }
+});
+
+test("listenOnPort 空闲时严格用它，并且真的能服务", async () => {
+  const port = await freePort();
+  const server = createServer((_request, response) => response.end("MOMOKA OK"));
+  try {
+    await listenOnPort(server, port, "127.0.0.1");
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "MOMOKA OK");
+  } finally {
+    await close(server);
   }
 });

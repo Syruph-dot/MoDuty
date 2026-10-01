@@ -6,8 +6,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const PAGE = process.argv[2] ?? "http://localhost:5173/";
-const API = process.argv[3] ?? "http://localhost:8888";
+const PAGE = process.argv[2] ?? "http://localhost:6429/";
+const API = process.argv[3] ?? "http://localhost:7238";
 const OUT = process.argv[4] ?? "smoke-split-result.json";
 const CDP_PORT = 9224;
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";

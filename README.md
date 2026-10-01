@@ -62,12 +62,12 @@ npm run build
 npm start
 ```
 
-启动后访问 **http://localhost:8888**
+启动后访问 **http://localhost:7238**
 
 终端会显示：
 ```
 MoDuty TypeScript HTTP Server 启动中...
-  访问: http://localhost:8888
+  访问: http://localhost:7238
 ```
 
 ### 5. 外部软件调用 Momoka Agent
@@ -115,13 +115,13 @@ MoDuty/
 ### 桌面开发模式
 
 ```bash
-# 终端 1：后端（端口 8888）
+# 终端 1：后端（端口 7238）
 npm start          # 或 npx tsx src/server.ts
 
-# 终端 2：Vite dev（端口 5173，/api 代理到 8888）
+# 终端 2：Vite dev（端口 6429，/api 代理到 7238）
 npm run desktop:dev
 
-# 可选：浏览器直连 http://localhost:5173 即可看到磁贴墙
+# 可选：浏览器直连 http://localhost:6429 即可看到磁贴墙
 ```
 
 ### 桌面构建 / 打包
@@ -146,7 +146,7 @@ CARGO_NET_OFFLINE=true npx tauri build --debug --no-bundle  # 免安装调试产
 - 免安装产物：`arona-chest/debug/MoDuty.exe`（同目录带 `momoka-server.exe`、`prompts/`、`skills/`、`static/`）
 - 发行版：`arona-chest/release/MoDuty.exe` 与 `arona-chest/release/bundle/{msi,nsis}/MoDuty_<版本>_x64*`
 
-运行时行为（Tauri v2）：主程序启动时**自己挑选一个可用端口**（8888 起递增，实起实探）并把 `PORT` 传给 sidecar，端口写入临时文件供前端读取；退出时主动收掉 sidecar，下次启动也会清理上次残留的 sidecar。Windows 上进程被强杀后可能留下归属已死 PID 的残留监听（端口显示占用但无法绑定），带重试的启动流程正是为了不被它拖死；重启系统可清掉这些残留。
+运行时行为（Tauri v2）：主程序启动时**自己挑选一个可用端口**（7238 起递增，实起实探）并把 `PORT` 传给 sidecar，端口写入临时文件供前端读取；退出时主动收掉 sidecar，下次启动也会清理上次残留的 sidecar。Windows 上进程被强杀后可能留下归属已死 PID 的残留监听（端口显示占用但无法绑定），带重试的启动流程正是为了不被它拖死；重启系统可清掉这些残留。
 
 注意两个路径陷阱：`externalBin` 与 `bundle.resources` 都相对 **src-tauri/** 解析，仓库根的 `binaries/` 不参与打包；改了 `src/` 之后必须重跑 `npm run build:sidecar`，否则安装包里还是上一版后端。
 
@@ -159,7 +159,7 @@ CARGO_NET_OFFLINE=true npx tauri build --debug --no-bundle  # 免安装调试产
 
 （历史包袱：旧版把 Agent 注册表放在 `<项目根>/memory/.agents/`。首次以旧项目根启动时会把较新的那份导入用户级位置，并把被覆盖的文件备份成 `agents.json.bak-<时间戳>`。）
 
-旧 `static/index.html` / `chat.html` 保留为 debug fallback：仍然通过 `http://localhost:8888` 访问，`serveStatic` 未改动。
+旧 `static/index.html` / `chat.html` 保留为 debug fallback：仍然通过 `http://localhost:7238` 访问，`serveStatic` 未改动。
 
 ### 桌面前端结构
 
@@ -179,7 +179,7 @@ desktop/src/
 
 ### Web 界面：会话管理
 
-访问 `http://localhost:8888` 进入**会话列表页**：
+访问 `http://localhost:7238` 进入**会话列表页**：
 
 1. 点击 **「+ 新建会话」**
 2. 填写 **核心目标**（如"整理项目文档结构"）

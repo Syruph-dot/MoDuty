@@ -45,7 +45,7 @@ interface AgentBrief {
 }
 
 function selfBaseUrl(): string {
-  return process.env.MOMOKA_URL ?? `http://127.0.0.1:${process.env.PORT ?? 8888}`;
+  return process.env.MOMOKA_URL ?? `http://127.0.0.1:${process.env.PORT ?? 7238}`;
 }
 
 async function fetchJson<T>(pathname: string): Promise<T | null> {

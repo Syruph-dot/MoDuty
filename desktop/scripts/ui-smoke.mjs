@@ -6,8 +6,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const PAGE = process.argv[2] ?? "http://localhost:5173/";
-const API = process.argv[3] ?? "http://localhost:8888";
+const PAGE = process.argv[2] ?? "http://localhost:6429/";
+const API = process.argv[3] ?? "http://localhost:7238";
 const OUT = process.argv[4] ?? "ui-smoke-result.json";
 /** SMOKE_EXPECT_STREAM=<text> 时进入流式令牌验证模式（配合 stub-chat-server 使用） */
 const EXPECT_STREAM = process.env.SMOKE_EXPECT_STREAM ?? "";

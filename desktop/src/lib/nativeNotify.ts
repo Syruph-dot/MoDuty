@@ -6,7 +6,7 @@
  *    为什么不用 `@tauri-apps/api/notification`：tauri 1.8.3 在 exe 位于 `target\debug|release`
  *    时会**跳过 AppUserModelID**，而 Windows 对没有 AUMID 的未打包进程发来的 toast 是静默丢弃的
  *    （不报错、不显示）—— 这就是"通知是假的"的真因。Rust 侧自己维护 AUMID 之后不再依赖它。
- * 2. 浏览器（vite dev / 直接开 http://localhost:5173）：Web Notification API，由 Chrome/Edge
+ * 2. 浏览器（vite dev / 直接开 http://localhost:6429）：Web Notification API，由 Chrome/Edge
  *    落成 Windows 原生通知。Chromium 规定 requestPermission() 必须在用户手势里调用，
  *    否则直接返回 default 连权限气泡都不弹，所以启动时挂一次性手势监听（primeNotificationPermission）。
  * 3. 两者都不可用：静默降级（只写 console），绝不阻塞对话主流程。

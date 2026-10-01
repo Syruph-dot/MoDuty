@@ -23,7 +23,7 @@ const currentFile = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(currentFile), "..");
 
 const DAEMON_PORT = Number(process.env.DAEMON_PORT ?? process.argv.find((a) => a.startsWith("--port="))?.split("=")[1] ?? 8889);
-const MODUTY_PORT = Number(process.env.MODUTY_PORT ?? process.argv.find((a) => a.startsWith("--server-port="))?.split("=")[1] ?? 8888);
+const MODUTY_PORT = Number(process.env.MODUTY_PORT ?? process.argv.find((a) => a.startsWith("--server-port="))?.split("=")[1] ?? 7238);
 const MODUTY_HOST = process.env.MODUTY_HOST ?? "127.0.0.1";
 const MODUTY_ROOT = process.env.MODUTY_ROOT ?? projectRoot;
 

@@ -7,7 +7,7 @@
   "build": {
     "beforeDevCommand": "npm --prefix desktop run dev",
     "beforeBuildCommand": "npm --prefix desktop run build",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:6429",
     "frontendDist": "../desktop/dist"
   },
   "app": {

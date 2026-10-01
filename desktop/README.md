@@ -8,7 +8,7 @@ MOMOKA 的磁贴化桌面前端：**React 18 + Vite 6 + TypeScript（strict）+ 
 
 | 命令 | 说明 |
 |------|------|
-| `npm run dev` | Vite dev server，端口 **5173**（`/api` 代理到 `http://localhost:8888`） |
+| `npm run dev` | Vite dev server，端口 **6429**（`/api` 代理到 `http://localhost:7238`） |
 | `npm run build` | `tsc` + `vite build`，产物 `dist/`（tauri `distDir`） |
 | `npm run preview` | 预览构建产物 |
 
@@ -51,13 +51,13 @@ src/
 ## API base 解析规则
 
 1. `VITE_MOMOKA_API`（构建期注入）优先；
-2. Tauri webview 内（`window.__TAURI__` 存在）→ `http://localhost:8888`；
+2. Tauri webview 内（`window.__TAURI__` 存在）→ `http://localhost:7238`；
 3. 浏览器 dev → 同源，走 Vite 的 `/api` 代理。
 
 ## 冒烟验证（headless Chrome CDP）
 
 ```bash
-# 需要：后端在 8888、desktop dev server 在 5173、本机 Chrome
+# 需要：后端在 7238、desktop dev server 在 6429、本机 Chrome
 node scripts/ui-smoke.mjs                       # 常规模式：磁贴/弹窗/窗口/审批/SSE 状态
 SMOKE_EXPECT_STREAM="hello 123" node scripts/ui-smoke.mjs   # 流式令牌模式（配合 stub）
 SMOKE_APPROVAL=1 node scripts/ui-smoke.mjs      # 审批面板模式（配合 stub，见 tests-ts/stub-chat-server.mjs）

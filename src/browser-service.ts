@@ -19,6 +19,7 @@ import path from "node:path";
 import type { BrowserLaunchOptions, BrowserSession, BrowserTransport } from "./browser-transport.js";
 import { resolveBrowserExecutable } from "./browser-transport.js";
 import { playwrightTransport } from "./browser-transport-playwright.js";
+import { cdpTransport } from "./browser-transport-cdp.js";
 // 仅类型：给 getContext/getPage 这个逃生艇签名用，不引入运行期耦合
 import type { BrowserContext, Page } from "playwright-core";
 
@@ -68,7 +69,22 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
  * 可用 MOMOKA_BROWSER_TRANSPORT 显式指定，用来在 dev 下强制验证 CDP 传输。
  */
 function buildTransports(): BrowserTransport[] {
-  return [playwrightTransport];
+  // 顺序即优先级：node 下优先 Playwright（与历史行为一致），bun 下它不可用、自动落到 CDP
+  return [playwrightTransport, cdpTransport];
+}
+
+/**
+ * 是否无头。
+ *
+ * 默认值是**分传输**的：Playwright 路径保持历史行为（无头），CDP 路径有头，
+ * 因为 CDP 有头启动才能同时拿到干净 UA（无 `HeadlessChrome`）与 `webdriver=false`。
+ * `MOMOKA_BROWSER_HEADLESS=1|0` 可显式覆盖。
+ */
+function resolveHeadless(transportName: BrowserTransport["name"]): boolean {
+  const raw = process.env.MOMOKA_BROWSER_HEADLESS?.trim();
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  return transportName !== "cdp";
 }
 
 function selectTransport(): BrowserTransport {
@@ -264,12 +280,22 @@ export class BrowserService {
       return false;
     }
     await this.closeInstance(id);
-    if (runtime.info.mode === "persistent" && runtime.info.profileDir) {
-      await fs.promises.rm(runtime.info.profileDir, { recursive: true, force: true });
-    }
+    // 先把实例从注册表拿掉，再尝试删 profile 目录。
+    // 反过来写会让“目录删不掉”（浏览器未完全退出时的文件锁）打断整个方法，
+    // 结果实例残留成幽灵、而无痕/持久 profile 还留在盘上（2026-10-01 实测）。
     this.instances.delete(id);
     if (runtime.info.mode === "persistent") this.persistRegistry();
     this.emit({ type: "browser_deleted", browser: { ...runtime.info } });
+    if (runtime.info.mode === "persistent" && runtime.info.profileDir) {
+      try {
+        await fs.promises.rm(runtime.info.profileDir, { recursive: true, force: true });
+      } catch (error) {
+        // 登录数据没清干净是要告知的事，不能静默吞掉
+        throw new Error(
+          `浏览器实例已删除，但 profile 目录未清干净（登录数据可能残留）：${runtime.info.profileDir} — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     return true;
   }
 
@@ -310,7 +336,7 @@ export class BrowserService {
       const options: BrowserLaunchOptions = {
         profileDir: runtime.info.profileDir,
         viewport: { ...DEFAULT_VIEWPORT },
-        headless: true,
+        headless: resolveHeadless(transport.name),
       };
       const session = await transport.launch(options);
       runtime.session = session;

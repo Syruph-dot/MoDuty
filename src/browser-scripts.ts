@@ -99,15 +99,25 @@ export function inspectScript(selector: string): string {
   })()`;
 }
 
-/** 元素中心坐标（供 clickAt 类的坐标注入使用） */
+/**
+ * 元素中心坐标（供坐标注入使用）。
+ * 会先 `scrollIntoView`：Playwright 的 `click` 自带滚动，CDP 路径要自己补，
+ * 否则元素在视口外时坐标是负值、点击落在页面外。
+ */
 export function elementCenterScript(selector: string): string {
   return `(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return null;
+    if (!el) return { ok: false, reason: 'not-found' };
+    el.scrollIntoView({ block: 'center', inline: 'center' });
     const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return null;
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    if (r.width <= 0 || r.height <= 0) return { ok: false, reason: 'not-visible' };
+    return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2 };
   })()`;
+}
+
+/** 元素数量（用于严格模式近似判定：匹配多个时 Playwright 会报错） */
+export function selectorCountScript(selector: string): string {
+  return `document.querySelectorAll(${JSON.stringify(selector)}).length`;
 }
 
 /**
@@ -130,3 +140,39 @@ export function selectorExistsScript(selector: string): string {
 
 /** 页面元信息脚本 */
 export const PAGE_META_SCRIPT = "({ url: location.href, title: document.title })";
+
+/**
+ * 填值脚本（React 等受控组件兼容）。
+ *
+ * 直接 `el.value = text` 会被框架的 value setter 抹掉，必须用原型上的原生 setter
+ * 写值再补 `input` / `change` 事件，框架才会感知到变化。
+ */
+export function fillScript(selector: string, text: string): string {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { ok: false, reason: 'not-found' };
+    el.focus();
+    if (el.isContentEditable) {
+      el.textContent = ${JSON.stringify(text)};
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      return { ok: true, mode: 'contenteditable' };
+    }
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) setter.set.call(el, ${JSON.stringify(text)});
+    else el.value = ${JSON.stringify(text)};
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { ok: true, mode: 'value', value: el.value };
+  })()`;
+}
+
+/** 焦点脚本 */
+export function focusScript(selector: string): string {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    el.focus();
+    return true;
+  })()`;
+}

@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -21,16 +21,24 @@ mod webview_spike;
 
 /// 后端 sidecar 的运行时状态：
 /// - port_file  → 写入 / 读取后端真实监听端口的文件路径
-/// - resolved_port → 由探测线程填充；前端 invoke 时若文件尚未就绪可回退
+/// - resolved_port → 由探测线程填充；前端 invoke 时若文件尚未就绪可回退。
+///   **必须是探测线程那同一个 Arc**：早先这里 manage 的是 `Mutex::new(None)`（另一把空锁），
+///   于是回退分支永远为空，就绪信号只剩端口文件一条路（2026-10-01 定位）。
 struct MomokaServerState {
   port_file: PathBuf,
-  resolved_port: Mutex<Option<u16>>,
+  resolved_port: Arc<Mutex<Option<u16>>>,
 }
 
 const PROBE_BASE_PORT: u16 = 7238;
 const PROBE_TRIES: u16 = 10; // 7238..=7247
 /// 每个候选端口上等 sidecar 变成健康的时长（含冷启动）
 const HEALTH_WAIT_MS: u64 = 4_000;
+/// `get_momoka_port` 等后端就绪的上限。
+/// 窗口出现早于后台探测线程，冷启动的这段时间必须让前端的首次取端口等住，
+/// 否则它拿到的是一个“还没好，但你也不知道什么时候会好”的错误。
+const PORT_WAIT_MS: u64 = 30_000;
+/// 等待期间的轮询间隔
+const PORT_POLL_MS: u64 = 100;
 
 /// 日志文件：release 是 GUI 子系统（没有控制台），eprintln 等于丢进黑洞，
 /// 所以"启动闪退"必须靠落盘才能查。路径与后端数据目录一致。
@@ -106,7 +114,7 @@ static SIDECAR_PID: Mutex<Option<u32>> = Mutex::new(None);
 
 fn sidecar_pid_file() -> PathBuf {
   SIDECAR_PID_FILE
-    .get_or_init(|| std::env::temp_dir().join("arona-chest.momoka.sidecar.pid"))
+    .get_or_init(|| std::env::temp_dir().join("moduty.momoka.sidecar.pid"))
     .clone()
 }
 
@@ -162,7 +170,7 @@ fn main() {
   let spike = std::env::args().any(|arg| arg == "--webview-spike");
   tauri::Builder::default()
     .setup(move |app| {
-      let port_file = std::env::temp_dir().join("arona-chest.momoka.port");
+      let port_file = std::env::temp_dir().join("moduty.momoka.port");
       // 清掉上一轮的端口文件（孤儿 sidecar 的清理挪到后台线程，别拖慢窗口出现）
       let _ = fs::remove_file(&port_file);
 
@@ -279,7 +287,8 @@ fn main() {
 
       app.manage(MomokaServerState {
         port_file,
-        resolved_port: Mutex::new(None),
+        // 与探测线程共享同一个 Arc；原先这里传的是 Mutex::new(None)，回退分支因此永远为空
+        resolved_port,
       });
 
       // 系统通知：补齐 Windows 需要的 AUMID 环境（开始菜单快捷方式 + AppUserModelId 注册项）。
@@ -361,22 +370,57 @@ fn notify_toast(
 }
 
 /// 前端调用：返回后端真实监听端口。
-/// 优先读端口文件；若探测线程尚未写完，fallback 到内存中的探测结果。
+///
+/// **未就绪时等待，而不是立刻报错。** 窗口出现早于后台探测线程：探测线程起步先等
+/// `kill_previous_sidecar` 释放端口（300ms），之后还要扫端口、必要时拉起 sidecar 并等它
+/// 变健康（冷启动实测可达数秒）。早先这里直接返回 Err，而前端只在 mount 时取一次端口、
+/// 失败不回退，界面就停在 "momoka-server not ready yet"（2026-10-01 实测）。
+/// 现在最多等 PORT_WAIT_MS，把这段竞态挡在命令内部：调用方要么拿到真端口，
+/// 要么拿到一个带日志路径、能直接去查的错误。
 #[tauri::command]
-fn get_momoka_port(state: tauri::State<MomokaServerState>) -> Result<u16, String> {
-  // 诊断用：前端每次解析 API base 都会走到这里（保留，便于排查“界面连不上后端”）
-  log("[port] get_momoka_port invoked");
-  if let Ok(content) = fs::read_to_string(&state.port_file) {
+async fn get_momoka_port(state: tauri::State<'_, MomokaServerState>) -> Result<u16, String> {
+  let port_file = state.port_file.clone();
+  let resolved_port = state.resolved_port.clone();
+  // 同步轮询丢到阻塞线程池：不能占住 async 运行时的 worker
+  tauri::async_runtime::spawn_blocking(move || wait_for_ready_port(&port_file, &resolved_port))
+    .await
+    .map_err(|err| format!("等待后端端口就绪的任务失败：{err}"))?
+}
+
+/// 端口就绪的判据：端口文件里有有效端口，或探测线程已在内存里记下结果。
+fn ready_port(port_file: &Path, resolved_port: &Mutex<Option<u16>>) -> Option<u16> {
+  if let Ok(content) = fs::read_to_string(port_file) {
     if let Ok(port) = content.trim().parse::<u16>() {
-      return Ok(port);
+      return Some(port);
     }
   }
-  if let Ok(guard) = state.resolved_port.lock() {
-    if let Some(port) = *guard {
+  resolved_port.lock().ok().and_then(|guard| *guard)
+}
+
+/// 轮询等待后端就绪。成功与超时都落盘——发布版没有控制台，日志是唯一的现场。
+fn wait_for_ready_port(port_file: &Path, resolved_port: &Mutex<Option<u16>>) -> Result<u16, String> {
+  let started = std::time::Instant::now();
+  let deadline = started + Duration::from_millis(PORT_WAIT_MS);
+  loop {
+    if let Some(port) = ready_port(port_file, resolved_port) {
+      log(format!(
+        "[port] get_momoka_port 就绪：{port}（等待 {}ms）",
+        started.elapsed().as_millis()
+      ));
       return Ok(port);
     }
+    if std::time::Instant::now() >= deadline {
+      let message = format!(
+        "momoka-server 在 {}s 内没有就绪：端口文件 {} 读不到有效端口，探测线程也没有结果。请查 {} 里的 [boot]/[sidecar] 行，确认 sidecar 是启动失败还是候选端口全被占。",
+        PORT_WAIT_MS / 1000,
+        port_file.display(),
+        log_file_path().display()
+      );
+      log(format!("[port] 超时：{message}"));
+      return Err(message);
+    }
+    thread::sleep(Duration::from_millis(PORT_POLL_MS));
   }
-  Err("momoka-server not ready yet (port probe still in progress)".to_string())
 }
 
 /// sidecar 在候选端口上的归宿。

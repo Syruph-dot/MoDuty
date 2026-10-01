@@ -209,8 +209,6 @@ export interface BrowserInfo {
   lastActiveAt: string;
   profileDir: string | null;
   error?: string;
-  /** 磁贴内嵌：页面是嵌在应用窗口里的原生子 webview（不是帧投影） */
-  embedded?: boolean;
-  /** 实际使用的传输后端（playwright / cdp / bridge），用于排查“用的哪条路” */
+  /** 实际使用的传输后端；当前只有 bridge（WebView2 桥，页面嵌在磁贴里） */
   transport?: string;
 }

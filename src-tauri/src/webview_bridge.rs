@@ -13,7 +13,7 @@
 //! - HTTP 端点：给后端用（后端负责页面操作与 CDP）。
 //!
 //! 已知取舍：
-//! - token 文件放在 `%TEMP%`，与既有的 `arona-chest.momoka.port` 同目录同权限；
+//! - token 文件放在 `%TEMP%`，与既有的 `moduty.momoka.port` 同目录同权限；
 //! - 端点绑 `127.0.0.1` + 端口 0（随机），进程退出即消失；
 //! - `MOMOKA_WEBVIEW_BRIDGE=0` 可整体关闭。
 
@@ -65,7 +65,7 @@ fn bridge_slot() -> &'static Mutex<Option<BridgeHandle>> {
 /// token 文件路径。后端 sidecar 读它拿到端口与 token。
 pub fn bridge_file_path() -> PathBuf {
   let mut dir = std::env::temp_dir();
-  dir.push("arona-chest.momoka.bridge");
+  dir.push("moduty.momoka.bridge");
   dir
 }
 

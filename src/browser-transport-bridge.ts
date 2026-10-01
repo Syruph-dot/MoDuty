@@ -43,7 +43,7 @@ import type {
 
 /** 桥的注册文件（Rust 侧 `webview_bridge::bridge_file_path()` 写它） */
 export function bridgeFilePath(): string {
-  return path.join(process.env.MOMOKA_BRIDGE_FILE?.trim() || os.tmpdir(), "arona-chest.momoka.bridge");
+  return path.join(process.env.MOMOKA_BRIDGE_FILE?.trim() || os.tmpdir(), "moduty.momoka.bridge");
 }
 
 interface BridgeHandle {
@@ -290,10 +290,6 @@ class BridgeSession implements BrowserSession {
 
   tabsHint(fallback: number): number {
     return this.closed ? fallback : 1;
-  }
-
-  nativeHandles(): { context: unknown; page: unknown } {
-    return { context: null, page: null };
   }
 
   async close(): Promise<void> {

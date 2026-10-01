@@ -21,8 +21,6 @@ export interface BrowserViewController {
   streamError: string | null;
   navigate: (rawUrl?: string) => Promise<void>;
   refresh: () => void;
-  /** 磁贴内嵌：画面由原生子 webview 直接绘制，DOM 里只留一个矩形占位 */
-  embedded: boolean;
 }
 
 export function useBrowserView(browser: BrowserInfo): BrowserViewController {
@@ -89,7 +87,7 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
     if (browserState.url) void navigate(browserState.url);
   };
 
-  return { browserState, busy, address, setAddress, streamError, navigate, refresh, embedded: browser.embedded === true };
+  return { browserState, busy, address, setAddress, streamError, navigate, refresh };
 }
 
 /**
@@ -103,9 +101,8 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
  *
  * 用 rAF 跟框而不是只靠 ResizeObserver：磁贴是拖拽定位的，位置变化不触发 size 观察。
  */
-function useNativeWebview(enabled: boolean, browserId: string, targetRef: React.RefObject<HTMLDivElement | null>): void {
+function useNativeWebview(browserId: string, targetRef: React.RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
-    if (!enabled) return undefined;
     const label = webviewLabelFor(browserId);
     let raf = 0;
     let lastBounds = "";
@@ -137,13 +134,13 @@ function useNativeWebview(enabled: boolean, browserId: string, targetRef: React.
       // 宿主卸载（关窗口 / 切走标签）时把原生视图收起来——React 管不到它
       void setWebviewVisible(label, false).catch(() => undefined);
     };
-  }, [enabled, browserId, targetRef]);
+  }, [browserId, targetRef]);
 }
 
 export default function BrowserView({ browser }: { browser: BrowserInfo }) {
-  const { browserState, busy, address, setAddress, streamError, navigate, refresh, embedded } = useBrowserView(browser);
+  const { browserState, busy, address, setAddress, streamError, navigate, refresh } = useBrowserView(browser);
   const viewportRef = useRef<HTMLDivElement>(null);
-  useNativeWebview(embedded, browser.id, viewportRef);
+  useNativeWebview(browser.id, viewportRef);
 
   return (
     <div className="browser-view">
@@ -169,27 +166,15 @@ export default function BrowserView({ browser }: { browser: BrowserInfo }) {
       </div>
 
       <div className="browser-window__viewport" ref={viewportRef}>
-        {embedded ? (
-          // 内嵌：这块矩形会被原生子 webview 盖住，DOM 里不需要画任何东西
-          <div className="browser-window__placeholder browser-window__placeholder--embedded">
-            {browserState.state === "error" ? (
-              <p className="browser-window__error-text">{browserState.error ?? streamError ?? "浏览器启动失败"}</p>
-            ) : (
-              <p>{streamError ? `内嵌视图错误：${streamError}` : "页面由原生 webview 直接绘制"}</p>
-            )}
-          </div>
-        ) : (
-          // 没有 Tauri 壳（浏览器 dev 入口）时无法内嵌渲染。
-          // 不提供帧投影回退：那条路已被否决，两种渲染路径共存只会长期腐烂。
-          <div className="browser-window__placeholder">
-            <p className="browser-window__error-text">当前入口没有 Tauri 壳，无法内嵌渲染真实页面。</p>
-            <p>帧投影（screencast）是已否决的方案，不再作为回退。</p>
-            <p>要看真实页面请启动 Tauri 壳：npm run dev，或直接跑构建好的 arona-chest.exe。</p>
-            {browserState.state === "error" ? (
-              <p className="browser-window__error-text">{browserState.error ?? streamError ?? "浏览器启动失败"}</p>
-            ) : null}
-          </div>
-        )}
+        {/* 页面一律由原生子 webview 直接绘制：这块矩形被它盖住，DOM 里不画任何东西。
+            桥不可用时后端会把 state 置为 error 并给出原因，第一行就是它。 */}
+        <div className="browser-window__placeholder browser-window__placeholder--embedded">
+          {browserState.state === "error" ? (
+            <p className="browser-window__error-text">{browserState.error ?? streamError ?? "浏览器启动失败"}</p>
+          ) : (
+            <p>{streamError ? `内嵌视图错误：${streamError}` : "页面由原生 webview 直接绘制"}</p>
+          )}
+        </div>
         {busy ? <div className="browser-window__busy">导航中…</div> : null}
       </div>
 

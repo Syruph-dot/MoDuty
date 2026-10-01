@@ -3,7 +3,7 @@
   "productName": "MoDuty",
   "mainBinaryName": "MoDuty",
   "version": "0.1.0",
-  "identifier": "com.aronachest.app",
+  "identifier": "com.moduty.app",
   "build": {
     "beforeDevCommand": "npm --prefix desktop run dev",
     "beforeBuildCommand": "npm --prefix desktop run build",

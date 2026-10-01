@@ -1,4 +1,4 @@
-﻿# run-all.ps1 — Arona Chest / MOMOKA TS 一键启动脚本
+﻿# run-all.ps1 — MoDuty / MOMOKA TS 一键启动脚本
 # 职责：检查依赖 → 清理 7238/6429 端口 → 启动后端(7238) + 桌面前端(6429) → 就绪提示
 # 用法：在项目根执行  ./run-all.ps1   （Ctrl+C 同时退出前后端）
 # 说明：旧版 run-all.ps1 已随 commit f661983 由 npm run dev(dev-all.mjs) 取代，
@@ -8,10 +8,10 @@ $ErrorActionPreference = "Continue"
 $ProjectRoot = $PSScriptRoot
 Set-Location $ProjectRoot
 
-$Host.UI.RawUI.WindowTitle = "Arona Chest dev (7238 + 6429)"
+$Host.UI.RawUI.WindowTitle = "MoDuty dev (7238 + 6429)"
 
 Write-Host ""
-Write-Host "=== Arona Chest / MOMOKA TS 启动 ===" -ForegroundColor Cyan
+Write-Host "=== MoDuty / MOMOKA TS 启动 ===" -ForegroundColor Cyan
 Write-Host "项目根: $ProjectRoot"
 
 # ---- 0. 环境检查 ----

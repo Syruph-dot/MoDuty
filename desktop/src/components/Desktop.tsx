@@ -105,6 +105,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const hydrateBrowser = useBrowserStore((state) => state.hydrate);
   const createBrowser = useBrowserStore((state) => state.createBrowser);
   const deleteBrowser = useBrowserStore((state) => state.deleteBrowser);
+  const browserError = useBrowserStore((state) => state.error);
   const openBrowser = useBrowserStore((state) => state.openBrowser);
   const closeBrowser = useBrowserStore((state) => state.closeBrowser);
   const applyBrowserEvent = useBrowserStore((state) => state.applyBrowserEvent);
@@ -1266,7 +1267,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
           />
         </>
       ) : null}
-      {error ? <p className="tile-wall__error" role="alert">{error}</p> : null}
+      {error || browserError ? <p className="tile-wall__error" role="alert">{error || browserError}</p> : null}
 
       {loading && agents.length === 0 ? (
         <p className="tile-wall__hint" role="status" aria-busy="true">

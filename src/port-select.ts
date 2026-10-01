@@ -17,7 +17,7 @@ export const DEFAULT_PORT_TRIES = 10;
 
 /** 后端真实监听的端口写在这里；桌面壳与 dev 前端都读它。 */
 export function defaultPortFile(): string {
-  return path.join(os.tmpdir(), "arona-chest.momoka.port");
+  return path.join(os.tmpdir(), "moduty.momoka.port");
 }
 
 export type PortStatus = "free" | "momoka" | "other";

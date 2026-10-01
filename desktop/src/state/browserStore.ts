@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 import { browserAction, createBrowser as apiCreateBrowser, deleteBrowser as apiDeleteBrowser, listBrowsers } from "../lib/api";
 import { spawnXToCol } from "../lib/persistTiles";
-import { webviewBridgeInfo } from "../lib/webviewBridge";
 import { useTileStore } from "./tileStore";
 import type { BrowserInfo, TileGrid } from "../types";
 import type { BrowserServiceEvent } from "../lib/browserEvents";
@@ -16,6 +15,8 @@ interface BrowserStore {
   browsers: BrowserInfo[];
   /** 已打开的浏览器磁贴 id（打开顺序） */
   openBrowserIds: string[];
+  /** 新建浏览器失败的原因（例如没有 Tauri 壳 → 没有 WebView2 桥），桌面顶部展示 */
+  error: string | null;
   hydrate: () => Promise<void>;
   createBrowser: (input: { name?: string; mode?: "persistent" | "incognito" }) => Promise<BrowserInfo | null>;
   deleteBrowser: (id: string) => Promise<void>;
@@ -31,6 +32,7 @@ interface BrowserStore {
 export const useBrowserStore = create<BrowserStore>()((set) => ({
   browsers: [],
   openBrowserIds: [],
+  error: null,
 
   async hydrate() {
     // 读取失败 ≠ 服务端为空：失败时直接放弃本次对账，保留本地磁贴（含分组归属），
@@ -53,17 +55,22 @@ export const useBrowserStore = create<BrowserStore>()((set) => ({
   },
 
   async createBrowser(input) {
-    // 判断是否走磁贴内嵌：只有 Tauri 壳里才有原生 webview 桥；
-    // 浏览器 dev 入口（无壳）继续用外部浏览器 + 帧流投影
-    const bridge = await webviewBridgeInfo();
-    const browser = await apiCreateBrowser({
-      mode: input.mode ?? "persistent",
-      name: input.name,
-      ...(bridge.enabled ? { embedded: true } : {}),
-    });
-    useTileStore.getState().ensureTile(browser.id, "browser", { colHint: spawnXToCol(0) });
-    set((state) => ({ browsers: [browser, ...state.browsers] }));
-    return browser;
+    // 页面一律磁贴内嵌（WebView2 桥），不再有“内嵌 / 外部浏览器”二选一。
+    // 桥不在时后端会给出明确原因，这里把它存起来给桌面顶部展示——不往外抛：
+    // 调用方（右键菜单）没有 catch，抛出去只会变成一句无人看见的 unhandled rejection。
+    try {
+      const browser = await apiCreateBrowser({
+        mode: input.mode ?? "persistent",
+        name: input.name,
+      });
+      useTileStore.getState().ensureTile(browser.id, "browser", { colHint: spawnXToCol(0) });
+      set((state) => ({ browsers: [browser, ...state.browsers], error: null }));
+      return browser;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: `新建浏览器失败：${message}` });
+      return null;
+    }
   },
 
   async deleteBrowser(id) {

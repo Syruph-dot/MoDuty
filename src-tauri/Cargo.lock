@@ -48,21 +48,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "arona-chest"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-winrt-notification",
- "webview2-com",
- "windows",
- "winreg 0.52.0",
-]
-
-[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1829,6 +1814,21 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "moduty"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-winrt-notification",
+ "webview2-com",
+ "windows",
+ "winreg 0.52.0",
 ]
 
 [[package]]

@@ -3,13 +3,15 @@
  *
  * - 每个实例 = 一个浏览器磁贴：独立浏览器 profile（persistent 持久化登录态，
  *   incognito 关掉即毁）。
- * - 页面操作全部委托给可替换的**传输后端**（`browser-transport.ts`）：
- *   `browser-service` 只负责实例注册表、profile 目录、ref 映射、事件与错误转译。
- *   这样做的直接原因是打包运行时换成了 bun，而 Playwright 的传输层在 bun 下不工作。
- * - 页面渲染仍用 CDP screencast 帧流推给磁贴（<img> 实时画面）；用户点击坐标 →
- *   鼠标事件注入（真实浏览器，非 iframe）。原生 webview 内嵌见落地计划 Phase 2(b)/3。
+ * - 页面操作委托给**传输后端**（`browser-transport.ts`）：`browser-service` 只负责实例
+ *   注册表、profile 目录、ref 映射、事件与错误转译。
+ * - **页面一律磁贴内嵌**：只有 WebView2 桥一条传输（Rust 侧在应用窗口里创建子 webview，
+ *   页面直接画在磁贴上）。不存在“开一个外部浏览器窗口”这种形态，所以桥不可用
+ *   （例如浏览器 dev 入口没有 Tauri 壳）就是**明确的运行环境错误**，不静默降级。
+ *   历史上还有 Playwright / CDP 两条外部浏览器传输，2026-10-01 随“只做磁贴化”删除。
  * - Agent 通过 browse_* 工具引用 browser_id 操作同一实例——浏览器与 Agent 解耦。
- * - 引擎：复用系统 Edge（Windows WebView2 同源，发布无需打包浏览器）。
+ * - 引擎：系统 Edge 的 WebView2（与 Tauri 壳同源，发布无需打包浏览器）。
+ *   登录态持久化走 WebView2 的 `data_directory`（见 `webview_bridge.rs`）。
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -17,12 +19,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { BrowserLaunchOptions, BrowserSession, BrowserTransport } from "./browser-transport.js";
-import { resolveBrowserExecutable } from "./browser-transport.js";
-import { playwrightTransport } from "./browser-transport-playwright.js";
-import { cdpTransport } from "./browser-transport-cdp.js";
 import { bridgeTransport } from "./browser-transport-bridge.js";
-// 仅类型：给 getContext/getPage 这个逃生艇签名用，不引入运行期耦合
-import type { BrowserContext, Page } from "playwright-core";
 
 export type BrowserMode = "persistent" | "incognito";
 export type BrowserInstanceState = "closed" | "launching" | "ready" | "error";
@@ -44,10 +41,6 @@ export interface BrowserInstanceInfo {
   error?: string;
   /** 实际使用的传输后端 */
   transport?: BrowserTransportName;
-  /** 是否磁贴内嵌（true = 页面嵌在应用窗口里；false = 外部浏览器窗口） */
-  embedded?: boolean;
-  /** 实际使用的浏览器可执行文件（解析不到时为空，见 resolveBrowserExecutable 的说明） */
-  executablePath?: string;
 }
 
 export interface SnapshotTree {
@@ -66,57 +59,21 @@ interface RuntimeInstance {
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 
 /**
- * 传输后端候选，按优先级：
- * - node / tsx（dev 与测试）：优先 Playwright，行为与改动前一致；
- * - bun（发行版 sidecar）：Playwright 不可用，自动落到 CDP。
- * 可用 MOMOKA_BROWSER_TRANSPORT 显式指定，用来在 dev 下强制验证 CDP 传输。
- */
-function buildTransports(): BrowserTransport[] {
-  // 顺序即优先级（仅用于外部浏览器场景）：node 下优先 Playwright（与历史行为一致），
-  // bun 下它不可用、自动落到 CDP。磁贴内嵌不走这个顺序，见 selectTransport。
-  return [playwrightTransport, cdpTransport, bridgeTransport];
-}
-
-/**
- * 是否无头。
+ * 唯一的传输后端：WebView2 桥（页面嵌在磁贴里）。
  *
- * 默认值是**分传输**的：Playwright 路径保持历史行为（无头），CDP 路径有头，
- * 因为 CDP 有头启动才能同时拿到干净 UA（无 `HeadlessChrome`）与 `webdriver=false`。
- * `MOMOKA_BROWSER_HEADLESS=1|0` 可显式覆盖。
+ * 不再有候选列表与运行时优先级（原先 node 优先 Playwright、bun 落到 CDP，那两条都是
+ * 外部浏览器窗口）。桥不在就是运行环境不满足，直接报错——静默降级只会让用户看到
+ * “磁贴里没画面”这种更难懂的状态。
  */
-function resolveHeadless(transportName: BrowserTransport["name"]): boolean {
-  const raw = process.env.MOMOKA_BROWSER_HEADLESS?.trim();
-  if (raw === "1" || raw === "true") return true;
-  if (raw === "0" || raw === "false") return false;
-  return transportName !== "cdp";
-}
-
-function selectTransport(options: { embedded: boolean }): BrowserTransport {
-  const list = buildTransports();
-  const forced = process.env.MOMOKA_BROWSER_TRANSPORT?.trim();
-  if (forced) {
-    const match = list.find((transport) => transport.name === forced);
-    if (!match) throw new Error(`MOMOKA_BROWSER_TRANSPORT=${forced} 不是已知传输（候选：${list.map((t) => t.name).join(" / ")}）`);
-    if (!match.isAvailable()) throw new Error(`MOMOKA_BROWSER_TRANSPORT=${forced} 在当前运行时不可用`);
-    return match;
+function selectTransport(): BrowserTransport {
+  if (!bridgeTransport.isAvailable()) {
+    throw new Error(
+      "受管浏览器要把页面嵌进磁贴，需要 Tauri 壳提供的 WebView2 桥，但当前进程里没有桥。"
+        + "请用打包版 MoDuty.exe，或用 `npx tauri dev` 起壳后再打开浏览器磁贴；"
+        + "`npm run dev` 只起后端与 Vite，在浏览器里打开的前端没有壳。",
+    );
   }
-  // 磁贴内嵌与外部浏览器是两条路，不互相回落：
-  // embedded 时页面必须嵌在应用窗口里，桥不在就明确报错，否则用户会看到“磁贴里没画面”这种诡异状态
-  if (options.embedded) {
-    if (!bridgeTransport.isAvailable()) {
-      throw new Error(
-        "磁贴内嵌需要 WebView2 桥（只在 Tauri 壳启动时才有）。找不到桥的注册文件；"
-        + "若只想开外部浏览器窗口，请用 embedded=false 建实例。",
-      );
-    }
-    return bridgeTransport;
-  }
-  const available = list.filter((transport) => transport.name !== "bridge").find((transport) => transport.isAvailable());
-  if (!available) {
-    const names = list.map((transport) => transport.name).join(" / ");
-    throw new Error(`没有可用的浏览器传输后端（候选：${names}）；当前运行时 ${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`}`);
-  }
-  return available;
+  return bridgeTransport;
 }
 
 function profileRoot(): string {
@@ -247,23 +204,8 @@ export class BrowserService {
     return runtime ? this.view(runtime) : null;
   }
 
-  /**
-   * 逃生艇：拿传输原生的上下文 / 页面句柄。
-   *
-   * 供需要 Playwright 特有能力（如 Cookie API：`context.addCookies` / `context.cookies`）的
-   * 调用方使用（当前调用方是「同一个 persistent profile 跨重启保留登录态」的测试）。
-   * CDP 传输下会返回 null；持久化登录态的可移植断言应在 Phase 4 改为传输无关的 Cookie API。
-   */
-  getContext(id: string): BrowserContext | null {
-    return (this.instances.get(id)?.session?.nativeHandles().context as BrowserContext | null | undefined) ?? null;
-  }
-
-  getPage(id: string): Page | null {
-    return (this.instances.get(id)?.session?.nativeHandles().page as Page | null | undefined) ?? null;
-  }
-
   /** 创建实例（不启动；磁贴打开时才 launch）。persistent 模式建立持久化 profile 目录。 */
-  async createInstance(input: { name?: string; mode?: BrowserMode; embedded?: boolean }): Promise<BrowserInstanceInfo> {
+  async createInstance(input: { name?: string; mode?: BrowserMode }): Promise<BrowserInstanceInfo> {
     const id = `brw_${randomUUID().slice(0, 12)}`;
     const mode: BrowserMode = input.mode === "incognito" ? "incognito" : "persistent";
     const now = new Date().toISOString();
@@ -272,7 +214,6 @@ export class BrowserService {
       id,
       name,
       mode,
-      embedded: input.embedded === true,
       state: "closed",
       url: null,
       title: null,
@@ -359,19 +300,16 @@ export class BrowserService {
     }
     runtime.info.state = "launching";
     try {
-      const transport = selectTransport({ embedded: runtime.info.embedded === true });
-      const { executablePath } = resolveBrowserExecutable();
+      const transport = selectTransport();
       const options: BrowserLaunchOptions = {
         profileDir: runtime.info.profileDir,
         viewport: { ...DEFAULT_VIEWPORT },
-        headless: resolveHeadless(transport.name),
         browserId: runtime.info.id,
       };
       const session = await transport.launch(options);
       runtime.session = session;
       runtime.info.state = "ready";
       runtime.info.transport = transport.name;
-      runtime.info.executablePath = executablePath;
       runtime.info.lastActiveAt = new Date().toISOString();
       const meta = await session.meta().catch(() => null);
       runtime.info.tabs = meta?.tabs ?? 1;
@@ -554,6 +492,6 @@ export class BrowserService {
 export const browserService = new BrowserService();
 
 /** 供测试/诊断：当前会选中的传输后端名 */
-export function currentTransportName(options: { embedded?: boolean } = {}): BrowserTransportName {
-  return selectTransport({ embedded: options.embedded === true }).name;
+export function currentTransportName(): BrowserTransportName {
+  return selectTransport().name;
 }

@@ -30,7 +30,7 @@ use windows::Win32::UI::Shell::{SetCurrentProcessExplicitAppUserModelID, IShellL
 
 /// 与 tauri.conf.json 的 bundle.identifier 一致：安装版与开发版共用同一个 AUMID，
 /// 这样通知的来源名/图标是同一个应用，用户不会看到两个不同的"发送者"。
-const AUMID: &str = "com.aronachest.app";
+const AUMID: &str = "com.moduty.app";
 const APP_NAME: &str = "MoDuty";
 const SHORTCUT_FILE_NAME: &str = "MoDuty.lnk";
 

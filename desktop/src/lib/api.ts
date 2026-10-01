@@ -342,7 +342,7 @@ export async function listBrowsers(): Promise<BrowserInfo[]> {
   return data.browsers;
 }
 
-export async function createBrowser(input: { name?: string; mode?: "persistent" | "incognito"; embedded?: boolean }): Promise<BrowserInfo> {
+export async function createBrowser(input: { name?: string; mode?: "persistent" | "incognito" }): Promise<BrowserInfo> {
   const base = await awaitApiBase();
   const data = (await jsonOrThrow(
     await fetch(`${base}/api/browsers`, {

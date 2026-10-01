@@ -1,11 +1,11 @@
 [package]
-name = "arona-chest"
+name = "moduty"
 version = "0.1.0"
-description = "Arona Chest — borderless fullscreen local tile-wall shell (powered by MOMOKA Agent core)"
-authors = ["Arona Chest"]
+description = "MoDuty — borderless fullscreen local tile-wall shell (powered by MOMOKA Agent core)"
+authors = ["MoDuty"]
 license = ""
 repository = ""
-default-run = "arona-chest"
+default-run = "moduty"
 edition = "2021"
 rust-version = "1.60"
 

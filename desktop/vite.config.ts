@@ -12,7 +12,7 @@ import react from "@vitejs/plugin-react";
  */
 function backendTarget(): string {
   try {
-    const port = Number(readFileSync(join(tmpdir(), "arona-chest.momoka.port"), "utf-8").trim());
+    const port = Number(readFileSync(join(tmpdir(), "moduty.momoka.port"), "utf-8").trim());
     if (Number.isFinite(port) && port > 0) return `http://127.0.0.1:${port}`;
   } catch {
     /* 后端还没起来，用兜底 */

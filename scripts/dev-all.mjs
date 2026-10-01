@@ -53,7 +53,7 @@ process.on("SIGTERM", () => shutdown(false));
 // 后端不再固定端口：它会自己挑一个空闲端口（Windows 上强杀进程留下的残留监听会占着
 // 候选端口，写死端口的表现就是"启动即闪退"）。前端通过 VITE_MOMOKA_API 直接连它，
 // 所以这里等端口文件出现后再起前端。
-const portFile = path.join(os.tmpdir(), "arona-chest.momoka.port");
+const portFile = path.join(os.tmpdir(), "moduty.momoka.port");
 console.log(`[dev-all] 启动 MOMOKA dev 环境：backend 自动挑端口 + frontend http://localhost:6429（Ctrl+C 停止全部）`);
 console.log(`[dev-all] 后端端口写入 ${portFile}`);
 

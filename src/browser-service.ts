@@ -383,6 +383,8 @@ export class BrowserService {
       runtime.info.state = "error";
       runtime.info.error = error instanceof Error ? error.message : String(error);
       runtime.session = null;
+      // 必须广播：否则前端永远停在"加载中"（它没有轮询，只靠事件更新）
+      this.emit({ type: "browser_state", browser: { ...runtime.info } });
       throw new Error(`浏览器启动失败: ${runtime.info.error}`);
     }
   }

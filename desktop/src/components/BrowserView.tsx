@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { awaitApiBase, browserAction } from "../lib/api";
+import { browserAction, listBrowsers } from "../lib/api";
 import { setWebviewBounds, setWebviewVisible, toPhysicalRect, webviewLabelFor } from "../lib/webviewBridge";
 import { useBrowserStore } from "../state/browserStore";
 import type { BrowserInfo } from "../types";
@@ -15,14 +15,12 @@ import type { BrowserInfo } from "../types";
 
 export interface BrowserViewController {
   browserState: BrowserInfo;
-  frame: string | null;
   busy: boolean;
   address: string;
   setAddress: (value: string) => void;
   streamError: string | null;
   navigate: (rawUrl?: string) => Promise<void>;
   refresh: () => void;
-  clickFrame: (event: React.MouseEvent<HTMLImageElement>) => void;
   /** 磁贴内嵌：画面由原生子 webview 直接绘制，DOM 里只留一个矩形占位 */
   embedded: boolean;
 }
@@ -30,10 +28,8 @@ export interface BrowserViewController {
 export function useBrowserView(browser: BrowserInfo): BrowserViewController {
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const [address, setAddress] = useState(browser.url ?? "");
-  const [frame, setFrame] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const controllerRef = useRef<AbortController | null>(null);
   const [browserState, setBrowserState] = useState<BrowserInfo>(browser);
 
   const currentInfo = (info: BrowserInfo): void => {
@@ -41,10 +37,16 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
     updateBrowser(info);
   };
 
-  // 打开即启动 + 订阅帧流
+  /**
+   * 打开即启动。
+   *
+   * 只负责"把浏览器跑起来"：画面要么由原生子 webview 直接绘制（embedded），
+   * 要么根本渲染不了（浏览器 dev 入口，没有壳）。**不再订阅帧流**——
+   * 帧投影是已被否决的方案（画面不可操作、画质与坐标点击不可接受），
+   * 留着它当回退只会让两种渲染路径长期共存。
+   */
   useEffect(() => {
-    const bootAndStream = async (): Promise<void> => {
-      const base = await awaitApiBase();
+    const boot = async (): Promise<void> => {
       try {
         if (browser.state !== "ready") {
           const launched = (await browserAction<{ browser: BrowserInfo }>(browser.id, "launch")).browser;
@@ -52,59 +54,17 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
         }
       } catch (error) {
         setStreamError(error instanceof Error ? error.message : String(error));
-      }
-      if (browser.embedded) {
-        // 磁贴内嵌：页面是原生子 webview，不在 DOM 里，也没有帧流可订阅。
-        // 矩形跟随与显隐由 BrowserView 的同步循环负责（见下面的 useNativeWebview）。
-        return;
-      }
-      const controller = new AbortController();
-      controllerRef.current = controller;
-      try {
-        const res = await fetch(`${base}/api/browsers/${encodeURIComponent(browser.id)}/stream`, { signal: controller.signal });
-        if (!res.ok || !res.body) {
-          setStreamError(`流连接失败: ${res.status}`);
-          return;
-        }
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true }).replace(/^\s+/g, "");
-          let idx: number;
-          while ((idx = buffer.indexOf("\n\n")) >= 0) {
-            const block = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            for (const line of block.split("\n")) {
-              if (!line.startsWith("data: ")) continue;
-              try {
-                const frameData = JSON.parse(line.slice(6)) as Record<string, unknown>;
-                if (frameData.type === "frame" && typeof frameData.data_url === "string") {
-                  setFrame(frameData.data_url);
-                } else if (frameData.type === "info" && frameData.browser) {
-                  currentInfo(frameData.browser as BrowserInfo);
-                } else if (frameData.type === "error") {
-                  setStreamError(String(frameData.error ?? "stream error"));
-                }
-              } catch {
-                // 忽略坏帧
-              }
-            }
-          }
-        }
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setStreamError(error instanceof Error ? error.message : String(error));
+        // 启动失败时后端已广播 browser_state(error)，主动拉一次把状态同步到磁贴
+        try {
+          const list = await listBrowsers();
+          const fresh = list.find((item) => item.id === browser.id);
+          if (fresh) currentInfo(fresh);
+        } catch {
+          // 忽略：错误已经展示给用户了
         }
       }
     };
-    void bootAndStream();
-    return () => {
-      controllerRef.current?.abort();
-      controllerRef.current = null;
-    };
+    void boot();
     // 意图：仅挂载时启动一次；browser.state 由 currentInfo 持续更新
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browser.id]);
@@ -129,17 +89,7 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
     if (browserState.url) void navigate(browserState.url);
   };
 
-  const clickFrame = (event: React.MouseEvent<HTMLImageElement>): void => {
-    const img = event.currentTarget;
-    const rect = img.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * 1280;
-    const y = ((event.clientY - rect.top) / rect.height) * 800;
-    void browserAction(browser.id, "click_at", { x: Math.round(x), y: Math.round(y) }).catch((error) => {
-      setStreamError(error instanceof Error ? error.message : String(error));
-    });
-  };
-
-  return { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame, embedded: browser.embedded === true };
+  return { browserState, busy, address, setAddress, streamError, navigate, refresh, embedded: browser.embedded === true };
 }
 
 /**
@@ -191,7 +141,7 @@ function useNativeWebview(enabled: boolean, browserId: string, targetRef: React.
 }
 
 export default function BrowserView({ browser }: { browser: BrowserInfo }) {
-  const { browserState, frame, busy, address, setAddress, streamError, navigate, refresh, clickFrame, embedded } = useBrowserView(browser);
+  const { browserState, busy, address, setAddress, streamError, navigate, refresh, embedded } = useBrowserView(browser);
   const viewportRef = useRef<HTMLDivElement>(null);
   useNativeWebview(embedded, browser.id, viewportRef);
 
@@ -222,23 +172,22 @@ export default function BrowserView({ browser }: { browser: BrowserInfo }) {
         {embedded ? (
           // 内嵌：这块矩形会被原生子 webview 盖住，DOM 里不需要画任何东西
           <div className="browser-window__placeholder browser-window__placeholder--embedded">
-            <p>{streamError ? `内嵌视图错误：${streamError}` : "页面由原生 webview 直接绘制"}</p>
-          </div>
-        ) : frame ? (
-          <img
-            className="browser-window__frame"
-            src={frame}
-            alt="浏览器实时画面（可点击）"
-            onClick={clickFrame}
-            title="点击画面 = 在真实浏览器中点击该处"
-          />
-        ) : (
-          <div className="browser-window__placeholder">
             {browserState.state === "error" ? (
-              <p className="browser-window__error-text">{streamError ?? "浏览器启动失败"}</p>
+              <p className="browser-window__error-text">{browserState.error ?? streamError ?? "浏览器启动失败"}</p>
             ) : (
-              <p>{streamError ? `流错误：${streamError}` : "画面加载中…（首帧到达后显示）"}</p>
+              <p>{streamError ? `内嵌视图错误：${streamError}` : "页面由原生 webview 直接绘制"}</p>
             )}
+          </div>
+        ) : (
+          // 没有 Tauri 壳（浏览器 dev 入口）时无法内嵌渲染。
+          // 不提供帧投影回退：那条路已被否决，两种渲染路径共存只会长期腐烂。
+          <div className="browser-window__placeholder">
+            <p className="browser-window__error-text">当前入口没有 Tauri 壳，无法内嵌渲染真实页面。</p>
+            <p>帧投影（screencast）是已否决的方案，不再作为回退。</p>
+            <p>要看真实页面请启动 Tauri 壳：npm run dev，或直接跑构建好的 arona-chest.exe。</p>
+            {browserState.state === "error" ? (
+              <p className="browser-window__error-text">{browserState.error ?? streamError ?? "浏览器启动失败"}</p>
+            ) : null}
           </div>
         )}
         {busy ? <div className="browser-window__busy">导航中…</div> : null}

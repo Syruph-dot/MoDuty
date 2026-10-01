@@ -1,22 +1,32 @@
 /**
  * 受控浏览器服务（参考 agent-browser / Proma 受管浏览器模式）。
  *
- * - 每个实例 = 一个浏览器磁贴：独立 playright 浏览器上下文。
- * - 双模式：persistent（正常模式，userDataDir 持久化登录/Cookie，profile 存
- *   ~/.momoka/browser-profiles/<id>）与 incognito（无痕，临时目录，关闭即毁）。
- * - 页面渲染用 CDP screencast 帧流推给磁贴（<img> 实时画面）；用户点击坐标 →
- *   playwright mouse 注入（真实浏览器，非 iframe）。
+ * - 每个实例 = 一个浏览器磁贴：独立浏览器 profile（persistent 持久化登录态，
+ *   incognito 关掉即毁）。
+ * - 页面操作全部委托给可替换的**传输后端**（`browser-transport.ts`）：
+ *   `browser-service` 只负责实例注册表、profile 目录、ref 映射、事件与错误转译。
+ *   这样做的直接原因是打包运行时换成了 bun，而 Playwright 的传输层在 bun 下不工作。
+ * - 页面渲染仍用 CDP screencast 帧流推给磁贴（<img> 实时画面）；用户点击坐标 →
+ *   鼠标事件注入（真实浏览器，非 iframe）。原生 webview 内嵌见落地计划 Phase 2(b)/3。
  * - Agent 通过 browse_* 工具引用 browser_id 操作同一实例——浏览器与 Agent 解耦。
  * - 引擎：复用系统 Edge（Windows WebView2 同源，发布无需打包浏览器）。
  */
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import path from "node:path";
-import os from "node:os";
-import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import type { BrowserLaunchOptions, BrowserSession, BrowserTransport } from "./browser-transport.js";
+import { resolveBrowserExecutable } from "./browser-transport.js";
+import { playwrightTransport } from "./browser-transport-playwright.js";
+// 仅类型：给 getContext/getPage 这个逃生艇签名用，不引入运行期耦合
+import type { BrowserContext, Page } from "playwright-core";
 
 export type BrowserMode = "persistent" | "incognito";
 export type BrowserInstanceState = "closed" | "launching" | "ready" | "error";
+
+/** 传输后端名（便于排查"实际用的是哪条路"） */
+export type BrowserTransportName = BrowserTransport["name"];
 
 export interface BrowserInstanceInfo {
   id: string;
@@ -30,6 +40,10 @@ export interface BrowserInstanceInfo {
   lastActiveAt: string;
   profileDir: string | null;
   error?: string;
+  /** 实际使用的传输后端 */
+  transport?: BrowserTransportName;
+  /** 实际使用的浏览器可执行文件（解析不到时为空，见 resolveBrowserExecutable 的说明） */
+  executablePath?: string;
 }
 
 export interface SnapshotTree {
@@ -39,22 +53,39 @@ export interface SnapshotTree {
 
 interface RuntimeInstance {
   info: BrowserInstanceInfo;
-  context: BrowserContext | null;
-  page: Page | null;
+  session: BrowserSession | null;
   frameCallback: ((dataUrl: string) => void) | null;
   refMap: Record<string, string>;
   lastSnapshot: string;
 }
 
-const EDGE_CANDIDATES = [
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-];
+const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
 
-function resolveExecutable(): string | undefined {
-  return EDGE_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+/**
+ * 传输后端候选，按优先级：
+ * - node / tsx（dev 与测试）：优先 Playwright，行为与改动前一致；
+ * - bun（发行版 sidecar）：Playwright 不可用，自动落到 CDP。
+ * 可用 MOMOKA_BROWSER_TRANSPORT 显式指定，用来在 dev 下强制验证 CDP 传输。
+ */
+function buildTransports(): BrowserTransport[] {
+  return [playwrightTransport];
+}
+
+function selectTransport(): BrowserTransport {
+  const list = buildTransports();
+  const forced = process.env.MOMOKA_BROWSER_TRANSPORT?.trim();
+  if (forced) {
+    const match = list.find((transport) => transport.name === forced);
+    if (!match) throw new Error(`MOMOKA_BROWSER_TRANSPORT=${forced} 不是已知传输（候选：${list.map((t) => t.name).join(" / ")}）`);
+    if (!match.isAvailable()) throw new Error(`MOMOKA_BROWSER_TRANSPORT=${forced} 在当前运行时不可用`);
+    return match;
+  }
+  const available = list.find((transport) => transport.isAvailable());
+  if (!available) {
+    const names = list.map((transport) => transport.name).join(" / ");
+    throw new Error(`没有可用的浏览器传输后端（候选：${names}）；当前运行时 ${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`}`);
+  }
+  return available;
 }
 
 function profileRoot(): string {
@@ -72,7 +103,7 @@ function persistedInfo(id: string, name: string, createdAt: string): BrowserInst
   };
 }
 
-/** 把 Playwright 错误转译为 AI/用户友好消息（参考 agent-browser toAIFriendlyError） */
+/** 把传输层抛出的错误转译为 AI/用户友好消息（参考 agent-browser toAIFriendlyError） */
 export function toBrowserFriendlyError(error: unknown, hint?: string): string {
   const message = error instanceof Error ? error.message : String(error);
   const base = hint ? `${hint}: ${message}` : message;
@@ -127,14 +158,14 @@ export class BrowserService {
         const createdAt = typeof candidate.createdAt === "string" && !Number.isNaN(Date.parse(candidate.createdAt))
           ? candidate.createdAt : new Date().toISOString();
         const info = persistedInfo(id, typeof candidate.name === "string" && candidate.name.trim() ? candidate.name : "浏览器", createdAt);
-        this.instances.set(id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+        this.instances.set(id, { info, session: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
       }
     }
     // Older releases created profile directories without a registry. Recover them by stable directory ID.
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !BROWSER_ID_RE.test(entry.name) || this.instances.has(entry.name)) continue;
       const info = persistedInfo(entry.name, "浏览器", fs.statSync(path.join(root, entry.name)).birthtime.toISOString());
-      this.instances.set(info.id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+      this.instances.set(info.id, { info, session: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
     }
     this.persistRegistry();
   }
@@ -164,38 +195,40 @@ export class BrowserService {
     }
   }
 
+  /**
+   * 同步视图：`tabs` 用会话的同步提示刷新，保留"跟随用户新开标签"的原行为
+   * （`list()` / `getInfo()` 是同步签名，取不到就退回记录值）。
+   */
+  private view(runtime: RuntimeInstance): BrowserInstanceInfo {
+    const stale = runtime.info.state === "ready" && !runtime.session;
+    if (stale) runtime.info.state = "closed";
+    return { ...runtime.info, tabs: runtime.session?.tabsHint(runtime.info.tabs) ?? runtime.info.tabs };
+  }
+
   async list(): Promise<BrowserInstanceInfo[]> {
-    const infos: BrowserInstanceInfo[] = [];
-    for (const runtime of this.instances.values()) {
-      const stale = runtime.info.state === "ready" && !runtime.context;
-      if (stale) {
-        runtime.info.state = "closed";
-      }
-      infos.push({ ...runtime.info, tabs: runtime.context?.pages().length ?? runtime.info.tabs });
-    }
-    return infos.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    return [...this.instances.values()]
+      .map((runtime) => this.view(runtime))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
 
   getInfo(id: string): BrowserInstanceInfo | null {
     const runtime = this.instances.get(id);
-    return runtime ? { ...runtime.info, tabs: runtime.context?.pages().length ?? runtime.info.tabs } : null;
+    return runtime ? this.view(runtime) : null;
+  }
+
+  /**
+   * 逃生艇：拿传输原生的上下文 / 页面句柄。
+   *
+   * 供需要 Playwright 特有能力（如 Cookie API：`context.addCookies` / `context.cookies`）的
+   * 调用方使用（当前调用方是「同一个 persistent profile 跨重启保留登录态」的测试）。
+   * CDP 传输下会返回 null；持久化登录态的可移植断言应在 Phase 4 改为传输无关的 Cookie API。
+   */
+  getContext(id: string): BrowserContext | null {
+    return (this.instances.get(id)?.session?.nativeHandles().context as BrowserContext | null | undefined) ?? null;
   }
 
   getPage(id: string): Page | null {
-    const runtime = this.instances.get(id);
-    if (!runtime?.context || !runtime.page) {
-      return null;
-    }
-    // 跟随用户切换的 active tab：取前台页面（context.pages 最后一个通常是最近激活的）
-    const pages = runtime.context.pages();
-    if (!pages.includes(runtime.page) && pages.length > 0) {
-      runtime.page = pages[pages.length - 1];
-    }
-    return runtime.page;
-  }
-
-  getContext(id: string): BrowserContext | null {
-    return this.instances.get(id)?.context ?? null;
+    return (this.instances.get(id)?.session?.nativeHandles().page as Page | null | undefined) ?? null;
   }
 
   /** 创建实例（不启动；磁贴打开时才 launch）。persistent 模式建立持久化 profile 目录。 */
@@ -219,7 +252,7 @@ export class BrowserService {
     if (mode === "persistent") {
       fs.mkdirSync(info.profileDir!, { recursive: true });
     }
-    this.instances.set(id, { info, context: null, page: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
+    this.instances.set(id, { info, session: null, frameCallback: null, refMap: {}, lastSnapshot: "" });
     if (mode === "persistent") this.persistRegistry();
     this.emit({ type: "browser_created", browser: { ...info } });
     return { ...info };
@@ -246,15 +279,19 @@ export class BrowserService {
       return;
     }
     runtime.frameCallback = null;
-    if (runtime.context) {
-      await runtime.context.close().catch(() => undefined);
+    const session = runtime.session;
+    runtime.session = null;
+    if (session) {
+      await session.close().catch(() => undefined);
     }
-    runtime.context = null;
-    runtime.page = null;
     runtime.info.state = "closed";
     runtime.info.tabs = 0;
     runtime.info.lastActiveAt = new Date().toISOString();
     this.emit({ type: "browser_state", browser: { ...runtime.info } });
+  }
+
+  private requireSession(id: string): BrowserSession | null {
+    return this.instances.get(id)?.session ?? null;
   }
 
   /** 启动实例（打开磁贴时调用；幂等：已 ready 直接返回） */
@@ -263,50 +300,50 @@ export class BrowserService {
     if (!runtime) {
       throw new Error(`浏览器实例不存在: ${id}`);
     }
-    if (runtime.context) {
+    if (runtime.session) {
       return { ...runtime.info };
     }
     runtime.info.state = "launching";
     try {
-      const executablePath = resolveExecutable();
-      const context = await chromium.launchPersistentContext(runtime.info.profileDir ?? "", {
-        executablePath,
+      const transport = selectTransport();
+      const { executablePath } = resolveBrowserExecutable();
+      const options: BrowserLaunchOptions = {
+        profileDir: runtime.info.profileDir,
+        viewport: { ...DEFAULT_VIEWPORT },
         headless: true,
-        viewport: { width: 1280, height: 800 },
-        deviceScaleFactor: 1,
-      });
-      const pages = context.pages();
-      const page = pages[0] ?? (await context.newPage());
-      runtime.context = context;
-      runtime.page = page;
+      };
+      const session = await transport.launch(options);
+      runtime.session = session;
       runtime.info.state = "ready";
+      runtime.info.transport = transport.name;
+      runtime.info.executablePath = executablePath;
       runtime.info.lastActiveAt = new Date().toISOString();
-      runtime.info.tabs = context.pages().length;
-      runtime.info.title = (await page.title().catch(() => null)) ?? "";
+      const meta = await session.meta().catch(() => null);
+      runtime.info.tabs = meta?.tabs ?? 1;
+      runtime.info.title = meta?.title ?? "";
+      runtime.info.url = meta?.url ?? runtime.info.url;
       this.emit({ type: "browser_state", browser: { ...runtime.info } });
       return { ...runtime.info };
     } catch (error) {
       runtime.info.state = "error";
       runtime.info.error = error instanceof Error ? error.message : String(error);
-      runtime.context = null;
-      runtime.page = null;
+      runtime.session = null;
       throw new Error(`浏览器启动失败: ${runtime.info.error}`);
     }
   }
 
   async navigate(id: string, url: string, waitUntil: "load" | "domcontentloaded" | "commit" = "domcontentloaded"): Promise<{ url: string; title: string } | null> {
-    const page = this.getPage(id);
-    if (!page) {
+    const runtime = this.instances.get(id);
+    const session = runtime?.session;
+    if (!runtime || !session) {
       return null;
     }
-    const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
-    await page.goto(normalized, { waitUntil, timeout: 30_000 });
-    const info = this.instances.get(id)!;
-    info.info.url = page.url();
-    info.info.title = await page.title().catch(() => "");
-    info.info.lastActiveAt = new Date().toISOString();
-    info.info.tabs = info.context?.pages().length ?? 1;
-    return { url: page.url(), title: info.info.title ?? "" };
+    const meta = await session.navigate(url, waitUntil, 30_000);
+    runtime.info.url = meta.url;
+    runtime.info.title = meta.title;
+    runtime.info.lastActiveAt = new Date().toISOString();
+    runtime.info.tabs = meta.tabs;
+    return { url: meta.url, title: meta.title };
   }
 
   /**
@@ -315,74 +352,11 @@ export class BrowserService {
    * 每个元素生成唯一 CSS selector；ref = [i] 序号，click/fill 可用 ref 或 selector。
    */
   async snapshot(id: string, maxNodes = 120): Promise<SnapshotTree | null> {
-    const page = this.getPage(id);
-    if (!page) {
+    const session = this.requireSession(id);
+    if (!session) {
       return null;
     }
-    // 字符串形式执行（绕开 esbuild 对模块内函数注入的 __name helper，浏览器端无法解析）
-    const items = (await page.evaluate(`(() => {
-      const max = ${maxNodes};
-      const out = [];
-      const uniqueId = (el) => {
-        if (el.id) return '#' + CSS.escape(el.id);
-        return '';
-      };
-      const cssPath = (el) => {
-        const uid = uniqueId(el);
-        if (uid) return uid;
-        const parts = [];
-        let node = el;
-        while (node && node.nodeType === 1 && parts.length < 6) {
-          let part;
-          if (node.id) {
-            part = node.tagName.toLowerCase() + '#' + CSS.escape(node.id);
-            parts.unshift(part);
-            break;
-          }
-          const parent = node.parentElement;
-          if (parent) {
-            const children = Array.from(parent.children);
-            const index = children.indexOf(node);
-            part = index >= 0 ? node.tagName.toLowerCase() + ':nth-child(' + (index + 1) + ')' : node.tagName.toLowerCase();
-          } else {
-            part = node.tagName.toLowerCase();
-          }
-          parts.unshift(part);
-          node = parent;
-        }
-        return parts.join(' > ');
-      };
-      const roleOf = (tag) => {
-        if (tag === 'a') return 'link';
-        if (tag === 'button') return 'button';
-        if (tag === 'input') return 'textbox';
-        if (tag === 'textarea') return 'textbox';
-        if (tag === 'select') return 'listbox';
-        if (tag === 'img') return 'img';
-        if (tag === 'h1' || tag === 'h2' || tag === 'h3') return 'heading';
-        return 'text';
-      };
-      const walk = (root) => {
-        if (out.length >= max) return;
-        const nodes = root.querySelectorAll('a,button,input,textarea,select,label,img,[role],[tabindex],h1,h2,h3,li,p,span,[contenteditable]');
-        for (const el of Array.from(nodes).slice(0, max)) {
-          const tag = el.tagName.toLowerCase();
-          const role = el.getAttribute('role') || roleOf(tag);
-          const aria = el.getAttribute('aria-label');
-          const placeholder = el.getAttribute('placeholder');
-          const title = el.getAttribute('title');
-          const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 100);
-          const value = el.value ? ' value="' + el.value.slice(0, 40) + '"' : '';
-          const name = aria || placeholder || title || text;
-          const visible = !!(el.offsetParent || el.getClientRects().length > 0) && name.length > 0;
-          if (!visible) continue;
-          out.push({ tag: tag, role: role, name: name, sel: cssPath(el), visible: true, value: value });
-          if (out.length >= max) break;
-        }
-      };
-      walk(document.body || document.documentElement);
-      return out;
-    })()`)) as Array<{ tag: string; role: string; name: string; sel: string; visible: boolean; value: string }>;
+    const items = await session.snapshot(maxNodes);
 
     const lines: string[] = [];
     const refs: Record<string, string> = {};
@@ -410,136 +384,96 @@ export class BrowserService {
   }
 
   async click(id: string, selector: string, ref?: string): Promise<boolean> {
-    const page = this.getPage(id);
+    const session = this.requireSession(id);
     const resolved = this.resolveSelector(id, selector, ref);
-    if (!page || !resolved) return false;
-    await page.click(resolved, { timeout: 10_000 });
+    if (!session || !resolved) return false;
+    await session.click(resolved, 10_000);
     return true;
   }
 
   /** 磁贴画面点击（坐标支持）：x,y 相对视口 */
   async clickAt(id: string, x: number, y: number): Promise<boolean> {
-    const page = this.getPage(id);
-    if (!page) return false;
-    await page.mouse.click(x, y);
-    const info = this.instances.get(id)!;
-    info.info.lastActiveAt = new Date().toISOString();
+    const runtime = this.instances.get(id);
+    const session = runtime?.session;
+    if (!runtime || !session) return false;
+    await session.clickAt(x, y);
+    runtime.info.lastActiveAt = new Date().toISOString();
     return true;
   }
 
   async fill(id: string, selector: string, text: string, ref?: string): Promise<boolean> {
-    const page = this.getPage(id);
+    const session = this.requireSession(id);
     const resolved = this.resolveSelector(id, selector, ref);
-    if (!page || !resolved) return false;
-    await page.fill(resolved, text, { timeout: 10_000 });
+    if (!session || !resolved) return false;
+    await session.fill(resolved, text, 10_000);
     return true;
   }
 
   async press(id: string, key: string): Promise<boolean> {
-    const page = this.getPage(id);
-    if (!page) return false;
-    await page.keyboard.press(key).catch(() => page.keyboard.insertText(key));
+    const session = this.requireSession(id);
+    if (!session) return false;
+    await session.press(key);
     return true;
   }
 
   async domAction(id: string, action: "focus" | "fill" | "click" | "inspect", selector: string, text?: string): Promise<unknown> {
-    const page = this.getPage(id);
-    if (!page) return null;
-    switch (action) {
-      case "fill": {
-        await page.locator(selector).fill(text ?? "");
-        return true;
-      }
-      case "click": {
-        await page.locator(selector).click({ timeout: 10_000 });
-        return true;
-      }
-      case "focus": {
-        await page.locator(selector).focus();
-        return true;
-      }
-      case "inspect": {
-        return page.locator(selector).evaluate((el) => {
-          const rect = el.getBoundingClientRect();
-          return {
-            tag: el.tagName,
-            text: (el.textContent ?? "").trim().slice(0, 200),
-            attrs: Array.from(el.attributes).slice(0, 20).map((attr) => `${attr.name}=${attr.value.slice(0, 50)}`),
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            w: Math.round(rect.width),
-            h: Math.round(rect.height),
-          };
-        });
-      }
-    }
+    const session = this.requireSession(id);
+    if (!session) return null;
+    return session.domAction(action, selector, text);
   }
 
   async waitFor(id: string, kind: "url" | "text" | "selector", value: string, timeoutMs = 10_000): Promise<boolean> {
-    const page = this.getPage(id);
-    if (!page) return false;
-    if (kind === "url") {
-      await page.waitForURL(new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), { timeout: timeoutMs });
-      return true;
-    }
-    if (kind === "text") {
-      await page.waitForSelector(`text=${value}`, { timeout: timeoutMs });
-      return true;
-    }
-    await page.waitForSelector(value, { timeout: timeoutMs });
+    const session = this.requireSession(id);
+    if (!session) return false;
+    await session.waitFor(kind, value, timeoutMs);
     return true;
   }
 
   async executeJS(id: string, script: string): Promise<unknown> {
-    const page = this.getPage(id);
-    if (!page) return null;
-    // 表达式求值（绕开 esbuild __name；只执行调用方明确提供的脚本）
-    return page.evaluate(script);
+    const session = this.requireSession(id);
+    if (!session) return null;
+    // 表达式求值（只执行调用方明确提供的脚本）
+    return session.evaluate(script);
   }
 
   async screenshot(id: string): Promise<string | null> {
-    const page = this.getPage(id);
-    if (!page) return null;
-    return page.screenshot({ type: "jpeg", quality: 70 }).then((buf) => `data:image/jpeg;base64,${buf.toString("base64")}`);
+    const session = this.requireSession(id);
+    if (!session) return null;
+    return session.screenshot();
   }
 
   /** 启动/停止 CDP screencast 帧流；frameCallback 收到 data URL（jpeg） */
   async screencast(id: string, enabled: boolean, callback?: (dataUrl: string) => void): Promise<boolean> {
     const runtime = this.instances.get(id);
-    const page = runtime?.page;
-    if (!runtime || !page || !runtime.context) return false;
-    runtime.frameCallback = enabled ? callback ?? null : null;
-    const cdp = await runtime.context.newCDPSession(page).catch(() => null);
-    if (!cdp) return false;
-    if (enabled) {
-      await cdp.send("Page.enable").catch(() => undefined);
-      await cdp.send("Page.startScreencast", {
-        format: "jpeg",
-        quality: 60,
-        maxWidth: 1280,
-        maxHeight: 800,
-        everyNthFrame: 1,
-      }).catch(() => undefined);
-      cdp.on("Page.screencastFrame", ({ data, sessionId }: { data: string; sessionId: number }) => {
-        void cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => undefined);
-        if (runtime.frameCallback) {
-          runtime.frameCallback(`data:image/jpeg;base64,${data}`);
-        }
-      });
-    } else {
-      await cdp.send("Page.stopScreencast").catch(() => undefined);
+    const session = runtime?.session;
+    if (!runtime || !session) return false;
+    if (!enabled) {
+      runtime.frameCallback = null;
+      await session.stopScreencast().catch(() => undefined);
+      return true;
     }
-    return true;
+    // 注意：必须先登记回调再起流。会话内部也存了一份回调，但帧到达时是通过
+    // 这里登记的 runtime.frameCallback 转发的——漏登记会表现为“起了流但一帧都不来”。
+    runtime.frameCallback = callback ?? null;
+    const started = await session.startScreencast((dataUrl) => {
+      runtime.frameCallback?.(dataUrl);
+    });
+    if (!started) runtime.frameCallback = null;
+    return started;
   }
 
   /** 页面变化后刷新实例元信息（标题/URL/tabs） */
   async touch(id: string): Promise<BrowserInstanceInfo | null> {
-    const page = this.getPage(id);
     const runtime = this.instances.get(id);
-    if (!page || !runtime) return runtime ? { ...runtime.info } : null;
-    runtime.info.url = page.url() || runtime.info.url;
-    runtime.info.title = (await page.title().catch(() => null)) ?? runtime.info.title;
-    runtime.info.tabs = runtime.context?.pages().length ?? 1;
+    if (!runtime) return null;
+    const session = runtime.session;
+    if (!session) return { ...runtime.info };
+    const meta = await session.meta().catch(() => null);
+    if (meta) {
+      runtime.info.url = meta.url || runtime.info.url;
+      runtime.info.title = meta.title ?? runtime.info.title;
+      runtime.info.tabs = meta.tabs;
+    }
     runtime.info.lastActiveAt = new Date().toISOString();
     return { ...runtime.info };
   }
@@ -571,3 +505,8 @@ export class BrowserService {
 
 /** 全局单例：浏览器与 Agent 解耦（Agent 工具经 browse_* 引用实例，不拥有实例） */
 export const browserService = new BrowserService();
+
+/** 供测试/诊断：当前会选中的传输后端名 */
+export function currentTransportName(): BrowserTransportName {
+  return selectTransport().name;
+}

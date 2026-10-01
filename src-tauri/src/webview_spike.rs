@@ -12,17 +12,14 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder, WebviewUrl};
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller;
-use webview2_com::{
-  CallDevToolsProtocolMethodCompletedHandler, Microsoft::Web::WebView2::Win32::ICoreWebView2,
-};
-use windows::core::HSTRING;
+
+// CDP 原语统一放在生产版 webview_bridge 里，尖刀直接复用，避免两份拷贝漂移
+use crate::webview_bridge::{cdp, eval, wait_ready};
 
 const SPIKE_LABEL: &str = "spike-tile";
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -279,103 +276,6 @@ fn wait_port(app: &AppHandle, timeout: Duration) -> Option<u16> {
     std::thread::sleep(Duration::from_millis(200));
   }
   None
-}
-
-/// 等到「目标 URL 上确实加载完成」。
-///
-/// 关键：子 webview 一创建是 `about:blank`，而 `about:blank` 的 readyState 也是 complete——
-/// 只看 readyState 会在导航开始前就"通过"，随后所有 eval 都打在不透明源上
-/// （localStorage 会直接抛 SecurityError）。所以必须同时匹配 URL。
-fn wait_ready(app: &AppHandle, label: &str, expect_prefix: &str, timeout: Duration) -> Result<Value, String> {
-  let started = Instant::now();
-  let mut last = Value::Null;
-  while started.elapsed() < timeout {
-    let state = eval(app, label, "({ ready: document.readyState, href: location.href })");
-    match state {
-      Ok(value) => {
-        let ready = value.get("ready").and_then(Value::as_str) == Some("complete");
-        let href = value.get("href").and_then(Value::as_str).unwrap_or_default();
-        if ready && href.starts_with(expect_prefix) {
-          return Ok(value);
-        }
-        last = value;
-      }
-      Err(err) => last = json!(err),
-    }
-    std::thread::sleep(Duration::from_millis(200));
-  }
-  Err(format!(
-    "wait_ready({expect_prefix}) timeout after {}ms, last={last}",
-    timeout.as_millis()
-  ))
-}
-
-/// `Runtime.evaluate` + `returnByValue`，直接拿 JS 值。
-///
-/// 注意：`CallDevToolsProtocolMethod` 回的**就是 CDP 消息里的 result 载荷**，
-/// 外面没有再包一层 `{"result": …}`，所以取值路径是 `/result/value`。
-fn eval(app: &AppHandle, label: &str, expression: &str) -> Result<Value, String> {
-  let params = json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }).to_string();
-  let raw = cdp(app, label, "Runtime.evaluate", &params, CDP_TIMEOUT)?;
-  let value: Value = serde_json::from_str(&raw).map_err(|e| format!("bad CDP json: {e}"))?;
-  if let Some(exc) = value.get("exceptionDetails") {
-    return Err(format!("js exception: {exc}"));
-  }
-  if let Some(found) = value.pointer("/result/value").cloned() {
-    return Ok(found);
-  }
-  // 取不到就把原始载荷报出来，别静默返回 null
-  Err(format!("unexpected CDP eval payload: {raw}"))
-}
-
-/// 直接在控制器上发 CDP（`CallDevToolsProtocolMethod`），不依赖任何调试端口。
-///
-/// 注意：调用必须发生在 UI 线程（`with_webview` 里），但**等待结果不能在 UI 线程**——
-/// 完成回调也是投递到 UI 线程的消息循环上的，在 UI 线程上阻塞等它就会死锁。
-/// 所以这里只负责"发起 + 把结果丢进 channel"，真正的等待放在 `with_webview` 之外。
-fn cdp(app: &AppHandle, label: &str, method: &str, params: &str, timeout: Duration) -> Result<String, String> {
-  let webview = app
-    .get_webview(label)
-    .ok_or_else(|| format!("webview {label} not found"))?;
-  let (tx, rx) = mpsc::channel::<Result<String, String>>();
-  let tx_start = tx.clone();
-  let (method_owned, params_owned) = (method.to_string(), params.to_string());
-  webview
-    .with_webview(move |platform| {
-      let controller = platform.controller();
-      match call_cdp(&controller, &method_owned, &params_owned, tx) {
-        Ok(()) => {}
-        Err(err) => {
-          let _ = tx_start.send(Err(err));
-        }
-      }
-    })
-    .map_err(|e| format!("with_webview({method}): {e}"))?;
-  rx.recv_timeout(timeout)
-    .map_err(|_| format!("CDP {method} timeout after {}ms", timeout.as_millis()))?
-}
-
-/// UI 线程侧：纯 COM 调用，立刻返回。
-fn call_cdp(
-  controller: &ICoreWebView2Controller,
-  method: &str,
-  params: &str,
-  tx: mpsc::Sender<Result<String, String>>,
-) -> Result<(), String> {
-  let core: ICoreWebView2 = unsafe { controller.CoreWebView2() }.map_err(|e| format!("CoreWebView2: {e}"))?;
-  let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |hr, json: String| {
-    // 宏把接口里的 PCWSTR 结果直接映射成 String，这里不用再自己解码
-    let _ = if hr.is_ok() {
-      tx.send(Ok(json))
-    } else {
-      tx.send(Err(format!("CDP failed hr={hr:?}: {json}")))
-    };
-    Ok(())
-  }));
-  let method = HSTRING::from(method);
-  let params = HSTRING::from(params);
-  unsafe { core.CallDevToolsProtocolMethod(&method, &params, &handler) }
-    .map_err(|e| format!("CallDevToolsProtocolMethod: {e}"))
 }
 
 /// 磁贴墙的真实形态：**同时**存在多个子 webview，各自独立 profile / incognito。

@@ -15,6 +15,8 @@ use tauri::Manager;
 #[cfg(windows)]
 mod notify;
 #[cfg(windows)]
+mod webview_bridge;
+#[cfg(windows)]
 mod webview_spike;
 
 /// 后端 sidecar 的运行时状态：
@@ -291,16 +293,32 @@ fn main() {
       #[cfg(windows)]
       if spike {
         webview_spike::spawn(app.handle().clone(), webview_spike::SpikeOptions::from_env());
+      } else {
+        // 生产：启动 WebView2 桥（只监听 127.0.0.1 的随机端口 + token 文件）。
+        // 前端经 Tauri 命令创建/定位子 webview；后端 sidecar 读 token 文件走 CDP 驱动页面。
+        webview_bridge::start(app.handle().clone());
       }
 
       Ok(())
     })
-    .invoke_handler(tauri::generate_handler![get_momoka_port, notify_toast])
+    .invoke_handler(tauri::generate_handler![
+      get_momoka_port,
+      notify_toast,
+      webview_bridge::webview_bridge_info,
+      webview_bridge::webview_open,
+      webview_bridge::webview_set_bounds,
+      webview_bridge::webview_set_visible,
+      webview_bridge::webview_close,
+      webview_bridge::webview_wait_ready,
+      webview_bridge::webview_list,
+    ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
     .run(|_handle, event| {
       if let tauri::RunEvent::Exit = event {
         shutdown_sidecar();
+        #[cfg(windows)]
+        webview_bridge::cleanup();
       }
     });
 }

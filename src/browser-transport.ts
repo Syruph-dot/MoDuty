@@ -43,6 +43,11 @@ export interface BrowserLaunchOptions {
    * 而 `navigator.webdriver` 只有在不走 Playwright 启动参数时才为 false（见 cdp 传输）。
    */
   headless?: boolean;
+  /**
+   * 会话 id（如 `brw_xxx`）。bridge 传输用它推出子 webview 的 label：
+   * `tile-<browserId>-<tabId>`；其它传输忽略。
+   */
+  browserId?: string;
 }
 
 /** 一个已启动的浏览器会话（= 一个浏览器磁贴实例） */
@@ -78,7 +83,7 @@ export interface BrowserSession {
 }
 
 export interface BrowserTransport {
-  readonly name: "playwright" | "cdp";
+  readonly name: "playwright" | "cdp" | "bridge";
   /** 本传输在当前运行时是否可用（bun 下 Playwright 不可用） */
   isAvailable(): boolean;
   launch(options: BrowserLaunchOptions): Promise<BrowserSession>;

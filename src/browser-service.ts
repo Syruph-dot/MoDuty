@@ -20,6 +20,7 @@ import type { BrowserLaunchOptions, BrowserSession, BrowserTransport } from "./b
 import { resolveBrowserExecutable } from "./browser-transport.js";
 import { playwrightTransport } from "./browser-transport-playwright.js";
 import { cdpTransport } from "./browser-transport-cdp.js";
+import { bridgeTransport } from "./browser-transport-bridge.js";
 // 仅类型：给 getContext/getPage 这个逃生艇签名用，不引入运行期耦合
 import type { BrowserContext, Page } from "playwright-core";
 
@@ -43,6 +44,8 @@ export interface BrowserInstanceInfo {
   error?: string;
   /** 实际使用的传输后端 */
   transport?: BrowserTransportName;
+  /** 是否磁贴内嵌（true = 页面嵌在应用窗口里；false = 外部浏览器窗口） */
+  embedded?: boolean;
   /** 实际使用的浏览器可执行文件（解析不到时为空，见 resolveBrowserExecutable 的说明） */
   executablePath?: string;
 }
@@ -69,8 +72,9 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
  * 可用 MOMOKA_BROWSER_TRANSPORT 显式指定，用来在 dev 下强制验证 CDP 传输。
  */
 function buildTransports(): BrowserTransport[] {
-  // 顺序即优先级：node 下优先 Playwright（与历史行为一致），bun 下它不可用、自动落到 CDP
-  return [playwrightTransport, cdpTransport];
+  // 顺序即优先级（仅用于外部浏览器场景）：node 下优先 Playwright（与历史行为一致），
+  // bun 下它不可用、自动落到 CDP。磁贴内嵌不走这个顺序，见 selectTransport。
+  return [playwrightTransport, cdpTransport, bridgeTransport];
 }
 
 /**
@@ -87,7 +91,7 @@ function resolveHeadless(transportName: BrowserTransport["name"]): boolean {
   return transportName !== "cdp";
 }
 
-function selectTransport(): BrowserTransport {
+function selectTransport(options: { embedded: boolean }): BrowserTransport {
   const list = buildTransports();
   const forced = process.env.MOMOKA_BROWSER_TRANSPORT?.trim();
   if (forced) {
@@ -96,7 +100,18 @@ function selectTransport(): BrowserTransport {
     if (!match.isAvailable()) throw new Error(`MOMOKA_BROWSER_TRANSPORT=${forced} 在当前运行时不可用`);
     return match;
   }
-  const available = list.find((transport) => transport.isAvailable());
+  // 磁贴内嵌与外部浏览器是两条路，不互相回落：
+  // embedded 时页面必须嵌在应用窗口里，桥不在就明确报错，否则用户会看到“磁贴里没画面”这种诡异状态
+  if (options.embedded) {
+    if (!bridgeTransport.isAvailable()) {
+      throw new Error(
+        "磁贴内嵌需要 WebView2 桥（只在 Tauri 壳启动时才有）。找不到桥的注册文件；"
+        + "若只想开外部浏览器窗口，请用 embedded=false 建实例。",
+      );
+    }
+    return bridgeTransport;
+  }
+  const available = list.filter((transport) => transport.name !== "bridge").find((transport) => transport.isAvailable());
   if (!available) {
     const names = list.map((transport) => transport.name).join(" / ");
     throw new Error(`没有可用的浏览器传输后端（候选：${names}）；当前运行时 ${process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`}`);
@@ -248,7 +263,7 @@ export class BrowserService {
   }
 
   /** 创建实例（不启动；磁贴打开时才 launch）。persistent 模式建立持久化 profile 目录。 */
-  async createInstance(input: { name?: string; mode?: BrowserMode }): Promise<BrowserInstanceInfo> {
+  async createInstance(input: { name?: string; mode?: BrowserMode; embedded?: boolean }): Promise<BrowserInstanceInfo> {
     const id = `brw_${randomUUID().slice(0, 12)}`;
     const mode: BrowserMode = input.mode === "incognito" ? "incognito" : "persistent";
     const now = new Date().toISOString();
@@ -257,6 +272,7 @@ export class BrowserService {
       id,
       name,
       mode,
+      embedded: input.embedded === true,
       state: "closed",
       url: null,
       title: null,
@@ -287,12 +303,24 @@ export class BrowserService {
     if (runtime.info.mode === "persistent") this.persistRegistry();
     this.emit({ type: "browser_deleted", browser: { ...runtime.info } });
     if (runtime.info.mode === "persistent" && runtime.info.profileDir) {
-      try {
-        await fs.promises.rm(runtime.info.profileDir, { recursive: true, force: true });
-      } catch (error) {
-        // 登录数据没清干净是要告知的事，不能静默吞掉
+      // WebView2 关闭子 webview 后，user-data-dir 里的 lockfile 不会立刻释放。
+      // 实测直接 rm 会 EBUSY，而“删除实例”的语义里包含清掉登录数据，所以这里退避重试，
+      // 重试仍失败才报错（登录数据没清干净属于必须告知的事）。
+      const profileDir = runtime.info.profileDir;
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          await fs.promises.rm(profileDir, { recursive: true, force: true });
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+      }
+      if (lastError) {
         throw new Error(
-          `浏览器实例已删除，但 profile 目录未清干净（登录数据可能残留）：${runtime.info.profileDir} — ${error instanceof Error ? error.message : String(error)}`,
+          `浏览器实例已删除，但 profile 目录未清干净（登录数据可能残留）：${profileDir} — ${lastError instanceof Error ? lastError.message : String(lastError)}`,
         );
       }
     }
@@ -331,12 +359,13 @@ export class BrowserService {
     }
     runtime.info.state = "launching";
     try {
-      const transport = selectTransport();
+      const transport = selectTransport({ embedded: runtime.info.embedded === true });
       const { executablePath } = resolveBrowserExecutable();
       const options: BrowserLaunchOptions = {
         profileDir: runtime.info.profileDir,
         viewport: { ...DEFAULT_VIEWPORT },
         headless: resolveHeadless(transport.name),
+        browserId: runtime.info.id,
       };
       const session = await transport.launch(options);
       runtime.session = session;
@@ -541,6 +570,6 @@ export class BrowserService {
 export const browserService = new BrowserService();
 
 /** 供测试/诊断：当前会选中的传输后端名 */
-export function currentTransportName(): BrowserTransportName {
-  return selectTransport().name;
+export function currentTransportName(options: { embedded?: boolean } = {}): BrowserTransportName {
+  return selectTransport({ embedded: options.embedded === true }).name;
 }

@@ -143,6 +143,12 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   const [openWorldX, setOpenWorldX] = useState<Record<string, number>>({});
   /** Y 错位：默认锁 Y（top=stage.y）；拖拽突破阈值后写入，右键归位清空 */
   const [openWorldY, setOpenWorldY] = useState<Record<string, number>>({});
+  /**
+   * 打开卡的尺寸覆盖（用户四角 resize 后落盘）。
+   * 缺省不是这个表里的条目——默认尺寸是「屏宽 60% × 舞台全高」，由
+   * `defaultOpenTileSize(stage)` 现场算（免得每张卡的默认值都要先写一遍）。
+   */
+  const [openSize, setOpenSize] = useState<Record<string, { w: number; h: number }>>({});
   const resetOpenWorldY = useCallback(() => setOpenWorldY({}), []);
   const commitOpenWorldY = useCallback((id: string, y: number) => {
     setOpenWorldY((prev) => ({ ...prev, [id]: Math.round(y) }));
@@ -161,6 +167,15 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
   }, []);
   const commitOpenWorldX = useCallback((id: string, x: number) => {
     setOpenWorldX((prev) => ({ ...prev, [id]: Math.round(x) }));
+  }, []);
+  /**
+   * 打开卡 resize 落位：位置 + 尺寸一次提交。
+   * n/w 角会同时改 x/y，e/s 角只改 w/h——统一按一份几何写入，不用区分方向。
+   */
+  const commitOpenTileGeometry = useCallback((id: string, geometry: TileGeometry) => {
+    setOpenWorldX((prev) => ({ ...prev, [id]: Math.round(geometry.x) }));
+    setOpenWorldY((prev) => ({ ...prev, [id]: Math.round(geometry.y) }));
+    setOpenSize((prev) => ({ ...prev, [id]: { w: Math.round(geometry.w), h: Math.round(geometry.h) } }));
   }, []);
   const zRankOf = (id: string): number => {
     const pos = openZOrder.indexOf(id);
@@ -445,6 +460,18 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       }
       return changed ? next : prev;
     });
+    // resize 尺寸同理：关闭后丢弃，重新打开回到默认 60% 宽
+    setOpenSize((prev) => {
+      let changed = false;
+      const next: Record<string, { w: number; h: number }> = {};
+      for (const id of openIds) {
+        if (prev[id]) next[id] = prev[id];
+      }
+      for (const key of Object.keys(prev)) {
+        if (!openIds.includes(key)) changed = true;
+      }
+      return changed ? next : prev;
+    });
   }, [openIds]);
 
   // T1：打开卡片首次落位 → 世界 X 取该磁贴自由网格 X（gridToPixels）；此后由拖拽/打开列表驱动，不做田字格重排
@@ -489,8 +516,17 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     stage: layout?.stage ?? null,
     worldX: openWorldX,
     worldY: openWorldY,
+    size: openSize,
     commitWorldX: commitOpenWorldX,
     commitWorldY: commitOpenWorldY,
+    commitResize: commitOpenTileGeometry,
+    // 打开卡缩放边界：小到留住会话可读面积，大到不超出舞台
+    resizeLimits: {
+      minW: Math.min(360, bounds.width || 360),
+      minH: Math.min(280, bounds.height || 280),
+      maxW: bounds.width || 1200,
+      maxH: bounds.height || 900,
+    },
     raiseTile,
     zRankOf,
     closeTile: closeOpenTile,
@@ -576,7 +612,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
       if (!node || !openMode || !layout) return;
       const worldX = openTile.worldXOf(id);
       if (worldX === null) return;
-      const cardW = layout.stage.w > 0 ? layout.stage.w : bounds.width;
+      const cardW = openTile.sizeOf(id).w;
       const maxScroll = Math.max(0, node.scrollWidth - node.clientWidth);
       const target = Math.max(0, Math.min(maxScroll, worldX + cardW / 2 - node.clientWidth / 2));
       animateWallScrollTo(target);
@@ -608,7 +644,7 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     const raf = requestAnimationFrame(() => {
       const node = wallRef.current;
       if (!node) return;
-      const cardW = layout.stage.w > 0 ? layout.stage.w : bounds.width;
+      const cardW = openTile.sizeOf(id).w;
       const maxScroll = Math.max(0, node.scrollWidth - node.clientWidth);
       // 目标：卡片中心对齐视口中心（左右两端夹到可滚动范围）
       const target = Math.max(0, Math.min(maxScroll, worldX + cardW / 2 - node.clientWidth / 2));
@@ -819,11 +855,11 @@ export default function Desktop({ onOpen }: { onOpen: (agent: Agent) => void }) 
     if (openMode) {
       // 草稿纸桌面：内容层至少铺满视口；尾部留白 = 半个视口宽，保证任何一张打开的卡片
       // 都能被滚到屏幕正中（否则靠右的卡片永远居中不了）。
-      const cardW = layout?.stage.w || bounds.width;
+      // 卡片宽取每张自己的尺寸（默认 60%，用户 resize 后可变），不再用整屏宽。
       let maxX = 0;
       for (const id of openIds) {
         const x = openTile.worldXOf(id);
-        if (x !== null) maxX = Math.max(maxX, x + cardW);
+        if (x !== null) maxX = Math.max(maxX, x + openTile.sizeOf(id).w);
       }
       const stable = Math.ceil(Math.max(bounds.width, maxX + bounds.width / 2));
       // 不窄于自由布局：进入 open 模式时宽度收缩会让浏览器立刻夹掉当前滚动（表现为“瞬跳”）

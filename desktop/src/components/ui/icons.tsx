@@ -175,3 +175,39 @@ export function IconChevronRight(props: IconProps) {
     </Icon>
   );
 }
+
+/* ───────── 窗口控制族（右栏唤出条底部）自绘图标 ───────── */
+
+/**
+ * 电源环：窗口控制族的主按钮图标（开机/关闭语义，区别于曲线主按钮）。
+ * 圆弧留缺口 + 竖干，是公认的电源符号；缺口朝上避免与竖干重叠。
+ */
+export function IconPower(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.4v7.2" />
+      <path d="M7.4 6.6a7.1 7.1 0 1 0 9.2 0" />
+    </Icon>
+  );
+}
+
+/** 环形箭头：检查更新（同步/刷新语义） */
+export function IconRefresh(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20.4 12a8.4 8.4 0 1 1-2.5-6" />
+      <path d="M20.6 4.2v5.2h-5.2" />
+    </Icon>
+  );
+}
+
+/** 落入底线（箭头向下 + 底横线）：最小化 */
+export function IconMinimize(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 4.4v9.2" />
+      <path d="M7.6 9.6 12 14l4.4-4.4" />
+      <path d="M5.6 19.2h12.8" />
+    </Icon>
+  );
+}

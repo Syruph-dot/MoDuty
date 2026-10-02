@@ -20,7 +20,11 @@ export interface Rect {
 }
 
 export interface OpenLayoutResult {
-  /** tileId → 打开态 geometry（只有已打开的磁贴有戏：整屏舞台分格） */
+  /**
+   * tileId → 打开态 geometry（按 2n / 2n+1 铺满舞台）。
+   * 注意：打开卡的**实际渲染几何**已改由 `resolveOpenTileGeometry`（世界 X/Y + 屏宽 60% 的尺寸）产出，
+   * 这里保留分格结果只作舞台派生参考，不再直接喂给 TileShell。
+   */
   geometryOf: Record<string, TileGeometry>;
   /** 舞台区域（V2：占满整墙——左坞已删除，未打开的磁贴不再排一列小格子） */
   stage: Rect;
@@ -28,6 +32,23 @@ export interface OpenLayoutResult {
 
 /** 舞台格子之间的间隙与四周内边距 */
 export const STAGE_GAP = 10;
+
+/**
+ * 打开磁贴的默认宽度 = 屏宽（舞台宽）的比例。
+ * 打开卡不再是「铺满整墙」，而是占屏宽 60% 的浮动窗口（高度仍铺满舞台），四角可 resize。
+ */
+export const OPEN_TILE_WIDTH_RATIO = 0.6;
+
+/** 打开磁贴的像素尺寸（宽 × 高） */
+export interface TileSize {
+  w: number;
+  h: number;
+}
+
+/** 打开卡默认尺寸：宽 = 舞台宽 × 60%，高 = 舞台全高（用户 resize 前一直用它） */
+export function defaultOpenTileSize(stage: { w: number; h: number }): TileSize {
+  return { w: Math.round(stage.w * OPEN_TILE_WIDTH_RATIO), h: stage.h };
+}
 
 /** 画布为空时的安全兜底（bounds 尚未测量到） */
 export function isBoundsReady(bounds: { width: number; height: number }): boolean {

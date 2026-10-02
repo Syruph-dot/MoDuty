@@ -167,7 +167,7 @@ CARGO_NET_OFFLINE=true npx tauri build --debug --no-bundle  # 免安装调试产
 
 ```
 desktop/src/
-├── components/     # Desktop / AgentTile / NewAgentTile / SessionTile / AgentWindow / ApprovalPanel / ControlBar
+├── components/     # Desktop / AgentTile / SessionTile / AgentWindow / ApprovalPanel / RightCharm
 ├── state/          # Zustand store（SSE 事件驱动）
 ├── lib/            # api base 解析、sseClient（重连+轮询降级）、chatStream SSE 解析
 └── styles/         # metro 磁贴 + aero 毛玻璃

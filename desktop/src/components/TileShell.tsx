@@ -23,8 +23,9 @@ import { useAgentsStore } from "../state/agentsStore";
 /**
  * 磁贴壳的交互模式：
  * - free     —— 无磁贴打开时：Win8 网格拖动 + 量化缩放（现状自由态已去自由化）
- * - expanded —— 打开态右舞台窗口：仅拖拽把手（header）可拖、禁 resize；
- *               拖到屏幕左/右极端松手 → onDropToEdge（丢弃关闭），否则回弹到布局位置
+ * - expanded —— 打开态浮动窗口（默认屏宽 60% × 满高）：拖拽把手（header）可拖；
+ *               传了 onResizeCommit 时四角可 resize（像素跟手、松手交回几何）；
+ *               拖到屏幕左/右极端松手 → onDropToEdge（丢弃关闭），否则落位到提交的世界坐标
  */
 export type TileShellMode = "free" | "expanded";
 
@@ -65,6 +66,13 @@ interface TileShellProps {
   onWorldXCommit?: (x: number) => void;
   /** Y 错位提交：解锁后松手把最终 Y（top）交回父级（与 X 一同提交） */
   onWorldYCommit?: (y: number) => void;
+  /**
+   * 打开卡（expanded）四角 resize 落位：**给了才允许打开态缩放**。
+   * 与 free 模式不同：打开卡不量化到网格，直接交回最终像素几何（x/y/w/h）。
+   */
+  onResizeCommit?: (next: TileGeometry) => void;
+  /** 打开卡缩放边界（像素）；缺省用壳内常量 */
+  resizeLimits?: { minW: number; minH: number; maxW: number; maxH: number };
   /** T4 expanded 被点击激活（置顶） */
   onActivate?: () => void;
   /** T5 边缘丢弃：传给壳的视口宽（px）与当前内容滚动量，用于左右极端判定 */
@@ -120,12 +128,25 @@ const RESIZE_HANDLES: Array<{ dir: ResizeDirection; pos: CSSProperties; cursor: 
   { dir: "w", pos: { top: "50%", left: 0, width: 8, height: 24, transform: "translateY(-50%)", cursor: "ew-resize" }, cursor: "ew-resize" },
 ];
 
+/**
+ * 打开卡只用四角把手（用户要的是「各角落可 resize」）：
+ * 边中把手会与窗口头栏的拖动区（上边）和输入区（下边）抢手势，得不偿失。
+ */
+const RESIZE_CORNER_HANDLES = RESIZE_HANDLES.filter((handle) => handle.dir.length === 2);
+
+type ResizeLimits = { minW: number; minH: number; maxW: number; maxH: number };
+
 function applyDelta(
   origin: TileGeometry,
   dx: number,
   dy: number,
   mode: DragMode,
+  limits?: ResizeLimits,
 ): TileGeometry {
+  const minW = limits?.minW ?? MIN_W;
+  const minH = limits?.minH ?? MIN_H;
+  const maxW = limits?.maxW ?? MAX_W;
+  const maxH = limits?.maxH ?? MAX_H;
   if (mode === "move") {
     return { x: origin.x + dx, y: origin.y + dy, w: origin.w, h: origin.h };
   }
@@ -133,20 +154,20 @@ function applyDelta(
   let { x, y, w, h } = origin;
 
   if (dir.includes("e")) {
-    w = Math.min(MAX_W, Math.max(MIN_W, origin.w + dx));
+    w = Math.min(maxW, Math.max(minW, origin.w + dx));
   }
   if (dir.includes("w")) {
-    const newW = Math.min(MAX_W, Math.max(MIN_W, origin.w - dx));
+    const newW = Math.min(maxW, Math.max(minW, origin.w - dx));
     if (newW !== origin.w) {
       x = origin.x + (origin.w - newW);
       w = newW;
     }
   }
   if (dir.includes("s")) {
-    h = Math.min(MAX_H, Math.max(MIN_H, origin.h + dy));
+    h = Math.min(maxH, Math.max(minH, origin.h + dy));
   }
   if (dir.includes("n")) {
-    const newH = Math.min(MAX_H, Math.max(MIN_H, origin.h - dy));
+    const newH = Math.min(maxH, Math.max(minH, origin.h - dy));
     if (newH !== origin.h) {
       y = origin.y + (origin.h - newH);
       h = newH;
@@ -184,6 +205,8 @@ export default function TileShell({
   onOpenTile,
   onWorldXCommit,
   onWorldYCommit,
+  onResizeCommit,
+  resizeLimits,
   onActivate,
   edgeViewportWidth = 0,
   edgeScrollX = 0,
@@ -219,6 +242,12 @@ export default function TileShell({
     setPaperGlide(false);
   };
   const paperMode = mode === "expanded" && !!onWorldXCommit;
+  /** 打开卡四角 resize：只有传了 onResizeCommit 才开（free 模式的量化 resize 不受影响） */
+  const resizeLimitsRef = useRef<ResizeLimits | undefined>(resizeLimits);
+  resizeLimitsRef.current = resizeLimits;
+  const expandedResizable = mode === "expanded" && !!onResizeCommit;
+  const onResizeCommitRef = useRef(onResizeCommit);
+  onResizeCommitRef.current = onResizeCommit;
   /** T5：拖拽进入屏幕左/右极端（中心越出视口）时置位，松手 → 复用现有关闭逻辑 */
   const [edgeSide, setEdgeSide] = useState<0 | 1 | -1>(0);
   const edgeSideRef = useRef<0 | 1 | -1>(0);
@@ -373,6 +402,18 @@ export default function TileShell({
         return;
       }
       // expanded：沿用旧像素 snap + 左坞检测
+      // 先判“四角缩放”——打开卡缩放不量化、不吸附，直接像素跟手
+      if (dragMode !== "move") {
+        if (!originRef.current) return;
+        const next = applyDelta(originRef.current, dx, dy, dragMode, resizeLimitsRef.current);
+        setDragOffset({
+          x: next.x - geometry.x,
+          y: next.y - geometry.y,
+          w: next.w - geometry.w,
+          h: next.h - geometry.h,
+        });
+        return;
+      }
       if (!originRef.current) return;
       const next = applyDelta(originRef.current, dx, dy, dragMode);
       if (paperMode) {
@@ -414,7 +455,7 @@ export default function TileShell({
         h: snapped.h - geometry.h,
       });
     },
-    onEnd: (dx, dy, didMove, _dragMode) => {
+    onEnd: (dx, dy, didMove, endMode) => {
       // 真实拖动过：短暂抑制 click/双击，避免误打开
       if (didMove) {
         armSuppressClick();
@@ -425,7 +466,11 @@ export default function TileShell({
           onCommit(ghostRef.current ?? undefined);
         }
       } else if (didMove && originRef.current) {
-        if (paperMode) {
+        if (endMode !== "move") {
+          // 打开卡四角 resize：松手把最终像素几何（含 n/w 边带来的位置偏移）交回父级
+          const final = applyDelta(originRef.current, dx, dy, endMode, resizeLimitsRef.current);
+          onResizeCommitRef.current?.(final);
+        } else if (paperMode) {
           // T5：拖到屏幕左/右极端 → 丢弃关闭（复用父级现有关闭，不重写）
           if (edgeSideRef.current !== 0) {
             onDropToEdge?.(id);
@@ -583,7 +628,8 @@ export default function TileShell({
   };
 
   const startResize = (event: React.MouseEvent, dir: ResizeDirection) => {
-    if (mode !== "free") return; // expanded（打开卡）不 resize
+    // free = 量化缩放；expanded = 打开卡四角缩放（传了 onResizeCommit 才允许）
+    if (mode !== "free" && !expandedResizable) return;
     originRef.current = { ...geometry };
     originGridRef.current = grid ? { ...grid } : null;
     onMouseDown(event, `resize-${dir}` as DragMode);
@@ -621,6 +667,9 @@ export default function TileShell({
   const shellModeClass =
     mode === "expanded" ? " tile-shell--expanded" : "";
   const edgeClass = edgeSide === -1 ? " tile-shell--edge-left" : edgeSide === 1 ? " tile-shell--edge-right" : "";
+  // 把手集：打开卡只用四角（避免与头栏拖动/输入区抢手势）；free 模式保留全部 8 向
+  const handles = expandedResizable ? RESIZE_CORNER_HANDLES : RESIZE_HANDLES;
+  const allowResize = mode === "expanded" ? expandedResizable : !disableResize;
 
   return (
     <div
@@ -654,7 +703,7 @@ export default function TileShell({
         {back ?? retiredBack ? <div className="tile-flip__face tile-flip__face--back">{back ?? retiredBack}</div> : null}
       </div>
 
-      {disableResize || mode !== "free" ? null : RESIZE_HANDLES.map((handle) => (
+      {allowResize ? handles.map((handle) => (
         <span
           key={handle.dir}
           className={`tile-shell__handle tile-shell__handle--${handle.dir}`}
@@ -662,7 +711,7 @@ export default function TileShell({
           role="presentation"
           onMouseDown={(event) => startResize(event, handle.dir)}
         />
-      ))}
+      )) : null}
     </div>
   );
 }

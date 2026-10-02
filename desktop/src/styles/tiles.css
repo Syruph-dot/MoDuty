@@ -755,6 +755,47 @@
 .tile-shell__handle--e { right: 0; }
 .tile-shell__handle--w { left: 0; }
 
+/*
+ * 打开卡（expanded）只用四角把手：悬停时亮出角括号，告诉用户"这里可以拉伸"。
+ * free 模式保持原样（透明把手，不额外加视觉噪声）。
+ */
+.tile-shell--expanded .tile-shell__handle {
+  z-index: 3;
+}
+
+.tile-shell--expanded .tile-shell__handle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 0 solid rgba(143, 208, 255, 0);
+  transition: border-color 160ms ease;
+  pointer-events: none;
+}
+
+.tile-shell--expanded:hover .tile-shell__handle--nw::after {
+  border-top-width: 2px;
+  border-left-width: 2px;
+  border-color: rgba(143, 208, 255, 0.5);
+}
+
+.tile-shell--expanded:hover .tile-shell__handle--ne::after {
+  border-top-width: 2px;
+  border-right-width: 2px;
+  border-color: rgba(143, 208, 255, 0.5);
+}
+
+.tile-shell--expanded:hover .tile-shell__handle--sw::after {
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+  border-color: rgba(143, 208, 255, 0.5);
+}
+
+.tile-shell--expanded:hover .tile-shell__handle--se::after {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  border-color: rgba(143, 208, 255, 0.5);
+}
+
 
 /* ================================================================
    Metro 交互稿（interactionv2）磁贴样式升级

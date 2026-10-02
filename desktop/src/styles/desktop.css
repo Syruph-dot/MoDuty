@@ -55,45 +55,6 @@ body,
   opacity: 0.6;
 }
 
-/* Borderless fullscreen window chrome (decorations:false) */
-.control-bar {
-  position: fixed;
-  top: 10px;
-  right: 14px;
-  z-index: 1000;
-  display: flex;
-  gap: 8px;
-  padding: 4px;
-  border-radius: 8px;
-  background: rgba(10, 14, 24, 0.55);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-/* 窗口控制：保留右上角 */
-.control-bar--window {
-  right: 14px;
-}
-
-.control-bar__btn {
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #cdd6e6;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.control-bar__btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.control-bar__btn--close:hover {
-  background: rgba(232, 84, 84, 0.85);
-  color: #fff;
-}
+/* Borderless fullscreen window chrome (decorations:false)
+ * （右上角浮动控制条已删除：窗口控制移入右缘唤出条的底部按钮族，见 edge.css 的
+ *  .wm-charm__family / .wm-charm__fan 与 RightCharm.tsx） */

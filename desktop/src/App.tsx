@@ -4,7 +4,6 @@ import ApprovalPanel from "./components/ApprovalPanel";
 import AgentFilterBar from "./components/AgentFilterBar";
 import ArchivePanel from "./components/ArchivePanel";
 import ContextMenu from "./components/ContextMenu";
-import ControlBar from "./components/ControlBar";
 import Desktop from "./components/Desktop";
 import NewAgentDialog from "./components/NewAgentDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
@@ -21,7 +20,7 @@ import { applyFontSourceLink } from "./state/tileThemeStore";
 
 /**
  * MoDuty：
- * 全屏磁贴墙 + 浮动控制条；
+ * 全屏磁贴墙（窗口控制已从右上角浮动控制条移入右缘唤出条，见 RightCharm）；
  * 双击磁贴 → 打开（进入分屏：未打开磁贴收缩进左坞，该磁贴在右舞台展开，SSE 流式对话）；
  * 展开窗口 × / 拖到左坞 → 收起；
  * 任一 Agent 进入 waiting_approval 时浮出审批面板；
@@ -53,7 +52,6 @@ export default function App() {
 
   return (
     <div className="desktop-shell" ref={shellRef}>
-      <ControlBar />
       {/* 治理栏仅限开始界面显示（设置页隐藏） */}
       {!settingsOpen ? <AgentFilterBar /> : null}
       <Desktop onOpen={handleOpenAgent} />

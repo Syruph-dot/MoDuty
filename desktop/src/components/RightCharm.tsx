@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAgentsStore } from "../state/agentsStore";
 import { useBrowserStore } from "../state/browserStore";
 import { useWindowManagerStore } from "../state/windowManagerStore";
 import { useDialogStore } from "../state/dialogStore";
-import { IconArchive, IconLayoutGrid, IconLayoutList, IconSearch } from "./ui/icons";
+import {
+  IconArchive,
+  IconClose,
+  IconLayoutGrid,
+  IconLayoutList,
+  IconMinimize,
+  IconPower,
+  IconRefresh,
+  IconSearch,
+} from "./ui/icons";
 
 /**
  * 右栏（45px，Windows 8 charms 风格，鼠标到右边缘唤出/移开收回）：
  * - 模态开关：off = 自由网格磁贴墙；on = 打开态整屏分屏（V2 左坞已删除）
  * - 磁贴墙治理入口（原左上角控制条那一组）：搜索筛选 / 归档库 / 视图切换
+ * - 底部按钮族：应用窗口控制（hover 向左辐出扇面 = 检查更新 / 最小化 / 关闭）
+ *   原来在屏幕右上角的浮动控制条（ControlBar）已删掉，窗口控制统一收在这里。
  * - 尚无任何打开窗口时不允许进入空 on 模态
  *
- * 图标：直接嵌入 parametric_curve_clean.html 的 canvas 参数曲线。
+ * 图标：直接嵌入 parametric_curve_clean.html 的 canvas 参数曲线 + 自绘线性 SVG。
  * - 所有参数与关键帧原样复原（KF / DURATION=8000 / easeTheta / easeB / easeTRange /
  *   getParams / calcXY / drawCurve：N=500、lineWidth=8、端点光晕 24、hsl(200,68%,…)）
  * - 内部缓冲 120×120（scale=120/6=20，与原稿 720 画布画面比例一致），CSS 缩放到按钮方形
@@ -65,6 +77,53 @@ export default function RightCharm() {
   /** 页面（设置/值日生/记忆）打开时隐藏治理入口，与旧控制条行为一致 */
   const pageOpen = settingsOpen || dutyOpen || memoryOpen;
   const [open, setOpen] = useState(false);
+  /** 窗口控制扇面：JS 控制开合（纯 CSS hover 在“从触发钮移到辐出钮”的路程中间会闪断） */
+  const [sysFanOpen, setSysFanOpen] = useState(false);
+  const sysFanTimer = useRef<number | null>(null);
+  const openSysFan = () => {
+    if (sysFanTimer.current !== null) {
+      window.clearTimeout(sysFanTimer.current);
+      sysFanTimer.current = null;
+    }
+    setSysFanOpen(true);
+  };
+  const closeSysFanSoon = () => {
+    if (sysFanTimer.current !== null) window.clearTimeout(sysFanTimer.current);
+    // 220ms 缓冲：足够指针从触发钮跨过空隙落到辐出钮上；落到就取消收合
+    sysFanTimer.current = window.setTimeout(() => {
+      sysFanTimer.current = null;
+      setSysFanOpen(false);
+    }, 220);
+  };
+  useEffect(() => () => {
+    if (sysFanTimer.current !== null) window.clearTimeout(sysFanTimer.current);
+  }, []);
+  // 整个右栏收回时，扇面也跟着收（否则鼠标离开后扇面还会停在空中）
+  useEffect(() => {
+    if (!open) setSysFanOpen(false);
+  }, [open]);
+
+  /** v2 注入 __TAURI_INTERNALS__；v1 是 __TAURI__ */
+  const inTauri =
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>) || "__TAURI__" in window);
+
+  /**
+   * 检查更新：功能留空（占位，尚未接入更新源）。
+   * 三个动作都先收扇面，避免点完最小化/关闭后扇面还留在屏上（窗口被最小化时收不到 mouseleave）。
+   */
+  const onCheckUpdate = () => {
+    setSysFanOpen(false);
+    // TODO(check-update): 留空——后续接 updater 后再实现
+  };
+  const minimizeWindow = () => {
+    setSysFanOpen(false);
+    if (inTauri) void getCurrentWindow().minimize();
+  };
+  const closeWindow = () => {
+    setSysFanOpen(false);
+    if (inTauri) void getCurrentWindow().close();
+  };
   const opening = mode === "on";
   const hasOpen = openAgentIds.length + openBrowserIds.length > 0;
   const cvRef = useRef<HTMLCanvasElement | null>(null);
@@ -242,6 +301,60 @@ export default function RightCharm() {
             </button>
           </>
         )}
+
+        {/* 底部按钮族：应用窗口控制（右上角那组已并入这里）。
+            hover → 向左辐出扇面：左上=检查更新 / 左=最小化 / 左下=关闭。
+            非 Tauri（纯浏览器 dev）也保留：便于调界面；两个窗口动作在非 Tauri 下为空操作。 */}
+        <div
+          className={`wm-charm__family${sysFanOpen ? " wm-charm__family--open" : ""}`}
+          onMouseEnter={openSysFan}
+          onMouseLeave={closeSysFanSoon}
+          onFocus={openSysFan}
+          onBlur={closeSysFanSoon}
+        >
+          <button
+            type="button"
+            className="wm-charm__btn wm-charm__btn--family"
+            aria-label="窗口控制（检查更新 / 最小化 / 关闭）"
+            aria-expanded={sysFanOpen}
+            aria-haspopup="menu"
+            title="窗口控制"
+          >
+            <IconPower size={40} />
+          </button>
+          <div className="wm-charm__fan" role="menu" aria-label="窗口控制">
+            <button
+              type="button"
+              role="menuitem"
+              className="wm-charm__fan-btn wm-charm__fan-btn--ul"
+              title="检查更新"
+              aria-label="检查更新"
+              onClick={onCheckUpdate}
+            >
+              <IconRefresh size={20} />
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="wm-charm__fan-btn wm-charm__fan-btn--l"
+              title="最小化窗口"
+              aria-label="最小化窗口"
+              onClick={minimizeWindow}
+            >
+              <IconMinimize size={20} />
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="wm-charm__fan-btn wm-charm__fan-btn--dl"
+              title="关闭 MoDuty"
+              aria-label="关闭 MoDuty"
+              onClick={closeWindow}
+            >
+              <IconClose size={20} />
+            </button>
+          </div>
+        </div>
       </div>
     </>
   );

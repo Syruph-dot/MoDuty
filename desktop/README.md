@@ -18,7 +18,7 @@ MOMOKA 的磁贴化桌面前端：**React 18 + Vite 6 + TypeScript（strict）+ 
 
 ```
 src/
-├── main.tsx / App.tsx     # 挂载点：磁贴墙 + 控制条 + 审批面板（对话窗口嵌入磁贴）
+├── main.tsx / App.tsx     # 挂载点：磁贴墙 + 审批面板（对话窗口嵌入磁贴；窗口控制在右缘唤出条）
 ├── types.ts               # 与后端 snake_case 对齐的类型
 ├── components/
 │   ├── Desktop.tsx        # 全屏磁贴墙（双几何分屏：左坞 + 右舞台）
@@ -28,7 +28,7 @@ src/
 │   ├── ApprovalPanel.tsx  # waiting_approval 审批面板
 │   ├── NewAgentDialog.tsx # 创建 Agent 弹窗（右键菜单触发）
 │   ├── ContextMenu.tsx    # 桌面空白处右键菜单
-│   └── ControlBar.tsx     # 无边框窗口的浮动控制条（最小化/关闭）
+│   └── RightCharm.tsx     # 右缘唤出条（模态切换 / 治理入口 / 窗口控制按钮族）
 ├── state/
 │   ├── agentsStore.ts     # Zustand store（applyAgentEvent 由 SSE 驱动）
 │   ├── contextMenuStore.ts
@@ -43,7 +43,7 @@ src/
 │   ├── layoutEngine.ts    # 双几何布局：左坞网格 + 右舞台 2n/2n+1 展开
 │   └── persistTiles.ts    # 磁贴几何 localStorage 持久化
 └── styles/
-    ├── desktop.css        # 桌面背景 + 控制条样式
+    ├── desktop.css        # 桌面背景样式
     ├── tiles.css          # 磁贴/弹窗/右键菜单样式
     └── window.css         # 对话窗口/审批面板/消息气泡样式
 ```

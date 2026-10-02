@@ -25,7 +25,7 @@ const GROUP_BY_KEYS: GroupByKey[] = ["pinyin", "name", "workspace", "state", "mo
  * - 搜索框：本地草稿，按 Enter 提交后才生效（防止输入即检索爆炸），Esc 清空草稿
  * - chips：工作区（多选）、时间段（单选）、状态（多选）、排序（单选）
  * - 用户偏好：治理控件全部使用直角（border-radius: 0，Windows 8 Metro 风格，不用圆角矩形）
- * - 开关由 agentsStore.filterBarOpen 控制（ControlBar / 归档面板可触发）
+ * - 开关由 agentsStore.filterBarOpen 控制（右栏唤出条 / 归档面板可触发）
  */
 export default function AgentFilterBar() {
   const open = useAgentsStore((state) => state.filterBarOpen);

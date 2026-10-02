@@ -70,6 +70,17 @@ export async function setWebviewVisible(label: string, visible: boolean): Promis
   await invokeBridge("webview_set_visible", { label, visible });
 }
 
+/**
+ * 切子 webview 的 z 序（不碰 IsVisible）。
+ *
+ * 子 webview 是独立子 HWND，DOM 的 z-index 管不到它；而 hide 会丢合成表面让 CDP 截图变空，
+ * 所以「被卡片盖住」只能用 z 序表达：behind=true → 压到主 webview 之下（视觉消失但仍在渲染），
+ * behind=false → 提回最上层。
+ */
+export async function setWebviewStacked(label: string, behind: boolean): Promise<void> {
+  await invokeBridge("webview_set_stacked", { label, behind });
+}
+
 export async function closeWebview(label: string): Promise<void> {
   await invokeBridge("webview_close", { label });
 }

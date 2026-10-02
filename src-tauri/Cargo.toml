@@ -30,6 +30,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Variant",
   "Win32_UI_Shell",
   "Win32_UI_Shell_PropertiesSystem",
+  # 子 webview 的 z 序跟随（SetWindowPos / HWND_BOTTOM / HWND_TOP）：见 webview_bridge::set_stacked
+  "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.52"
 # 多 webview + Rust 侧 CDP 桥（见 src/webview_spike.rs）：直接用 WebView2 控制器发 CDP，

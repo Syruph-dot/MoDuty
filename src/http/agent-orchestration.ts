@@ -11,6 +11,7 @@ import type { SessionManager } from "../session-manager.js";
 import type { AgentStateMachine, AgentStateEvent, ContextStatsSnake } from "../agent-state.js";
 import type { WorkspaceManager } from "../workspace-manager.js";
 import type { AgentRecord, ChatResponse, StreamEvent, TurnMode } from "../types.js";
+import type { AttachmentRef } from "../attachments.js";
 import { DISPATCH_MAX_CONTINUE, LEDGER_TASK_MAX_CHARS, type DispatchRecord, type DispatchTrigger, type DispatchVerdict } from "../dispatch-ledger.js";
 import type { DispatchBridgeInput } from "../dispatch-bridge.js";
 import type { RouteContext } from "./route-context.js";
@@ -66,6 +67,8 @@ export interface DriveTurnOptions {
   transient?: boolean;
   /** 轮次模式（决定尾部模式块与是否注入历史）；缺省由 transient 推导 */
   turnMode?: TurnMode;
+  /** 随本轮用户消息一起提交的附件（已校验归属） */
+  attachments?: AttachmentRef[];
   /** 额外事件监听（SSE 转发等）；状态机喂食由驱动器内部完成 */
   onEvent?: (event: StreamEvent) => void;
   signal?: AbortSignal;
@@ -88,6 +91,7 @@ export async function driveAgentTurn(
       sessionId: record.sessionId,
       transient: opts.transient,
       turnMode: opts.turnMode,
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
       onEvent: (event) => {
         deps.machine.consumeEvent(record.id, event);
         opts.onEvent?.(event);

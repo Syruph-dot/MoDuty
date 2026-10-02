@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { awaitApiBase, cancelAgentChat, resetAgentChat } from "../lib/api";
+import { awaitApiBase, attachmentRawUrl, cancelAgentChat, deleteAgentAttachment, importAgentAttachments, isTauriShell, resetAgentChat, uploadAgentAttachment, fileToBase64, type AttachmentRef } from "../lib/api";
 import { runChatStream } from "../lib/chatStream";
 import { renderMarkdown } from "../lib/markdown";
 import { consumeJump, requestJump } from "../lib/sessionJump";
 import { buildMessageSequence, isContextOnlyMessage } from "../lib/sessionMessages";
 import { useEdgeOverscroll } from "../lib/edgeOverscroll";
+import { toolCardLayout, toolCardMinWidthPx, type ToolCardLayout } from "../lib/toolCardLayout";
 import { usePendingQuestions } from "../hooks/useDutyData";
 import QuestionCard from "./ui/QuestionCard";
 import QuestionRecap from "./ui/QuestionRecap";
@@ -37,6 +38,8 @@ interface StoredMessage {
   reasoning?: string;
   /** 产出这条消息的模型名（随消息落盘，消息头展示） */
   model?: string;
+  /** 随消息落盘的附件（输入框粘贴/拖拽/选择） */
+  attachments?: AttachmentRef[];
 }
 
 /** GET /api/sessions 返回的会话候选（& 提及弹窗数据源） */
@@ -77,6 +80,8 @@ interface DisplayMessage {
   role: "user" | "agent" | "tool";
   content: string;
   status?: string;
+  /** 随用户消息落盘的附件（输入框粘贴/拖拽/选择） */
+  attachments?: AttachmentRef[];
   /** 落盘消息 id（用户消息可编辑/截断分叉） */
   messageId?: string;
   /** 仅从磁盘恢复的历史用户消息可编辑 */
@@ -93,6 +98,8 @@ interface DisplayMessage {
     status: "running" | "done";
     result?: string;
     collapsed: boolean;
+    /** 排布原则：flow=进工具卡网格（从左往右、从上往下）；full=独占一整行（交互卡，如问答卡） */
+    layout: ToolCardLayout;
   };
 }
 
@@ -105,6 +112,20 @@ interface CompactHandoffView {
   createdAt: string;
 }
 
+
+/** 工具卡网格下限宽度：随窗口宽度变化（满屏均分 5 列 → 取 80% 作为单卡下限） */
+function useToolCardMinWidth(): number {
+  const [minWidth, setMinWidth] = useState(() =>
+    toolCardMinWidthPx(typeof window === "undefined" ? 1440 : window.innerWidth),
+  );
+  useEffect(() => {
+    const update = (): void => setMinWidth(toolCardMinWidthPx(window.innerWidth));
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  return minWidth;
+}
 
 /** 消息头：模型名 + 时间（对齐 Proma 的 MessageHeader；用户消息不显示） */
 function MessageMeta({ message }: { message: DisplayMessage }): React.ReactElement | null {
@@ -125,6 +146,113 @@ function formatClock(iso?: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 附件方卡片。
+ *
+ * 图片直接渲染缩略图（走 /raw 端点，不把 base64 塞进消息 JSON 或 React state）；
+ * 其他类型显示扩展名徽标 + 文件名 + 体积，与输入框暂存区共用同一套外观。
+ */
+function AttachmentCard({
+  agentId,
+  attachment,
+  onRemove,
+}: {
+  agentId: string;
+  attachment: AttachmentRef;
+  onRemove?: (id: string) => void;
+}): React.ReactElement {
+  const isImage = attachment.mediaType.startsWith("image/");
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isImage) return;
+    let alive = true;
+    void attachmentRawUrl(agentId, attachment.id)
+      .then((value) => { if (alive) setUrl(value); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [agentId, attachment.id, isImage]);
+  const badge = attachmentBadge(attachment);
+  return (
+    <div className={`attachment-card${isImage ? " attachment-card--image" : ""}`} title={`${attachment.filename}\n${attachment.localPath}`}>
+      {isImage ? (
+        url
+          ? (
+            // 不加 loading="lazy"：卡片始终在输入框/消息附近，懒加载收益极小，
+            // 而在磁贴翻转容器（transform）里会被误判为不可见，缩略图就永远不加载
+            <img className="attachment-card__thumb" src={url} alt={attachment.filename} />
+          )
+          : <span className="attachment-card__thumb attachment-card__thumb--loading" aria-hidden="true" />
+      ) : (
+        <span className="attachment-card__badge" aria-hidden="true">{badge}</span>
+      )}
+      <span className="attachment-card__meta">
+        <span className="attachment-card__name">{attachment.filename}</span>
+        <span className="attachment-card__size">{formatBytes(attachment.size)}</span>
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="attachment-card__remove"
+          aria-label={`移除附件 ${attachment.filename}`}
+          onClick={() => onRemove(attachment.id)}
+        >
+          ×
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * 从 DataTransfer 里收齐文件。
+ *
+ * 只看 `files` 是不够的：从飞书复制、截图工具写入剪贴板、从资源管理器复制文件，
+ * 这几种来源在 Chromium 系内核里可能只把数据放在 `items`（kind=file）。
+ * 两处都收、再按 名字/体积/类型 去重，避免同一份文件被加两次。
+ */
+function collectClipboardFiles(
+  fileList: FileList | null | undefined,
+  itemList: DataTransferItemList | null | undefined,
+): File[] {
+  const fromFiles = Array.from(fileList ?? []);
+  const fromItems = Array.from(itemList ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  const seen = new Set(fromFiles.map(fileKey));
+  return [...fromFiles, ...fromItems.filter((file) => !seen.has(fileKey(file)))];
+}
+
+/** 附件去重键：同一次粘贴里 files 与 items 可能指向同一份文件 */
+function fileKey(file: File): string {
+  return `${file.name}|${file.size}|${file.type}`;
+}
+
+/** 无文件名时（粘贴截图常见）按 mime 生成一个可读的默认文件名 */
+function defaultPastedName(mediaType: string): string {
+  const subtype = mediaType.includes("/") ? mediaType.slice(mediaType.indexOf("/") + 1) : "bin";
+  const ext = subtype === "jpeg" ? "jpg" : subtype.split("+")[0] || "bin";
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
+  return `粘贴附件-${stamp}.${ext}`;
+}
+
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "—";
+  if (size < 1024) return `${size}B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
+  return `${(size / 1024 / 1024).toFixed(1)}MB`;
+}
+
+/** 非图片附件的类型徽标：扩展名 → 大写短标签 */
+function attachmentBadge(attachment: AttachmentRef): string {
+  const dot = attachment.filename.lastIndexOf(".");
+  const ext = dot > 0 ? attachment.filename.slice(dot + 1).toUpperCase() : "";
+  if (ext && ext.length <= 4) return ext;
+  const slash = attachment.mediaType.indexOf("/");
+  return (slash >= 0 ? attachment.mediaType.slice(slash + 1) : attachment.mediaType).slice(0, 4).toUpperCase() || "FILE";
 }
 
 /**
@@ -200,7 +328,7 @@ const MessageItem = memo(function MessageItem({
     const interactiveBody = Boolean(pendingQuestions || recapQuestions);
     return (
       <div
-        className={`tool-card${tc.collapsed ? " tool-card--collapsed" : ""}${jump ? " tool-card--jump" : ""}`}
+        className={`tool-card tool-card--${tc.layout}${tc.collapsed ? " tool-card--collapsed" : ""}${jump ? " tool-card--jump" : ""}`}
         data-mk={message.key}
         onClick={() => onToggleTool(message.key)}
         role="button"
@@ -274,7 +402,7 @@ const MessageItem = memo(function MessageItem({
     }
     return (
       <div
-        className={`msg msg--${message.role}${message.userEditable ? " msg--editable" : ""}${jump ? " msg--jump" : ""}`}
+        className={`msg msg--${message.role}${message.userEditable ? " msg--editable" : ""}${jump ? " msg--jump" : ""}${message.attachments?.length ? " msg--with-attachments" : ""}`}
         data-mk={message.key}
       >
         <div className="msg__hover-actions">
@@ -290,6 +418,13 @@ const MessageItem = memo(function MessageItem({
           ) : null}
         </div>
         <div className="msg__bubble">{message.content}</div>
+        {message.attachments?.length ? (
+          <div className="msg__attachments" role="group" aria-label="本条消息的附件">
+            {message.attachments.map((attachment) => (
+              <AttachmentCard key={attachment.id} agentId={agentId} attachment={attachment} />
+            ))}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -394,7 +529,16 @@ export default function AgentWindow({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [policyNotice, setPolicyNotice] = useState<string | null>(null);
   const [experienceNotice, setExperienceNotice] = useState<string | null>(null);
+  // 工具卡网格的单卡最小宽度（px）：写进列表容器的 --tool-card-min
+  const toolCardMin = useToolCardMinWidth();
   const [input, setInput] = useState("");
+  /** 已加入待发送区、尚未随消息发出的附件 */
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentRef[]>([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const filePickerRef = useRef<HTMLInputElement>(null);
+  const windowRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState(false);
   const [copied, setCopied] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -592,8 +736,9 @@ export default function AgentWindow({
   const saveEdit = async (): Promise<void> => {
     const messageId = editingMessageId;
     const content = editDraft.trim();
+    const original = messages.find((item) => item.messageId === messageId && item.role === "user");
     cancelEdit();
-    if (!messageId || !content) return;
+    if (!messageId || (!content && !original?.attachments?.length)) return;
     try {
       const base = await awaitApiBase();
       const res = await fetch(`${base}/api/agents/${encodeURIComponent(agent.id)}/messages/truncate`, {
@@ -609,7 +754,8 @@ export default function AgentWindow({
       setStreamError(error instanceof Error ? error.message : "截断失败");
       return;
     }
-    await sendText(content);
+    // 附件跟随原消息保留（只改文本，不重新上传）
+    await sendText(content, original?.attachments ?? []);
   };
 
   /** 滚动定位到第 turn 条用户消息并闪动高亮 */
@@ -836,6 +982,7 @@ export default function AgentWindow({
             content: message.content,
             status: message.status,
             timestamp: message.timestamp,
+            ...(isUser && message.attachments?.length ? { attachments: message.attachments } : {}),
             ...(message.id ? { messageId: message.id } : {}),
             ...(isUser ? { userEditable: true } : {}),
           });
@@ -859,6 +1006,7 @@ export default function AgentWindow({
                 status: item.result ? "done" : "running",
                 result: item.result,
                 collapsed: message.status === "streaming" ? false : !!item.result,
+                layout: toolCardLayout(item.name),
               },
               ...(message.id ? { messageId: message.id } : {}),
               ...attachReasoning,
@@ -1000,6 +1148,136 @@ export default function AgentWindow({
     setMentionChips((prev) => prev.filter((c) => c.sessionId !== sessionId));
     setInput((val) => val.replace(new RegExp(`&ses_${sessionId}\s*`), ""));
   };
+
+  /* ===== 附件（粘贴 / 拖拽 / 文件选择） ===== */
+
+  /** 字节入口：本地拿不到路径（粘贴、文件选择），只能把字节交给后端落盘 */
+  const addAttachmentsFromFiles = async (files: File[], source: "paste" | "picker"): Promise<void> => {
+    if (files.length === 0) return;
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    const added: AttachmentRef[] = [];
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        const dataBase64 = await fileToBase64(file);
+        const ref = await uploadAgentAttachment(agent.id, {
+          filename: file.name || defaultPastedName(file.type),
+          mediaType: file.type || "application/octet-stream",
+          dataBase64,
+          source,
+        });
+        added.push(ref);
+      } catch (error) {
+        failures.push(`${file.name || "粘贴内容"}：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (added.length > 0) {
+      setPendingAttachments((prev) => [...prev, ...added.filter((item) => !prev.some((existing) => existing.id === item.id))]);
+    }
+    if (failures.length > 0) setAttachmentError(failures.join("\n"));
+    setAttachmentBusy(false);
+  };
+
+  /** 路径入口：Tauri 原生拖放给的是绝对路径，后端直接复制，不过 base64 */
+  const importDroppedPaths = async (paths: string[]): Promise<void> => {
+    if (paths.length === 0) return;
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    try {
+      const result = await importAgentAttachments(agent.id, paths);
+      if (result.attachments.length > 0) {
+        setPendingAttachments((prev) => [
+          ...prev,
+          ...result.attachments.filter((item) => !prev.some((existing) => existing.id === item.id)),
+        ]);
+      }
+      if (result.failed.length > 0) {
+        setAttachmentError(result.failed.map((item) => `${item.path}：${item.error}`).join("\n"));
+      }
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  /**
+   * 粘贴：只有真正带了文件才拦截，纯文本粘贴保持默认行为。
+   *
+   * files 与 items 都要查：不同来源（飞书复制、截图工具、资源管理器复制文件）
+   * 把图片放在 DataTransfer 的不同位置上，只看 files 会漏掉一部分。
+   */
+  const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = collectClipboardFiles(event.clipboardData?.files, event.clipboardData?.items);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void addAttachmentsFromFiles(files, "paste");
+  };
+
+  /** 浏览器 dev 环境的 HTML5 拖放回退（Tauri 壳内原生拖放会拦掉它，走 onDragDropEvent） */
+  const onDrop = (event: React.DragEvent<HTMLElement>): void => {
+    const files = collectClipboardFiles(event.dataTransfer?.files, event.dataTransfer?.items);
+    if (files.length === 0) return;
+    event.preventDefault();
+    setDropActive(false);
+    void addAttachmentsFromFiles(files, "picker");
+  };
+
+  const removePendingAttachment = (id: string): void => {
+    setPendingAttachments((prev) => prev.filter((item) => item.id !== id));
+    // 还没发出去就从磁盘清掉，避免 .momoka/attachments 越堆越多
+    void deleteAgentAttachment(agent.id, id);
+  };
+
+  /** 本窗口矩形是否包含拖放点。Tauri 的 position 是物理像素，CSS 矩形要乘 dpr 才能比。 */
+  const isInsideWindow = (position: { x: number; y: number }): boolean => {
+    const element = windowRef.current;
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    return position.x >= rect.left * dpr && position.x <= rect.right * dpr
+      && position.y >= rect.top * dpr && position.y <= rect.bottom * dpr;
+  };
+
+  // Tauri 原生拖放是窗口级事件：不按落点判断归属，多个磁贴会一起亮、一起收
+  useEffect(() => {
+    if (!isTauriShell()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const stop = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload as
+            | { type: "enter" | "over"; position: { x: number; y: number }; paths: string[] }
+            | { type: "leave" }
+            | { type: "drop"; position: { x: number; y: number }; paths: string[] };
+          if (payload.type === "leave") {
+            setDropActive(false);
+            return;
+          }
+          if (payload.type === "enter" || payload.type === "over") {
+            setDropActive(isInsideWindow(payload.position));
+            return;
+          }
+          setDropActive(false);
+          if (!isInsideWindow(payload.position)) return;
+          void importDroppedPaths(payload.paths);
+        });
+        if (disposed) stop();
+        else unlisten = stop;
+      } catch (error) {
+        console.error("[附件] 注册原生拖放监听失败:", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+    // 依赖 agent.id：每个窗口各自登记自己的监听与落点判断
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mention?.active && candidates.length > 0) {
@@ -1155,30 +1433,32 @@ export default function AgentWindow({
 
   const send = () => {
     const t = input.trim();
-    if (!t || streaming) {
+    // 只有附件也能发（“把这份文件给你”是最常见的用法）
+    if ((!t && pendingAttachments.length === 0) || streaming) {
       return;
     }
+    const refs = pendingAttachments;
     setInput("");
-    void sendText(t);
+    setPendingAttachments([]);
+    void sendText(t, refs);
   };
 
   /** 无输入框依赖的发送入口（输入框 send 与重试按钮共用） */
-  const sendText = async (text: string) => {
+  const sendText = async (text: string, attachments: AttachmentRef[] = []): Promise<void> => {
     const trimmed = text.trim();
-    if (!trimmed || streaming) {
+    if ((!trimmed && attachments.length === 0) || streaming) {
       return;
     }
     setStreamError(null);
     setPolicyNotice(null);
     setExperienceNotice(null);
-    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString() }]);
+    setAttachmentError(null);
+    setMessages((prev) => [...prev, { key: `user-${Date.now()}`, role: "user", content: trimmed, timestamp: new Date().toISOString(), ...(attachments.length > 0 ? { attachments } : {}) }]);
     setRedirectReady(false);
     setStreaming(true);
     stopPolling(); // 有后台轮询时先停掉，由 SSE 接管实时更新
     const controller = new AbortController();
     abortRef.current = controller;
-    const TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟无响应视为超时
-    const combinedSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]);
     let currentAgentKey = `agent-${Date.now()}`;
     setMessages((prev) => [...prev, { key: currentAgentKey, role: "agent", content: "", timestamp: new Date().toISOString() }]);
     // token 合帧：SSE token 到达频率远高于渲染需求（每 token 一次 setMessages/render/markdown），
@@ -1231,7 +1511,7 @@ export default function AgentWindow({
                   key: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${name}`,
                   role: "tool" as const,
                   content: "",
-                  toolCard: { name, args, status: "running" as const, collapsed: false },
+                  toolCard: { name, args, status: "running" as const, collapsed: false, layout: toolCardLayout(name) },
                 },
               ];
             });
@@ -1269,13 +1549,13 @@ export default function AgentWindow({
             setMessages((prev) => prev.filter((m) => !(m.role === "agent" && m.content === "")));
           },
         },
-        combinedSignal,
+        controller.signal,
+        attachments.map((item) => ({ id: item.id })),
       );
     } catch (error) {
-      if (error instanceof DOMException && error.name === "TimeoutError") {
-        setStreamError("请求超时（5 分钟无响应），已取消");
-        void cancelAgentChat(agent.id);
-      } else if (!(error instanceof DOMException && error.name === "AbortError")) {
+      // 停止按钮（AbortError）静默；其余错误照实显示。前端不再对整轮对话设墙钟上限，
+      // 长脚本（如撞库、构建）可以一直跑到自己结束，由后端任务或 ■ 停止按钮收尾。
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
         setStreamError(error instanceof Error ? error.message : String(error));
         setMessages((prev) => prev.filter((message) => message.key !== currentAgentKey || message.content !== ""));
       }
@@ -1427,7 +1707,23 @@ export default function AgentWindow({
     ) : null;
 
   return (
-    <div className={`agent-window${embedded ? " agent-window--embedded" : ""}`} role="dialog" aria-label={`Agent ${agent.name} 对话窗口`}>
+    <div
+      ref={windowRef}
+      className={`agent-window${embedded ? " agent-window--embedded" : ""}${dropActive ? " agent-window--drop-active" : ""}`}
+      role="dialog"
+      aria-label={`Agent ${agent.name} 对话窗口`}
+      onDragOver={(event) => {
+        if ((event.dataTransfer?.types ?? []).includes("Files")) {
+          event.preventDefault();
+          setDropActive(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDropActive(false);
+      }}
+      onDrop={onDrop}
+    >
       <header
         className="agent-window__header"
         title="拖动标题栏到左栏可收起；双击可把视口滚到本窗口"
@@ -1618,7 +1914,13 @@ export default function AgentWindow({
 
       {/* 消息区包一层定位容器：导航条要相对「消息区」定位，否则会盖到顶部工具栏上 */}
       <div className="agent-window__body">
-      <div className="agent-window__list" ref={listRef} aria-live="polite" onMouseUp={captureQuote}>
+      <div
+        className="agent-window__list"
+        ref={listRef}
+        aria-live="polite"
+        onMouseUp={captureQuote}
+        style={{ "--tool-card-min": `${toolCardMin}px` } as React.CSSProperties}
+      >
         {compactCheckpoint ? (
           <section className="agent-window__handoff" aria-label="Compact Handoff 状态">
             <button
@@ -1735,6 +2037,21 @@ export default function AgentWindow({
 
       <footer className="agent-window__composer">
         <div ref={mirrorRef} className="agent-window__mirror" aria-hidden="true" />
+        {/* 待发送附件：图片缩略图 + 其它类型文件卡；× 直接移除并清盘 */}
+        {pendingAttachments.length > 0 ? (
+          <div className="attachment-strip" role="group" aria-label="待发送附件">
+            {pendingAttachments.map((attachment) => (
+              <AttachmentCard
+                key={attachment.id}
+                agentId={agent.id}
+                attachment={attachment}
+                onRemove={removePendingAttachment}
+              />
+            ))}
+          </div>
+        ) : null}
+        {attachmentBusy ? <p className="attachment-hint" role="status">附件处理中…</p> : null}
+        {attachmentError ? <p className="attachment-hint attachment-hint--error" role="alert">{attachmentError}</p> : null}
         {/* 已选会话引用 chips：可视化标签，点击 × 删除 */}
         {mentionChips.length > 0 && (
           <div className="mention-chips" role="group" aria-label="已引用会话">
@@ -1784,16 +2101,40 @@ export default function AgentWindow({
           value={input}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          placeholder="输入消息，Enter 发送；Shift+Enter 或 Ctrl+Enter 换行；输入 & 可引用历史会话"
+          onPaste={onPaste}
+          placeholder="输入消息，Enter 发送；Shift+Enter 或 Ctrl+Enter 换行；输入 & 可引用历史会话；可直接粘贴或拖入文件"
           aria-label="消息输入"
           rows={1}
           style={{ resize: 'none', minHeight: '44px', maxHeight: '200px' }}
         />
+        <input
+          ref={filePickerRef}
+          type="file"
+          multiple
+          className="agent-window__file-input"
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            event.target.value = ""; // 清空才能重复选同一个文件
+            void addAttachmentsFromFiles(files, "picker");
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => filePickerRef.current?.click()}
+          disabled={attachmentBusy || streaming}
+          aria-label="添加附件"
+          title="添加附件（也可直接粘贴或拖入）"
+        >
+          ＋
+        </button>
         <button
           type="button"
           className={streaming ? "btn btn--stop" : "btn btn--primary"}
           onClick={streaming ? cancelCurrent : () => void send()}
-          disabled={!streaming && !input.trim()}
+          disabled={!streaming && !input.trim() && pendingAttachments.length === 0}
           aria-label={streaming ? "停止生成" : "发送"}
           title={streaming ? "停止本次生成" : "发送"}
         >

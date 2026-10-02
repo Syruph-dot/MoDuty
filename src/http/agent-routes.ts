@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { MomokaHttpError } from "../http-error.js";
+import { findAttachment, type AttachmentRef } from "../attachments.js";
 import { DISPATCHER_SYSTEM_PROMPT } from "../agent-registry.js";
 import { buildAgentRelations } from "../agent-relations.js";
 import { buildDispatchTaskMessage } from "../dispatch-message.js";
@@ -330,10 +331,13 @@ export async function handleAgentRoutes(
     const record = await requireAgent(runtime.registry, decodeURIComponent(agentChatMatch[1] ?? ""));
     const body = await readJsonBody(request);
     const message = String(body.message ?? "").trim();
-    if (!message) {
+    // 附件：只信任 id，其余元数据以磁盘为准重建（前端传的形状不作为权威）
+    const attachments = await resolveChatAttachments(record, body.attachments);
+    // 只发附件不发文字是正常用法（“把这份文件给你”），两者至少有一个
+    if (!message && attachments.length === 0) {
       throw new MomokaHttpError(400, "Message cannot be empty");
     }
-    await streamAgentChat(ctx, response, record, message);
+    await streamAgentChat(ctx, response, record, message, attachments);
     return true;
   }
 
@@ -559,6 +563,37 @@ export async function handleAgentRoutes(
 }
 
 /**
+ * 把前端传来的 `attachments: [{id}]` 解析成权威的附件引用。
+ *
+ * 只接受 id：文件名、媒体类型、体积全部以磁盘上的实际情况为准，不采信前端——
+ * 这是「路径写在消息里、Agent 会拿它去读文件」这条链路的唯一防线，
+ * 不校验归属就能让任意 attId 变成跨会话读文件的句柄。
+ */
+async function resolveChatAttachments(record: AgentRecord, value: unknown): Promise<AttachmentRef[]> {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  const resolved: AttachmentRef[] = [];
+  const missing: string[] = [];
+  for (const item of value) {
+    const id = typeof item === "string"
+      ? item
+      : (typeof item === "object" && item !== null && typeof (item as { id?: unknown }).id === "string"
+        ? (item as { id: string }).id
+        : "");
+    if (!id) continue;
+    const found = await findAttachment(record.workspaceDir, record.sessionId, id);
+    if (!found) {
+      missing.push(id);
+      continue;
+    }
+    resolved.push(found.ref);
+  }
+  if (missing.length > 0) {
+    throw new MomokaHttpError(400, `附件不存在或不属于本会话（请重新附加后再发送）：${missing.join(", ")}`);
+  }
+  return resolved;
+}
+
+/**
  * /api/agents/:id/chat：SSE 流式薄壳。终点处理（complete/fail/cancel + pending 挂起）
  * 全部在统一驱动器 driveAgentTurn 内；这里只负责 SSE 转发与连接生命周期。
  */
@@ -567,6 +602,7 @@ async function streamAgentChat(
   response: ServerResponse,
   record: AgentRecord,
   message: string,
+  attachments: AttachmentRef[] = [],
 ): Promise<void> {
   const deps = orchestrationOf(ctx);
   const startedAt = Date.now(); // 运行耗时：无论正常结束/异常/取消都记一次
@@ -586,6 +622,7 @@ async function streamAgentChat(
   try {
     const result = await driveAgentTurn(deps, record, {
       message,
+      ...(attachments.length > 0 ? { attachments } : {}),
       onEvent: (event) => sseData(response, event),
       signal: controller.signal,
     });

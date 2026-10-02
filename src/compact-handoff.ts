@@ -1,4 +1,5 @@
 import type { StoredMessage } from "./serialization.js";
+import { formatAttachmentListing, readAttachmentsFromMessage } from "./attachments.js";
 
 export const COMPACT_HANDOFF_PROMPT_VERSION = "task-handoff-v1";
 
@@ -136,6 +137,13 @@ export function formatMessagesForHandoff(messages: StoredMessage[]): string {
     }
     for (const [index, call] of toolCalls.entries()) {
       if (!seenToolCalls.has(index)) lines.push(`工具调用与结果：\n${JSON.stringify(call)}`);
+    }
+    // 附件清单：与当轮 prompt 用同一个格式化函数（两处输出必须逐字一致，
+    // 否则同一轮在历史里与当轮的写法不同，上游前缀缓存会被打穿）。
+    // 历史轮次里的图片不重复注入 base64，清单里也不重复（forHistory）。
+    const attachments = readAttachmentsFromMessage((message as Record<string, unknown>).attachments);
+    if (attachments.length > 0) {
+      lines.push(formatAttachmentListing(attachments, { forHistory: true }));
     }
     return lines.filter(Boolean).join("\n");
   }).join("\n\n");

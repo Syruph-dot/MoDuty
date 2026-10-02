@@ -334,6 +334,10 @@ export const bridgeTransport: BrowserTransport = {
       incognito: options.profileDir === null,
       bounds: { x: 0, y: 0, w: options.viewport.width, h: options.viewport.height },
     }, 60_000);
+    // 建完先压到主窗口内容**之下**：0,0×视口只是为了让 headless 的 webview 有合成表面（截图要用），
+    // 不能让这个占位矩形真的盖在前端界面上。前端宿主（BrowserView）挂上并喂完矩形后会把它提回最上层，
+    // 被卡片盖住时再压回去（见 desktop/src/components/BrowserView.tsx）。
+    await bridgeCall(handle, "POST", "/webviews/stacked", { label, behind: true }, 15_000).catch(() => undefined);
     return new BridgeSession(handle, label);
   },
 };

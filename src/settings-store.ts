@@ -31,6 +31,12 @@ export interface ModelPoolEntry {
   model: string;
   /** 上下文窗口（tokens）；未设置时按模型名自动推断 */
   contextWindow?: number;
+  /**
+   * 该条目对应模型是否支持图片输入（多模态）。
+   * 未标记 = 不支持：附件里的图片不会被直接发给它，只在清单里留路径与占位说明。
+   * 保守默认是有意的——上游对不支持的模型收到 image_url 会直接报错。
+   */
+  supportsVision?: boolean;
   /** 是否启用（停用条目不可被 high/low/exact 解析使用） */
   enabled: boolean;
 }
@@ -96,6 +102,7 @@ function normalizeEntry(raw: unknown): ModelPoolEntry | null {
     ...(typeof obj.contextWindow === "number" && Number.isSafeInteger(obj.contextWindow) && obj.contextWindow > 0
       ? { contextWindow: obj.contextWindow }
       : {}),
+    ...(obj.supportsVision === true ? { supportsVision: true } : {}),
     enabled: obj.enabled !== false,
   };
 }

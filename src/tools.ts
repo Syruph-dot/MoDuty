@@ -17,7 +17,8 @@ import { getDispatchHandler } from "./dispatch-bridge.js";
 import { isDispatcherAgent } from "./agent-registry.js";
 import type { SessionManager } from "./session-manager.js";
 import type { AgentRegistry } from "./agent-registry.js";
-import type { AgentKind } from "./types.js";
+import type { AgentKind, ToolRunResult } from "./types.js";
+import { readWorkspaceFileForModel } from "./file-extract.js";
 
 export interface WorkspaceManifest {
   name: string;
@@ -118,17 +119,23 @@ export interface ApprovalOrigin {
   runId?: string;
 }
 
-export async function readFileTool(input: WorkspaceToolInput & { path: string }, tracePath?: string): Promise<string> {
+/**
+ * 读工作区文件。
+ *
+ * 按类型分派（见 file-extract.ts）：图片以图像内容块返回、pdf/docx/xlsx 自动提取文本、
+ * 其余按 UTF-8 读取。返回值可能出现内容块，工具结果类型相应放宽为 string | ToolRunResult。
+ */
+export async function readFileTool(input: WorkspaceToolInput & { path: string }, tracePath?: string): Promise<string | ToolRunResult> {
   try {
     const filePath = resolveWorkspacePath(input.workDir, input.path, "read", tracePath);
-    const fileStats = await stat(filePath).catch(() => null);
-    if (!fileStats) {
-      return `错误：文件 '${input.path}' 不存在。`;
-    }
-    if (fileStats.isDirectory()) {
-      return `错误：'${input.path}' 是一个目录，请指定文件路径。`;
-    }
-    return await readFile(filePath, "utf8");
+    const result = await readWorkspaceFileForModel({
+      workDir: input.workDir,
+      displayPath: input.path,
+      absPath: filePath,
+    });
+    // 纯文本结果保持「返回字符串」的旧合同（调用方与测试都按字符串断言），
+    // 只有真正带回内容块（图片）时才返回结构化结果，把契约变更面压到最小。
+    return result.parts && result.parts.length > 0 ? result : result.text;
   } catch (error) {
     return formatToolError(error, "读取文件失败");
   }
@@ -547,6 +554,7 @@ const TOOL_ARGUMENT_SCHEMAS = {
   run_shell: z.object({ command: z.string().min(1), workspace: z.string().min(1).optional() }).strict(),
   run_momoka_cli: z.object({ args: z.array(z.string()).min(1).max(64) }).strict(),
   browse_create: z.object({ name: z.string().min(1).optional(), mode: z.enum(["persistent", "incognito"]).optional() }).strict(),
+  browse_launch: z.object({ browser_id: z.string().min(1) }).strict(),
   browse_list: z.object({}).strict(),
   browse_navigate: z.object({ browser_id: z.string().min(1), url: z.string().min(1), wait_until: z.enum(["load", "domcontentloaded", "commit"]).optional() }).strict(),
   browse_observe: z.object({ browser_id: z.string().min(1) }).strict(),
@@ -859,13 +867,28 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "browse_create",
-      description: "创建并启动一个受控浏览器（独立于 Agent 的浏览器磁贴）。mode=persistent 持久化登录/Cookie（默认正常模式）；mode=incognito 无痕。不同工作目录可通过 browse_list 中的 browser_id 复用同一 profile。返回浏览器 id，后续 browse_* 用 browser_id 引用。",
+      description: "新建并启动一个受控浏览器。**这是新建**：会分配一个全新的 profile 目录，原实例的登录态/Cookie 不会带过来。如果是想把一个已关闭的实例重新拉起来，请用 browse_launch（同实例同 profile）；要对现有实例继续操作则直接 browse_navigate。mode=persistent 持久化登录/Cookie（默认正常模式）；mode=incognito 无痕。返回新建的 browser id，后续 browse_* 用 browser_id 引用。",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string", description: "可选：浏览器名称（磁贴标题）" },
           mode: { type: "string", enum: ["persistent", "incognito"], description: "persistent=持久化登录（默认）；incognito=无痕" },
         },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browse_launch",
+      description: "重新启动一个已存在的受控浏览器（browser_id 取自 browse_list）。同一实例、同一个 profile，**登录态与 Cookie 保留**——实例处于 closed / 未启动时优先用它，不要为了重启而 browse_create。已 ready 时幂等返回。",
+      parameters: {
+        type: "object",
+        properties: {
+          browser_id: { type: "string", description: "browse_list 返回的浏览器 id" },
+        },
+        required: ["browser_id"],
         additionalProperties: false,
       },
     },
@@ -886,7 +909,7 @@ export const TOOL_SPECS = [
     type: "function",
     function: {
       name: "browse_navigate",
-      description: "导航浏览器到指定 URL（未提供协议时自动补 https://）。wait_until 可选 load/domcontentloaded/commit。",
+      description: "导航浏览器到指定 URL（未提供协议时自动补 https://）。实例已关闭时会自动重新启动，且**沿用原 profile（登录态/Cookie 保留）**，因此接着用旧 browser_id 导航是安全的。wait_until 可选 load/domcontentloaded/commit。",
       parameters: {
         type: "object",
         properties: {
@@ -1075,7 +1098,7 @@ export async function executeToolCall(
   sessionManager?: SessionManager,
   agentRegistry?: AgentRegistry,
   blockedToolNames: readonly string[] = [],
-): Promise<string> {
+): Promise<string | ToolRunResult> {
   if (blockedToolNames.includes(name)) {
     const reason = `本轮请求已禁止该类访问，工具 ${name} 已拦截，未执行。`;
     await appendTraceEvent(tracePath, "tool_blocked", { name, reason }).catch(() => undefined);
@@ -1239,7 +1262,7 @@ export async function executeToolCall(
   return `错误：未知工具 '${name}'。`;
 }
 
-export async function executeApprovedToolCall(toolName: ApprovalToolName, args: Record<string, string>, targetWorkspace: string): Promise<string> {
+export async function executeApprovedToolCall(toolName: ApprovalToolName, args: Record<string, string>, targetWorkspace: string): Promise<string | ToolRunResult> {
   if (toolName === "read_file") return await readFileTool({ workDir: targetWorkspace, path: args.path ?? "" });
   if (toolName === "write_file") return await writeFileTool({ workDir: targetWorkspace, path: args.path ?? "", content: args.content ?? "" });
   if (toolName === "list_files") return await listFilesTool({ workDir: targetWorkspace, directory: args.directory || "." });
@@ -1287,7 +1310,7 @@ async function deferCrossWorkspaceTool(
   targetWorkspace: string,
   tracePath?: string,
   approvalOrigin?: ApprovalOrigin,
-): Promise<string> {
+): Promise<string | ToolRunResult> {
   const targetStats = await stat(targetWorkspace).catch(() => null);
   if (!targetStats?.isDirectory()) return `错误：目标工作目录不存在或不是目录：${targetWorkspace}`;
   const args = Object.fromEntries(Object.entries(rawArgs)
@@ -1419,14 +1442,21 @@ async function executeBrowserTool(name: string, args: Record<string, unknown>): 
           mode: args.mode === "persistent" ? "persistent" : args.mode === "incognito" ? "incognito" : undefined,
         });
         const launched = await browserService.launch(info.id);
-        return `浏览器已创建并启动：id=${launched.id} 名称=${launched.name} 模式=${launched.mode === "persistent" ? "持久化（正常模式）" : "无痕（incognito）"}\n后续操作请用 browse_navigate / browse_observe 等，参数 browser_id=${launched.id}`;
+        return `浏览器已新建并启动：id=${launched.id} 名称=${launched.name} 模式=${launched.mode === "persistent" ? "持久化（正常模式）" : "无痕（incognito）"}\n注意：这是新实例、新 profile，原实例的登录态不会带过来。\n后续操作请用 browse_navigate / browse_observe 等，参数 browser_id=${launched.id}`;
+      }
+      case "browse_launch": {
+        if (!id) return "错误: browse_launch 需要 browser_id（可先 browse_list）";
+        const info = await browserService.getInfo(id);
+        if (!info) return `错误: 浏览器实例不存在 ${id}（可先 browse_list）`;
+        const launched = await browserService.launch(id);
+        return `已复用并启动既有浏览器：id=${launched.id} 名称=${launched.name} 模式=${launched.mode === "persistent" ? "持久化" : "无痕"}，profile 与登录态保留（不是新建）。\n后续直接用 browser_id=${launched.id} 操作。`;
       }
       case "browse_list": {
         const browsers = await browserService.list();
-        if (browsers.length === 0) return "当前没有受控浏览器实例。可用 browse_create 创建（mode=persistent 正常模式 / incognito 无痕）。";
+        if (browsers.length === 0) return "当前没有受控浏览器实例。可用 browse_create 新建（mode=persistent 正常模式 / incognito 无痕）。";
         return `受控浏览器（${browsers.length} 个）：\n${browsers
           .map((b) => `- ${b.id} | ${b.name} | ${b.mode === "persistent" ? "持久化" : "无痕"} | ${b.state} | ${b.url ?? "(未导航)"}`)
-          .join("\n")}`;
+          .join("\n")}\nclosed 的实例用 browse_launch 复用（同 profile、登录态保留），不要新建。`;
       }
       case "browse_navigate": {
         const info = await browserService.getInfo(id);

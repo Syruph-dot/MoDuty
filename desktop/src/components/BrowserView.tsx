@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { browserAction, listBrowsers } from "../lib/api";
-import { setWebviewBounds, setWebviewVisible, toPhysicalRect, webviewLabelFor } from "../lib/webviewBridge";
+import { setWebviewBounds, setWebviewStacked, toPhysicalRect, webviewLabelFor } from "../lib/webviewBridge";
 import { useBrowserStore } from "../state/browserStore";
 import type { BrowserInfo } from "../types";
 
@@ -91,48 +91,88 @@ export function useBrowserView(browser: BrowserInfo): BrowserViewController {
 }
 
 /**
- * 把原生子 webview 钉在占位元素的矩形上。
+ * 本磁贴矩形是不是被别的 DOM 盖住了。
  *
- * 三个必须成立的点：
+ * 原生子 webview 是独立子 HWND（wry 用 WS_CHILD 容器窗口承载），CSS 的 z-index 管不到它：
+ * 它会一直盖在主 webview 之上，所以“谁在上面”只能反过来问 DOM——取矩形上的几个采样点，
+ * `elementFromPoint` 命中的不是本组件（或它的子节点）就算被盖住。
+ * 命中点落在窗口外（磁贴被裁掉一部分）不算遮挡，那部分交给 `inViewport`。
+ */
+function isCoveredByDom(el: HTMLElement, rect: DOMRect): boolean {
+  const samples: Array<[number, number]> = [
+    [rect.left + rect.width / 2, rect.top + rect.height / 2],
+    [rect.left + rect.width * 0.2, rect.top + rect.height * 0.2],
+    [rect.left + rect.width * 0.8, rect.top + rect.height * 0.2],
+    [rect.left + rect.width * 0.2, rect.top + rect.height * 0.8],
+    [rect.left + rect.width * 0.8, rect.top + rect.height * 0.8],
+  ];
+  for (const [x, y] of samples) {
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+    const hit = document.elementFromPoint(x, y);
+    if (hit && hit !== el && !el.contains(hit)) return true;
+  }
+  return false;
+}
+
+/**
+ * 把原生子 webview 钉在占位元素的矩形上，并跟随 DOM 的遮挡关系。
+ *
+ * 四个必须成立的点：
  * 1. 坐标是**物理像素**（乘 devicePixelRatio）；
  * 2. 原生视图不参与 DOM 层级，永远盖在 React 上层，所以工具条必须在矩形之外（本组件的
  *    工具栏是独立的一行，天然满足）；
- * 3. 宿主隐藏/滑出视口时必须显式 `set_visible(false)`，否则“窗口关了页面还在”。
+ * 3. 「被卡片/窗口盖住」和「滑出视口」都用 `set_stacked(behind=true)` 表达：压到主 webview
+ *    之下——视觉上被盖住，但 `IsVisible` 不动，WebView2 继续渲染，CDP 截图不受影响；
+ * 4. 宿主卸载（关窗口 / 切走标签）同样只是压下去，不用 hide（hide 会丢合成表面 → 截图变空）。
  *
  * 用 rAF 跟框而不是只靠 ResizeObserver：磁贴是拖拽定位的，位置变化不触发 size 观察。
+ *
+ * 成败记账：`appliedKey` 只在 set_bounds **真的成功**后才推进。子 webview 是后端异步建的，
+ * 视图挂载时它很可能还不存在；本组件挂载即开跑，首次 set_bounds 会因“webview 不存在”失败。
+ * 旧写法先记账再发请求（`lastBounds = key; void setWebviewBounds(...)`），失败也当成已应用，
+ * 于是 webview 一直停在创建时的占位矩形（0,0 × 视口大小 = 全屏左上角），只有拖拽改变了矩形
+ * 才会再发一次——这就是“拉一下才回到卡片里”的成因。
  */
 function useNativeWebview(browserId: string, targetRef: React.RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
     const label = webviewLabelFor(browserId);
     let raf = 0;
-    let lastBounds = "";
-    let shown = false;
+    let inFlight = false;
+    let appliedKey = "";
+    let exposed: boolean | null = null;
 
     const tick = (): void => {
       const el = targetRef.current;
-      if (el) {
+      if (el && !inFlight) {
         const rect = el.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
         const physical = toPhysicalRect(rect);
         const inViewport = rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
+        const onTop = inViewport && !isCoveredByDom(el, rect);
         const key = `${physical.x},${physical.y},${physical.w},${physical.h}`;
-        if (key !== lastBounds) {
-          lastBounds = key;
-          void setWebviewBounds(label, physical).catch(() => undefined);
+        if (key !== appliedKey || onTop !== exposed) {
+          inFlight = true;
+          // 先定位、后切 z 序：定位没成功就不动层级，否则会把它提到不正确的位置上。
+          void setWebviewBounds(label, physical)
+            .then(() => {
+              appliedKey = key;
+              return setWebviewStacked(label, !onTop);
+            })
+            .then(() => {
+              exposed = onTop;
+            })
+            .catch(() => undefined) // 失败不记账 → 下一帧重试
+            .finally(() => {
+              inFlight = false;
+            });
         }
-        if (inViewport !== shown) {
-          shown = inViewport;
-          void setWebviewVisible(label, inViewport).catch(() => undefined);
-        }
-        void dpr;
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
-      // 宿主卸载（关窗口 / 切走标签）时把原生视图收起来——React 管不到它
-      void setWebviewVisible(label, false).catch(() => undefined);
+      // 宿主卸载时把原生视图压回底层：React 管不到它，但它仍在渲染（截图要用）
+      void setWebviewStacked(label, true).catch(() => undefined);
     };
   }, [browserId, targetRef]);
 }

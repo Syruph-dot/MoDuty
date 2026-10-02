@@ -17,6 +17,7 @@ import { handleSessionRoutes } from "./http/session-routes.js";
 import { handleQuickRefRoutes } from "./http/quickref-routes.js";
 import { handleRelationRoutes } from "./http/relation-routes.js";
 import { handleAgentRoutes } from "./http/agent-routes.js";
+import { handleAttachmentRoutes } from "./http/attachment-routes.js";
 import { handleApprovalRoutes } from "./http/approval-routes.js";
 import { handleBrowserRoutes } from "./http/browser-routes.js";
 import { handleDailyRoutes } from "./http/daily-routes.js";
@@ -93,6 +94,7 @@ async function dispatch(ctx: RouteContext, request: IncomingMessage, response: S
     if (await handleQuickRefRoutes(ctx, request, response, url)) return;
     if (await handleSessionRoutes(ctx, request, response, url)) return;
     if (await handleAgentRoutes(ctx, request, response, url)) return;
+    if (await handleAttachmentRoutes(ctx, request, response, url)) return;
     if (await handleApprovalRoutes(ctx, request, response, url)) return;
     if (await handleBrowserRoutes(ctx, request, response, url)) return;
     if (await handleDailyRoutes(ctx, request, response, url)) return;

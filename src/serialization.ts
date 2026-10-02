@@ -1,4 +1,5 @@
 import type { SessionMessage, SessionRecord } from "./session-manager.js";
+import { readAttachmentsFromMessage, type AttachmentRef } from "./attachments.js";
 
 /** 统一的存盘消息结构（内存态 + 落盘态字段兼容） */
 export interface StoredMessage {
@@ -25,6 +26,11 @@ export interface StoredMessage {
   reasoning?: string;
   /** 产出这条消息时实际使用的模型名（消息头展示用） */
   model?: string;
+  /**
+   * 随用户消息一起提交的附件（输入框粘贴/拖拽/选择）。
+   * 落盘与回读都必须保留：历史投影要按它拼附件清单，界面要按它渲染卡片。
+   */
+  attachments?: AttachmentRef[];
   /** 兼容旧字段：允许任意额外键 */
   [key: string]: unknown;
 }
@@ -113,6 +119,11 @@ export function messageFromDisk(raw: Record<string, unknown>): StoredMessage {
     ...(raw.contextOnly === true || raw.context_only === true ? { contextOnly: true } : {}),
     ...(typeof raw.reasoning === "string" && raw.reasoning ? { reasoning: raw.reasoning } : {}),
     ...(typeof raw.model === "string" && raw.model ? { model: raw.model } : {}),
+    // 附件：磁盘形状不被信任，逐字段校验后再回读（形状不对的项丢弃，不炸整轮）
+    ...((): { attachments?: AttachmentRef[] } => {
+      const attachments = readAttachmentsFromMessage(raw.attachments);
+      return attachments.length > 0 ? { attachments } : {};
+    })(),
   };
 }
 

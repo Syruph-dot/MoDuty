@@ -19,11 +19,12 @@ export async function runChatStream(
   message: string,
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
+  attachments: ReadonlyArray<{ id: string }> = [],
 ): Promise<void> {
   const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify(attachments.length > 0 ? { message, attachments } : { message }),
     signal,
   });
   if (!res.ok || !res.body) {

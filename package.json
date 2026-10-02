@@ -34,7 +34,11 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.74.0",
+    "jimp": "^1.6.1",
+    "mammoth": "^1.13.0",
     "qrcode": "^1.5.4",
+    "read-excel-file": "^9.3.10",
+    "unpdf": "^1.8.1",
     "zod": "^3.25.76"
   }
 }

@@ -167,6 +167,121 @@ export async function submitQuestionAnswers(
 }
 
 /**
+ * 附件（输入框粘贴/拖拽/选择的文件）。字段与后端 `src/attachments.ts` 的 AttachmentRef 对齐。
+ */
+export interface AttachmentRef {
+  id: string;
+  filename: string;
+  mediaType: string;
+  /** 相对会话工作区的路径（送模型的就是它） */
+  localPath: string;
+  size: number;
+  sha1?: string;
+  source?: "paste" | "drop" | "picker";
+  createdAt?: string;
+}
+
+/** 附件回传地址（图片直接渲用；不把 base64 塞进消息 JSON） */
+export async function attachmentRawUrl(agentId: string, attachmentId: string): Promise<string> {
+  const base = await awaitApiBase();
+  return `${base}/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}/raw`;
+}
+
+/**
+ * 后端缺附件接口时的提示（典型场景：前端已是新版，后端还是旧构建 / 没重启）。
+ * “Not found” 这种原生 404 对用户等于没说，这里把它翻成可行动的句子。
+ */
+function attachmentEndpointMissing(status: number, backendMessage: string): string | null {
+  const looksLikeRouteMiss = status === 404 || /^not found$/iu.test(backendMessage.trim());
+  if (!looksLikeRouteMiss) return null;
+  return "后端不支持附件接口（当前运行的后端可能是旧构建或未重启）。请重启后端或重新构建后再试。";
+}
+
+/**
+ * 粘贴/文件选择入口：本地拿不到路径，只能把字节交给后端落盘。
+ * 超过后端字节上传上限时后端会返回 413，前端把提示原样展示（提示里会建议改用拖拽）。
+ */
+export async function uploadAgentAttachment(
+  agentId: string,
+  input: { filename: string; mediaType: string; dataBase64: string; source?: "paste" | "picker" },
+): Promise<AttachmentRef> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/attachments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = (await res.json().catch(() => ({}))) as { attachment?: AttachmentRef; error?: string };
+  if (!res.ok || !data.attachment) {
+    const backendMessage = data.error ?? "";
+    throw new Error(
+      attachmentEndpointMissing(res.status, backendMessage)
+        ?? backendMessage
+        ?? `附件上传失败：HTTP ${res.status}`,
+    );
+  }
+  return data.attachment;
+}
+
+/** 拖拽入口：Tauri 原生拖放给的是绝对路径，后端直接复制，不过 base64 */
+export async function importAgentAttachments(
+  agentId: string,
+  paths: string[],
+): Promise<{ attachments: AttachmentRef[]; failed: Array<{ path: string; error: string }> }> {
+  const base = await awaitApiBase();
+  const res = await fetch(`${base}/api/agents/${encodeURIComponent(agentId)}/attachments/import`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    attachments?: AttachmentRef[];
+    failed?: Array<{ path: string; error: string }>;
+    error?: string;
+  };
+  if (!res.ok) {
+    const backendMessage = data.error ?? "";
+    throw new Error(
+      attachmentEndpointMissing(res.status, backendMessage)
+        ?? backendMessage
+        ?? `附件导入失败：HTTP ${res.status}`,
+    );
+  }
+  return { attachments: data.attachments ?? [], failed: data.failed ?? [] };
+}
+
+/** 删除附件（未发送时移除、或从磁盘清理） */
+export async function deleteAgentAttachment(agentId: string, attachmentId: string): Promise<boolean> {
+  try {
+    const base = await awaitApiBase();
+    const res = await fetch(
+      `${base}/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { method: "DELETE" },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 文件 → base64（去掉 data URL 前缀）。
+ * 用 FileReader 而不是 arrayBuffer + 手写编码：大文件下前者不产生额外峰值拷贝。
+ */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`读取文件失败：${file.name}`));
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
  * 显式取消该 agent 正在进行的 chat 流（停止按钮）。返回是否命中活跃流。
  * 任务被中止后，会话里对应的流式消息会标记为 stopped。
  */
@@ -217,6 +332,8 @@ export interface ModelPoolEntryView {
   apiKey?: string;
   model: string;
   contextWindow?: number;
+  /** 该条目模型是否支持图片输入（多模态）；未勾选时附件里的图片不会直接发给它 */
+  supportsVision?: boolean;
   enabled: boolean;
 }
 

@@ -3,7 +3,8 @@
 //! 职责边界：
 //! 1. **子 webview 生命周期**：按 `(browserId, tabId)` 创建 / 关闭 / 列举子 webview；
 //! 2. **矩形跟随**：`set_bounds`（物理像素），拖拽缩放磁贴时由前端喂进来；
-//! 3. **可见性**：`show` / `hide`（切标签、窗口遮挡、宿主切换时用）；
+//! 3. **可见性与 z 序**：`show` / `hide`（切标签、宿主切换时用）；
+//!    `stack`（被卡片/窗口盖住时把子 webview 压到主 webview 之下，不动 `IsVisible`）；
 //! 4. **CDP 直通**：`cdp` / `eval`，走 `ICoreWebView2Controller`，不开远程调试端口；
 //! 5. **对外通道**：只监听 `127.0.0.1` 的 HTTP 端点 + 一次性 token 文件，
 //!    供同机的后端 sidecar 驱动页面（后端与 UI 是**两个进程**，必须有一条通道）。
@@ -37,6 +38,11 @@ use webview2_com::{
   CallDevToolsProtocolMethodCompletedHandler, Microsoft::Web::WebView2::Win32::ICoreWebView2,
 };
 use windows::core::HSTRING;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{
+  SetWindowPos, HWND_BOTTOM, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+  SWP_NOSIZE,
+};
 
 /// CDP 单次调用超时
 pub const CDP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -299,6 +305,9 @@ pub fn set_bounds(app: &AppHandle, label: &str, bounds: Value) -> Result<Value, 
 }
 
 /// 显隐：切标签、宿主切换、窗口遮挡时用。**不要**用销毁来隐藏（会丢页面状态）。
+///
+/// 注意：隐藏会丢掉合成表面，`Page.captureScreenshot` 只能拿到空数据（见 browser-transport-bridge
+/// 的取舍说明）。「被别的卡片盖住」这种纯 z 序问题请用 `set_stacked`，不要用 hide。
 pub fn set_visible(app: &AppHandle, label: &str, visible: bool) -> Result<Value, String> {
   let label = label.to_string();
   let label_for_thread = label.clone();
@@ -309,6 +318,57 @@ pub fn set_visible(app: &AppHandle, label: &str, visible: bool) -> Result<Value,
     result.map_err(|err| format!("可见性切换失败：{err}"))
   })
   .map(|_| json!({ "ok": true, "label": label, "visible": visible }))
+}
+
+/// z 序：把子 webview 的容器窗口压到主 webview 之下（behind=true）或提回最上层（behind=false）。
+///
+/// 为什么需要它：子 webview 是独立的子 HWND（wry `create_container_hwnd` 用 WS_CHILD 建，创建时设 `HWND_TOP`），
+/// DOM 的 z-index 管不到它——它会一直盖在主 webview 之上，所以“卡片盖住浏览器”永远不成立。
+/// 而 hide 会丢合成表面（截图变空，见上），所以这里只改 z 序、**不动 `IsVisible`**：
+/// 视觉上被 DOM 盖住，但 WebView2 继续渲染，CDP 截图不受影响。
+///
+/// 注：wry 的 `set_bounds` 用的是 `SWP_NOZORDER`，所以设过的 z 序不会被后续矩形更新冲掉。
+pub fn set_stacked(app: &AppHandle, label: &str, behind: bool) -> Result<Value, String> {
+  let label = label.to_string();
+  let webview_label = label.clone();
+  let webview = app
+    .get_webview(&webview_label)
+    .ok_or_else(|| format!("webview 不存在：{webview_label}"))?;
+  let (tx, rx) = mpsc::channel::<Result<(), String>>();
+  webview
+    .with_webview(move |platform| {
+      // 同步调用：闭包返回前就发完结果，所以在 with_webview 外面 recv 不会死锁
+      let _ = tx.send(apply_z_order(&platform.controller(), behind));
+    })
+    .map_err(|err| format!("with_webview(stacked) 失败：{err}"))?;
+  match rx.recv_timeout(MAIN_THREAD_TIMEOUT) {
+    Ok(result) => {
+      result?;
+      Ok(json!({ "ok": true, "label": label, "behind": behind }))
+    }
+    Err(err) => Err(format!("set_stacked 等待结果失败：{err}")),
+  }
+}
+
+/// UI 线程侧：子 webview 容器的 z 序翻转（纯 Win32，立刻返回）。
+///
+/// `controller.ParentWindow()` 就是 wry 承载该 webview 的容器 HWND（`CreateCoreWebView2Controller` 的入参）。
+fn apply_z_order(controller: &ICoreWebView2Controller, behind: bool) -> Result<(), String> {
+  let mut hwnd = HWND::default();
+  unsafe { controller.ParentWindow(&mut hwnd) }.map_err(|err| format!("ParentWindow 失败：{err}"))?;
+  let insert_after = if behind { HWND_BOTTOM } else { HWND_TOP };
+  unsafe {
+    SetWindowPos(
+      hwnd,
+      Some(insert_after),
+      0,
+      0,
+      0,
+      0,
+      SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
+    )
+  }
+  .map_err(|err| format!("SetWindowPos 失败：{err}"))
 }
 
 pub fn close(app: &AppHandle, label: &str) -> Result<Value, String> {
@@ -483,6 +543,11 @@ fn dispatch(app: &AppHandle, method: &str, path: &str, body: Value) -> Result<Va
       let label = as_str_field(&body, "label")?.to_string();
       let visible = body.get("visible").and_then(Value::as_bool).unwrap_or(true);
       set_visible(app, &label, visible)
+    }
+    ("POST", "/webviews/stacked") => {
+      let label = as_str_field(&body, "label")?.to_string();
+      let behind = body.get("behind").and_then(Value::as_bool).unwrap_or(true);
+      set_stacked(app, &label, behind)
     }
     ("POST", "/webviews/close") => {
       let label = as_str_field(&body, "label")?.to_string();
@@ -663,6 +728,11 @@ pub fn webview_set_bounds(app: AppHandle, label: String, x: i32, y: i32, w: i32,
 #[tauri::command]
 pub fn webview_set_visible(app: AppHandle, label: String, visible: bool) -> Result<Value, String> {
   set_visible(&app, &label, visible)
+}
+
+#[tauri::command]
+pub fn webview_set_stacked(app: AppHandle, label: String, behind: bool) -> Result<Value, String> {
+  set_stacked(&app, &label, behind)
 }
 
 #[tauri::command]

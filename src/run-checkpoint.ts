@@ -6,31 +6,17 @@ import { isRecord, readJsonObject } from "./json-file.js";
 import { atomicWriteJson } from "./write-queue.js";
 
 /**
- * 耐用执行（P6）：checkpoint、工具调用幂等、预算、重试与死信。
+ * 耐用执行（P6）：checkpoint、工具调用幂等、重试与死信。
  *
  * 背景：原先 `resumeRunFromSnapshot` 只恢复审批记录，不恢复模型循环位置/工具调用位置；工具循环
- * 全在内存里，且 `maxToolRounds` 默认 Infinity —— 崩溃等于从头再来，而且没有花费上限。
+ * 全在内存里 —— 崩溃等于从头再来。
  *
  * 这模块提供可测的零件，接线在 model-client（每轮落盘 + 命中即复用）与 agent（重试 + 死信）：
  * - checkpoint 与 trace 同目录（`<workDir>/runs/<stamp>/checkpoint.json`），不需要新的路径约定；
  * - 工具调用幂等靠 `key = hash(runId, round, name, args)`：重试/恢复时命中已记录的 key 就直接复用结果，
  *   不再产生第二次副作用（写文件、跑命令都不会重复执行）；
- * - 预算从 Infinity 收敛为明确上限，超限立刻失败并留痕；
  * - 失败分类决定「重试」还是「记死信」。
  */
-
-/** 预算默认值：轮次 / 工具调用次数 / 墙钟时长 */
-export const DEFAULT_RUN_BUDGET = {
-  maxRounds: 24,
-  maxToolCalls: 60,
-  wallClockMs: 30 * 60_000,
-} as const;
-
-export interface RunBudget {
-  maxRounds: number;
-  maxToolCalls: number;
-  wallClockMs: number;
-}
 
 export interface RecordedToolCall {
   key: string;
@@ -41,7 +27,7 @@ export interface RecordedToolCall {
   at: string;
 }
 
-export type RunCheckpointStatus = "running" | "completed" | "failed" | "budget_exceeded";
+export type RunCheckpointStatus = "running" | "completed" | "failed";
 
 export interface RunCheckpoint {
   runId: string;
@@ -50,7 +36,6 @@ export interface RunCheckpoint {
   toolCalls: RecordedToolCall[];
   planStepId?: string;
   status: RunCheckpointStatus;
-  budget: RunBudget;
   startedAt: string;
   updatedAt: string;
   lastError?: string;
@@ -85,7 +70,6 @@ export function createCheckpoint(input: {
   runId: string;
   sessionId?: string;
   planStepId?: string;
-  budget?: Partial<RunBudget>;
   startedAt?: string;
 }): RunCheckpoint {
   const at = input.startedAt ?? new Date().toISOString();
@@ -96,7 +80,6 @@ export function createCheckpoint(input: {
     round: 0,
     toolCalls: [],
     status: "running",
-    budget: { ...DEFAULT_RUN_BUDGET, ...(input.budget ?? {}) },
     startedAt: at,
     updatedAt: at,
   };
@@ -148,32 +131,13 @@ export function markStatus(
   return checkpoint;
 }
 
-/** 预算检查：返回超限原因（未超限则 exceeded=false） */
-export function checkBudget(
-  checkpoint: RunCheckpoint,
-  now: Date = new Date(),
-): { exceeded: boolean; reason?: string } {
-  const { budget } = checkpoint;
-  if (checkpoint.round >= budget.maxRounds) {
-    return { exceeded: true, reason: `轮次超出预算（${checkpoint.round}/${budget.maxRounds}）` };
-  }
-  if (checkpoint.toolCalls.length >= budget.maxToolCalls) {
-    return { exceeded: true, reason: `工具调用超出预算（${checkpoint.toolCalls.length}/${budget.maxToolCalls}）` };
-  }
-  const elapsed = now.getTime() - new Date(checkpoint.startedAt).getTime();
-  if (Number.isFinite(elapsed) && elapsed > budget.wallClockMs) {
-    return { exceeded: true, reason: `运行时长超出预算（${Math.round(elapsed / 1000)}s/${Math.round(budget.wallClockMs / 1000)}s）` };
-  }
-  return { exceeded: false };
-}
-
 /** 可重试的失败特征：上游空流、网络抖动、超时、5xx */
 const RETRYABLE_PATTERN = /(超时|timeout|timed out|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|fetch failed|network|aborted|空流|empty (?:stream|response)|HTTP 5\d\d|\b50[234]\b)/iu;
-/** 明确不可重试：预算/轮次超限属于策略性终止，重试只会再撞一次 */
-const FATAL_PATTERN = /(超出预算|超过最大轮数|budget|API key 未配置|invalid|400|401|403|404)/iu;
+/** 明确不可重试：配置错误与请求非法，重试只会再撞一次 */
+const FATAL_PATTERN = /(API key 未配置|invalid|400|401|403|404)/iu;
 
 /**
- * 分类失败：可重试（网络/空流/5xx）还是致命（配置错、预算超限、请求非法）。
+ * 分类失败：可重试（网络/空流/5xx）还是致命（配置错误、请求非法）。
  * 额外支持「空输出也算可重试」——上游偶发只回 1 个帧、无内容是已知现象。
  */
 export function classifyRunFailure(error: unknown, options: { outputText?: string } = {}): "retryable" | "fatal" {
@@ -284,6 +248,5 @@ export async function findCheckpointByRunId(
 function isCheckpoint(value: unknown): value is RunCheckpoint {
   if (!isRecord(value)) return false;
   if (typeof value.runId !== "string" || typeof value.startedAt !== "string") return false;
-  if (!isRecord(value.budget)) return false;
   return Array.isArray(value.toolCalls);
 }

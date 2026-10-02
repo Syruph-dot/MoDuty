@@ -2,8 +2,6 @@ import { executeToolCall, TOOL_SPECS } from "./tools.js";
 import { findPoolEntry, loadSettings, type ModelPoolEntry } from "./settings-store.js";
 import { appendTraceEvent } from "./trace.js";
 import {
-  DEFAULT_RUN_BUDGET,
-  checkBudget,
   checkpointPathFor,
   createCheckpoint,
   findRecordedResult,
@@ -12,10 +10,10 @@ import {
   recordToolCall,
   toolCallKey,
   writeCheckpoint,
-  type RunBudget,
 } from "./run-checkpoint.js";
 import { normalizeUsage } from "./context-stats.js";
-import type { ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall } from "./types.js";
+import { contentToText } from "./context.js";
+import type { ContentPart, MessageContent, ModelClient, ModelRunContext, ModelRunResult, ModelUsage, StreamEvent, ToolCall, ToolRunResult } from "./types.js";
 
 type FetchLike = typeof fetch;
 
@@ -179,10 +177,6 @@ interface OpenAICompatibleModelClientOptions {
   baseUrl?: string;
   model?: string;
   fetch?: FetchLike;
-  /** 工具调用轮数上限 */
-  maxToolRounds?: number;
-  /** 运行预算（P6）：轮次 / 工具调用次数 / 墙钟时长；缺省用 DEFAULT_RUN_BUDGET */
-  budget?: Partial<RunBudget>;
   /** 模型调用是否使用 SSE 流式 */
   stream?: boolean;
   /** 单轮模型请求超时（毫秒） */
@@ -210,11 +204,68 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+/** 送往 OpenAI 兼容接口的消息（content 已是 wire 形态，内部视觉能力转换在拼装时完成） */
 interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | WireContentPart[] | null;
   tool_call_id?: string;
   tool_calls?: ToolCallRequest[];
+}
+
+/**
+ * 非视觉模型看到图片时的占位文案（对齐 Proma 的 NON_VISION_*_PLACEHOLDER 策略：
+ * 不报错、不静默丢弃，而是明确告诉模型「这里有图但你看不到」）。
+ */
+export const NON_VISION_USER_IMAGE_PLACEHOLDER = "（图片已省略：当前模型不支持图片输入）";
+export const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "（工具图片已省略：当前模型不支持图片输入）";
+
+/** OpenAI 兼容 wire 的内容块 */
+interface WireContentPart {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: { url: string };
+}
+
+/**
+ * 内部内容块 → OpenAI 兼容 wire 内容。
+ *
+ * 图片走 data URL（`<mime>;base64,<data>`），与 Proma 逐字对齐——不做外链，
+ * 本地服务的 URL 上游模型根本拉不到。非视觉模型降级为占位文本。
+ */
+export function toWireContent(
+  content: MessageContent | null,
+  supportsVision: boolean,
+  imagePlaceholder: string = NON_VISION_USER_IMAGE_PLACEHOLDER,
+): string | WireContentPart[] | null {
+  if (content == null) return null;
+  if (typeof content === "string") return content;
+  if (!supportsVision) {
+    const pieces: string[] = [];
+    for (const part of content) {
+      pieces.push(part.type === "text" ? part.text : imagePlaceholder);
+    }
+    const joined = pieces.filter((piece) => piece.length > 0).join("\n\n");
+    return joined.length > 0 ? joined : null;
+  }
+  const wire: WireContentPart[] = [];
+  for (const part of content) {
+    if (part.type === "text") {
+      if (part.text.length > 0) wire.push({ type: "text", text: part.text });
+      continue;
+    }
+    wire.push({ type: "image_url", image_url: { url: `data:${part.mimeType};base64,${part.data}` } });
+  }
+  if (wire.length === 0) return null;
+  // 只有文本块时直接降为字符串，尽量维持上游前缀缓存的稳定性
+  if (wire.every((part) => part.type === "text")) {
+    return wire.map((part) => part.text ?? "").join("");
+  }
+  return wire;
+}
+
+/** 工具结果的归一化形态（文本必败，内容块可选） */
+export function normalizeToolResult(result: string | ToolRunResult): ToolRunResult {
+  return typeof result === "string" ? { text: result } : result;
 }
 
 /**
@@ -249,7 +300,6 @@ const QUESTION_PATTERN = /pending question/i;
 export function createOpenAICompatibleModelClient(options: OpenAICompatibleModelClientOptions = {}): ModelClient {
   const tier = options.tier ?? "high";
   const fetchImpl = options.fetch ?? fetch;
-  const maxToolRounds = options.maxToolRounds ?? DEFAULT_RUN_BUDGET.maxRounds;
   const stream = options.stream ?? false;
   const enableTools = options.tools !== false;
   const requestTimeoutMs = options.requestTimeoutMs ?? 600_000;
@@ -279,26 +329,33 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
 
       // 消息数组：system（前缀不变）→ 历史（append-only）→ 本轮输入（唯一变动尾）。
       // 顺序固定的目的是让上游前缀缓存尽量命中：任何每轮变化的内容都只能放在末尾。
+      // 视觉能力：显式传值为准，未传则按不支持处理（保守，避免上游 400）。
+      const supportsVision = context.supportsVision === true;
+      const historyMessages = (context.historyMessages ?? []).map((message) => ({
+        role: toApiRole(message.role),
+        content: toWireContent(message.content, supportsVision),
+      }));
+      const inputParts = context.inputParts ?? [];
       const messages: ChatMessage[] = [
         { role: "system", content: context.systemPrompt },
-        ...(context.historyMessages ?? []).map((message) => ({
-          role: toApiRole(message.role),
-          content: message.content,
-        })),
-        { role: "user", content: input },
+        ...historyMessages,
+        {
+          role: "user",
+          content: toWireContent(
+            inputParts.length > 0 ? [{ type: "text", text: input }, ...inputParts] : input,
+            supportsVision,
+          ),
+        },
       ];
       const toolCalls: ToolCall[] = [];
-      const signal = mergeSignals([context.signal, AbortSignal.timeout(requestTimeoutMs)]);
       let usagePeak: ModelUsage | undefined;
 
       // 耐用执行（P6）：checkpoint 与 trace 同目录；若磁盘上已有同一 runId 的断点，则续用（重试/恢复不重放）
       const runId = context.runId ?? "run";
       const checkpointFile = context.tracePath ? checkpointPathFor(context.tracePath) : null;
-      const budget: RunBudget = { ...DEFAULT_RUN_BUDGET, ...(options.budget ?? {}) };
       let checkpoint = createCheckpoint({
         runId,
         ...(context.sessionId ? { sessionId: context.sessionId } : {}),
-        budget,
       });
       if (checkpointFile) {
         const restored = await readCheckpoint(checkpointFile).catch(() => null);
@@ -307,10 +364,14 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
       }
 
       try {
-        for (let round = 0; round <= maxToolRounds; round += 1) {
-        if (signal?.aborted) {
+        // 无轮次上限：循环只由模型自然收尾或客户端 abort/超时终止
+        for (let round = 0; ; round += 1) {
+        if (context.signal?.aborted) {
           throw new Error("请求已取消（客户端断开或超时）");
         }
+        // 超时口径 = 「单轮模型请求」：每个 round 重新计时，不再对整个 run 设墙钟。
+        // 这样长脚本执行（run_shell 跑几分钟）不会消耗模型请求的预算，也不会把整个 run 掐掉。
+        const roundSignal = mergeSignals([context.signal, AbortSignal.timeout(requestTimeoutMs)]);
         await appendTraceEvent(context.tracePath, "model_input", {
           requestKind: context.requestKind,
           input,
@@ -320,8 +381,9 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           systemPrompt: context.systemPrompt,
           historyMessageCount: context.historyMessages?.length ?? 0,
           historyPrefix: (context.historyMessages ?? [])
-            .map((message) => `${message.role}\u0000${message.content}`)
+            .map((message) => `${message.role}\u0000${contentToText(message.content)}`)
             .join("\u0001"),
+          inputPartKinds: inputParts.map((part) => part.type),
         });
         const roundResult = await callModelRound({
           fetchImpl,
@@ -329,7 +391,7 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           apiKey,
           model,
           messages,
-          signal,
+          signal: roundSignal,
           stream,
           enableTools,
           toolSpecs: context.tools,
@@ -373,15 +435,6 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           context.onEvent?.({ type: "tool_start", name: tool, args });
         }
 
-        // 预算闸门（P6）：轮次 / 工具调用次数 / 墙钟任一超限就立刻停，不再继续烧 token
-        checkpoint.round = round;
-        const overBudget = checkBudget(checkpoint);
-        if (overBudget.exceeded) {
-          markStatus(checkpoint, "budget_exceeded", { error: overBudget.reason, round });
-          if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
-          throw new Error(overBudget.reason ?? "超出运行预算");
-        }
-
         // 顺序执行需要审批/提问的工具，并行执行其余工具
         for (const requested of toolCallsToExecute) {
           const tool = requested.function.name;
@@ -389,13 +442,14 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           
           const key = toolCallKey(runId, round, tool, args);
           const replayed = findRecordedResult(checkpoint, key);
-          let result: string;
+          let toolResult: ToolRunResult;
           if (replayed !== undefined) {
             // 断点复用（P6）：重试/恢复时命中已记录的调用，不重放副作用
-            result = replayed;
+            // （断点只存文本：重放不可能恢复图片内容块，按纯文本喂回）
+            toolResult = { text: replayed };
             await appendTraceEvent(context.tracePath, "tool_replay", { name: tool, key });
           } else {
-            result = await executeToolCall(
+            toolResult = normalizeToolResult(await executeToolCall(
               tool,
               args,
               context.workDir,
@@ -407,14 +461,16 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
               context.sessionManager,
               context.agentRegistry,
               context.blockedToolNames,
-            );
-            recordToolCall(checkpoint, { key, name: tool, args, result });
+            ));
+            recordToolCall(checkpoint, { key, name: tool, args, result: toolResult.text });
             if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
           }
+          const result = toolResult.text;
 
           await appendTraceEvent(context.tracePath, "tool_result", {
             name: tool,
             result,
+            ...(toolResult.parts?.length ? { attachmentParts: toolResult.parts.length } : {}),
           });
           context.onEvent?.({ type: "tool_result", name: tool, result });
           
@@ -428,22 +484,32 @@ export function createOpenAICompatibleModelClient(options: OpenAICompatibleModel
           }
           
           toolCalls.push({ tool, args, result: result.slice(0, 500) });
+          const hasParts = (toolResult.parts?.length ?? 0) > 0;
+          // 非视觉模型：图片降级为一句话并回地拼进工具结果，不额外插一条 user 消息。
+          // 视觉模型：role=tool 的数组内容在各家兼容实现里支持度不一，改用「紧随一条 user
+          // 消息携带图片」的稳定写法（对齐 Proma 在 Responses API 上的兼容分流）。
           messages.push({
             role: "tool",
             tool_call_id: requested.id,
-            content: result,
+            content: hasParts && !supportsVision
+              ? `${result}\n\n${NON_VISION_TOOL_IMAGE_PLACEHOLDER}`
+              : result,
           });
+          if (hasParts && supportsVision) {
+            messages.push({
+              role: "user",
+              content: toWireContent(
+                [{ type: "text", text: "（承接上一条工具结果中的图片）" }, ...(toolResult.parts ?? [])],
+                true,
+              ),
+            });
+          }
         }
         }
-
-        // 循环走完仍未收敛：按轮次预算失败收尾，并落盘断点供恢复
-        markStatus(checkpoint, "budget_exceeded", { error: `模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`, round: maxToolRounds });
-        if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
-        throw new Error(`模型工具调用超过最大轮数（${maxToolRounds} 轮仍未停止）`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (checkpoint.status === "running") {
-          markStatus(checkpoint, /超出预算|超过最大轮数/u.test(message) ? "budget_exceeded" : "failed", { error: message });
+          markStatus(checkpoint, "failed", { error: message });
           if (checkpointFile) await writeCheckpoint(checkpointFile, checkpoint).catch(() => undefined);
         }
         throw error;

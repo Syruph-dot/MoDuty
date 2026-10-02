@@ -504,6 +504,17 @@ export default function SettingsScreen() {
                   />
                   <small style={{ fontSize: 11, opacity: 0.65 }}>用于上下文占用与 Compact 预算；留空时根据模型名推断。</small>
                 </label>
+                <label className="settings-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.supportsVision === true}
+                    onChange={(event) => setDraft({ ...draft, supportsVision: event.target.checked ? true : undefined })}
+                  />
+                  <span className="settings-field__label" style={{ margin: 0 }}>支持图片输入（多模态）</span>
+                  <small style={{ fontSize: 11, opacity: 0.65 }}>
+                    勾选后，粘贴的图片会直接作为图像发给该模型；未勾选时只给图片路径与占位说明（图片对模型不可见）。
+                  </small>
+                </label>
                 <div className="settings-actions__right" style={{ justifyContent: "flex-end", marginTop: 8 }}>
                   <button type="button" className="settings-btn" onClick={closeDraft}>取消</button>
                   <button type="button" className="settings-btn settings-btn--primary" onClick={saveDraft}>应用</button>

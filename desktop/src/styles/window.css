@@ -536,11 +536,31 @@
   flex: 1;
   overflow-y: auto;
   padding: 13px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  /* 工具卡自适应网格：
+     - --tool-card-min = 0.8 ×（满屏均分 5 张卡片的宽度 W_o），由组件按窗口宽度写入；
+     - repeat(auto-fill, minmax(min, 1fr)) → 列数尽可能多，且每列不低于 min（口径见 lib/toolCardLayout.ts）。
+     文本消息与独占行卡片用 grid-column: 1 / -1 跨满整行。 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tool-card-min, 300px), 1fr));
+  align-items: start;
+  align-content: start;
+  gap: 10px; /* 与 TOOL_GRID_GAP_PX 一致 */
   /* 原生滚动条由右侧「消息导航」取代（见 MessageMinimap） */
   scrollbar-width: none;
+}
+
+/* 默认所有节点独占整行；只有常规工具卡（--flow）进网格流，从左往右、从上往下 */
+.agent-window__list > * {
+  grid-column: 1 / -1;
+}
+
+.agent-window__list > .tool-card--flow {
+  grid-column: auto;
+}
+
+/* 交互卡（如问答卡）：单开并独占一行 */
+.agent-window__list > .tool-card--full {
+  grid-column: 1 / -1;
 }
 
 .agent-window__list::-webkit-scrollbar {
@@ -1091,8 +1111,7 @@
 /* 工具调用卡片 */
 
 .tool-card {
-  align-self: flex-start;
-  min-width: min(560px, 70%);
+  align-self: start;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
@@ -1100,6 +1119,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .tool-card__head {
@@ -2645,3 +2665,180 @@
   border: 1px dashed rgba(255, 255, 255, 0.14);
 }
 .browser-window__placeholder--embedded p { opacity: 0.55; font-size: 12px; }
+
+/* ============================================================
+ * 输入框附件（粘贴 / 拖拽 / 文件选择）
+ * ============================================================ */
+
+/* composer 换行布局：chips / 附件条 / 提示各占一行，输入框与按钮在同一行 */
+.agent-window__composer {
+  flex-wrap: wrap;
+}
+
+.agent-window__composer .mention-chips,
+.attachment-strip,
+.attachment-hint {
+  flex: 0 0 100%;
+}
+
+/* 隐藏的文件选择 input（用 ＋ 按钮代理点击） */
+.agent-window__file-input {
+  display: none;
+}
+
+.attachment-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 2px 2px;
+}
+
+.attachment-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(232, 237, 247, 0.6);
+  white-space: pre-wrap;
+}
+
+.attachment-hint--error {
+  color: #ff9d9d;
+}
+
+/* 附件方卡片：图片为缩略图，其它类型为扩展名徽标 + 文件名 + 体积 */
+.attachment-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+.attachment-card--image {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px;
+}
+
+.attachment-card__thumb {
+  display: block;
+  width: 100%;
+  height: 88px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 5px;
+}
+
+.attachment-card__thumb--loading {
+  animation: attachment-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes attachment-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.75; }
+}
+
+.attachment-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #cfe0ff;
+  background: rgba(79, 140, 255, 0.18);
+  border: 1px solid rgba(79, 140, 255, 0.35);
+  border-radius: 6px;
+}
+
+.attachment-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-card__name {
+  max-width: 150px;
+  overflow: hidden;
+  font-size: 12px;
+  color: #e8edf7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-card--image .attachment-card__name {
+  max-width: 100%;
+}
+
+.attachment-card__size {
+  font-size: 10px;
+  color: rgba(232, 237, 247, 0.55);
+}
+
+.attachment-card__remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: #e8edf7;
+  background: rgba(16, 21, 34, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.attachment-card__remove:hover {
+  border-color: rgba(96, 200, 255, 0.6);
+}
+
+/* 已发送消息里的附件：正文下方并排，整体靠右对齐 */
+.msg--user.msg--with-attachments {
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.msg__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: min(660px, 78%);
+}
+
+/* 原生拖放悬停在本窗口时的整体提示 */
+.agent-window--drop-active {
+  box-shadow: inset 0 0 0 2px rgba(79, 140, 255, 0.65);
+}
+
+.agent-window--drop-active::after {
+  content: "松开即可附加到这条对话";
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 70;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #e8edf7;
+  white-space: nowrap;
+  background: rgba(16, 21, 34, 0.95);
+  border: 1px solid rgba(79, 140, 255, 0.45);
+  border-radius: 999px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}

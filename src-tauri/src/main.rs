@@ -317,6 +317,7 @@ fn main() {
       webview_bridge::webview_open,
       webview_bridge::webview_set_bounds,
       webview_bridge::webview_set_visible,
+      webview_bridge::webview_set_stacked,
       webview_bridge::webview_close,
       webview_bridge::webview_wait_ready,
       webview_bridge::webview_list,

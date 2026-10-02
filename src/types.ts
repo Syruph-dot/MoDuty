@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SessionManager } from "./session-manager.js";
 import type { AgentRegistry } from "./agent-registry.js";
+import type { AttachmentRef } from "./attachments.js";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -122,7 +123,16 @@ export interface ModelRunContext {
    * 为什么不是拼成一段文本：历史作为独立消息顺序追加，前缀才能逐字节稳定，
    * 上游 provider 的前缀缓存才可以命中。拼成文本后每轮都会重算整块，前缀随时漂移。
    */
-  historyMessages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  historyMessages?: Array<{ role: "system" | "user" | "assistant"; content: MessageContent }>;
+  /** 当前模型是否支持图片输入（决定图片内容块直发还是降级为文字占位） */
+  supportsVision?: boolean;
+  /**
+   * 本轮用户消息的附加内容块（附件里的图片）。
+   *
+   * 为什么单独一个字段而不把 input 改成联合类型：input 还参与 trace、估算、续跑提示拼接，
+   * 到处都是字符串操作；图片只在拼 wire messages 的那一刻才需要，放在尾部最小侵入。
+   */
+  inputParts?: ContentPart[];
 }
 
 export type MomokaRequestKind = ModelRunContext["requestKind"];
@@ -305,6 +315,30 @@ export interface MomokaRuntime {
   runJudge(input: JudgeRunInput): Promise<JudgeRunResult>;
 }
 
+/**
+ * 模型消息内容块。
+ *
+ * 字符串是历史默认形态；图片走内容块（对齐 Proma 的内部消息形状），
+ * 到 OpenAI 兼容 wire 上再转成 image_url + data URL。
+ */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; mimeType: string; data: string };
+
+/** 模型消息内容：纯文本或内容块数组 */
+export type MessageContent = string | ContentPart[];
+
+/**
+ * 工具执行结果。
+ *
+ * 默认是纯文本；图片/解析类工具可以额外带回内容块（对齐 Proma：工具结果也能带图）。
+ * parts 只走模型通道，不进 trace、不进 toolCalls 摘要（base64 落进日志会失控）。
+ */
+export interface ToolRunResult {
+  text: string;
+  parts?: ContentPart[];
+}
+
 export interface ChatRequest {
   message: string;
   sessionId?: string | null;
@@ -324,6 +358,11 @@ export interface ChatRequest {
    * 未传时由 transient 推导（transient → verdict）。
    */
   turnMode?: TurnMode;
+  /**
+   * 随本轮用户消息一起提交的附件（输入框粘贴/拖拽/选择）。
+   * 落盘进消息 extra，并把清单拼进模型输入；图片按能力内联为内容块。
+   */
+  attachments?: AttachmentRef[];
   onEvent?: (event: StreamEvent) => void;
   signal?: AbortSignal;
 }

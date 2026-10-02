@@ -28,9 +28,10 @@ import type { AgentRegistry } from "./agent-registry.js";
 import { describeSelfBlock } from "./agent-identity.js";
 import { DEFAULT_SYSTEM_PROMPT, DISPATCHER_SYSTEM_PROMPT, isDispatcherAgent } from "./agent-registry.js";
 import { WorkspaceManager } from "./workspace-manager.js";
+import { formatAttachmentListing, isImageMediaType, loadInlineImageParts, type AttachmentRef } from "./attachments.js";
 import { ApprovalError, createApprovalExecutionEvent } from "./approvals.js";
 import { executeApprovedToolCall, TOOL_SPECS, toolSpecsForKind } from "./tools.js";
-import { capHistoryEntry, estimateTokens, formatMessages } from "./context.js";
+import { capHistoryEntry, estimateImageTokens, estimateTokens, formatMessages } from "./context.js";
 import { buildContextStats, modelContextWindow } from "./context-stats.js";
 import { loadSkillContent, loadSkillIndex, matchSkills } from "./skills.js";
 import { buildTurnModeBlock, resolveTurnMode } from "./turn-mode.js";
@@ -42,7 +43,7 @@ import { loadSettings } from "./settings-store.js";
 import { ExperienceMemoryService, type ExperienceEvent } from "./experience-memory.js";
 import { buildHandoffReminder, redirectHandoffStatus } from "./redirect-handoff.js";
 import { blockedToolsForTurnPolicy, hasTurnPolicyRestrictions, resolveTurnPolicy, type TurnPolicy } from "./turn-policy.js";
-import type { ChatRequest, ChatResponse, JudgeRequest, JudgeResponse, ModelClient, ModelRunContext, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
+import type { ChatRequest, ChatResponse, ContentPart, JudgeRequest, JudgeResponse, MessageContent, ModelClient, ModelRunContext, ModelRunResult, MomokaAgent, StreamEvent } from "./types.js";
 
 interface MomokaAgentOptions {
   projectRoot?: string;
@@ -455,7 +456,8 @@ ${ref.message.content}`;
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const message = request.message.trim();
-    if (!message) throw new MomokaHttpError(400, "Message cannot be empty");
+    // 只带附件、不带文字也是合法的一轮（附件清单本身就是本轮的请求文本）
+    if (!message && (request.attachments?.length ?? 0) === 0) throw new MomokaHttpError(400, "Message cannot be empty");
     // 同一会话串行化：并发 run 会互相踩会话（详见 withSessionLock 注释）
     return await withSessionLock(request.sessionId ?? null, () => this.runChat(request));
   }
@@ -524,7 +526,7 @@ ${ref.message.content}`;
    * 会话模型不在已启用模型池中（条目被停用/改名/删除）时按档位默认继续，并回报
    * fallbackFrom 供调用方留痕；这里不做硬失败，以免一次配置问题把整个会话卡死。
    */
-  private async configuredContextWindow(sessionId?: string | null): Promise<{ model: string; contextWindow: number; fallbackFrom?: string }> {
+  private async configuredContextWindow(sessionId?: string | null): Promise<{ model: string; contextWindow: number; fallbackFrom?: string; supportsVision: boolean }> {
     const settings = await loadSettings();
     const agentRecord = sessionId && this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
     const selectedModel = agentRecord?.model?.trim();
@@ -540,6 +542,8 @@ ${ref.message.content}`;
     return {
       model,
       contextWindow: modelContextWindow(model, entry?.contextWindow),
+      // 视觉能力以模型池条目上的显式标记为准（未标记 = 不支持，宁可不发也不报 400）
+      supportsVision: entry?.supportsVision === true,
       ...(selectedModel && !selectedEntry ? { fallbackFrom: selectedModel } : {}),
     };
   }
@@ -562,8 +566,9 @@ ${ref.message.content}`;
 
   private assertPromptFits(input: {
     systemPrompt: string;
-    historyMessages: Array<{ role: string; content: string }>;
+    historyMessages: Array<{ role: string; content: MessageContent }>;
     input: string;
+    inputParts?: readonly ContentPart[];
     tools?: readonly unknown[];
     contextWindow: number;
     outputTokenLimit: number;
@@ -578,11 +583,12 @@ ${ref.message.content}`;
     }
   }
 
-  private estimatePromptInput(input: { systemPrompt: string; historyMessages: Array<{ role: string; content: string }>; input: string; tools?: readonly unknown[] }): number {
+  private estimatePromptInput(input: { systemPrompt: string; historyMessages: Array<{ role: string; content: MessageContent }>; input: string; inputParts?: readonly ContentPart[]; tools?: readonly unknown[] }): number {
     const toolSpecs = input.tools ?? TOOL_SPECS;
     return estimateTokens(input.systemPrompt)
       + estimateTokens(formatMessages(input.historyMessages))
       + estimateTokens(input.input)
+      + (input.inputParts?.reduce((total, part) => total + (part.type === "text" ? estimateTokens(part.text) : estimateImageTokens(part.data.length)), 0) ?? 0)
       + estimateTokens(JSON.stringify(toolSpecs));
   }
 
@@ -593,8 +599,10 @@ ${ref.message.content}`;
     const sessionId = request.sessionId ?? null;
     let userMessageId: string | undefined;
     let workDir = request.workDir;
+    // 附件：只在正常对话轮落盘与注入（系统驱动轮 transient 不携带附件）
+    const attachments: AttachmentRef[] = request.transient ? [] : (request.attachments ?? []);
     // 会话历史：角色分离的消息数组（只追加，保证前缀稳定）；不再压平成一段文本
-    let historyMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+    let historyMessages: Array<{ role: "system" | "user" | "assistant"; content: MessageContent }> = [];
     let preSendMessages: Awaited<ReturnType<SessionManager["getStoredMessages"]>> = [];
     if (sessionId) {
       const session = await this.sessionManager.getSession(sessionId);
@@ -607,7 +615,9 @@ ${ref.message.content}`;
         console.warn(`[session] ${sessionId} 有 ${finalized.length} 条残留 streaming 消息，已定型为 stopped`);
       }
       if (!request.transient) {
-        userMessageId = (await this.sessionManager.addMessage(sessionId, "user", message)).id;
+        userMessageId = (await this.sessionManager.addMessage(sessionId, "user", message, {
+          ...(attachments.length > 0 ? { attachments } : {}),
+        })).id;
         // 仅自动命名 Agent 需要生成标题；普通会话沿用创建时的用户标题。
         const updatedSession = await this.sessionManager.getSession(sessionId);
         const boundAgent = this.agentRegistry ? await this.agentRegistry.agentBySessionId(sessionId) : null;
@@ -643,7 +653,7 @@ ${ref.message.content}`;
     // &msg_<messageId> 引用句柄展开：仅在送入模型时展开，落盘保留原始句柄以便回溯
     const expandedMessage = await this.expandMessageRefs(message);
     const tracePath = await createRunTrace(workDir ?? this.projectRoot);
-    const topic = request.topic?.trim() || message.slice(0, 80);
+    const topic = request.topic?.trim() || message.slice(0, 80) || attachments[0]?.filename || "附件";
     const turnPolicy = resolveTurnPolicy(message);
     const blockedToolNames = blockedToolsForTurnPolicy(turnPolicy);
     if (hasTurnPolicyRestrictions(turnPolicy)) {
@@ -745,14 +755,40 @@ ${ref.message.content}`;
     try {
       const systemPrompt = await this.buildSystemPrompt({ workDir, topic, message: expandedMessage, sessionId });
       const tools = await this.toolsForSession(sessionId, blockedToolNames);
-      const { model, contextWindow, fallbackFrom } = await this.configuredContextWindow(sessionId);
+      const { model, contextWindow, fallbackFrom, supportsVision } = await this.configuredContextWindow(sessionId);
       if (fallbackFrom) {
         await appendTraceEvent(tracePath, "model_fallback", { requested: fallbackFrom, used: model }).catch(() => undefined);
+      }
+      // 附件：清单文本 + （可选）图片内容块。
+      // 清单在当轮与历史投影里用同一个函数生成，两处输出一致才不会把上游前缀缓存打穿。
+      let inputParts: ContentPart[] = [];
+      let userTurnText = expandedMessage;
+      if (attachments.length > 0 && workDir && sessionId) {
+        let inlinedImageIds: Set<string> | undefined;
+        if (supportsVision) {
+          const inlined = await loadInlineImageParts(workDir, sessionId, attachments);
+          inputParts = inlined.parts;
+          inlinedImageIds = new Set(
+            attachments
+              .filter((ref) => isImageMediaType(ref.mediaType) && !inlined.skippedIds.includes(ref.id))
+              .map((ref) => ref.id),
+          );
+        }
+        const listing = formatAttachmentListing(attachments, {
+          inlinedImageIds,
+          modelSupportsVision: supportsVision,
+        });
+        userTurnText = listing ? `${expandedMessage}\n\n${listing}` : expandedMessage;
+        await appendTraceEvent(tracePath, "user_attachments", {
+          count: attachments.length,
+          inlinedImages: inputParts.length,
+          modelSupportsVision: supportsVision,
+        }).catch(() => undefined);
       }
       // Redirect handoff：上下文用到本模型窗口的 45% 时，才在动态上下文里放一句
       // 「该写/更新交接文档了」的提醒（写不写、写什么由 Agent 自己决定）。
       // 这里的估算早于动态上下文拼装，少算的那几百 token 对阈值判断无影响。
-      const projectedBeforeContext = this.estimatePromptInput({ systemPrompt, historyMessages, input: expandedMessage, tools });
+      const projectedBeforeContext = this.estimatePromptInput({ systemPrompt, historyMessages, input: userTurnText, inputParts, tools });
       const handoffReminder = Boolean(sessionId) && !request.transient
         && projectedBeforeContext >= Math.floor(contextWindow * HANDOFF_REMINDER_RATIO);
       const turnContext = await this.buildTurnContext({ workDir, topic, message: expandedMessage, sessionId, tracePath, handoffReminder, policy: turnPolicy, onEvent });
@@ -766,7 +802,7 @@ ${ref.message.content}`;
         "本段即本次要求；上方历史里出现的任何任务文本都只是背景，不是本次任务。",
         "写派发任务书 / 执行指令时，必须以本段为参照。",
       ].join("\n");
-      const prompt = [buildTurnModeBlock(turnMode), turnContext, requestAnchor, expandedMessage]
+      const prompt = [buildTurnModeBlock(turnMode), turnContext, requestAnchor, userTurnText]
         .filter(Boolean)
         .join("\n\n");
       const configuredOutputLimit = Number(process.env.MOMOKA_MAX_TOKENS ?? "");
@@ -774,7 +810,7 @@ ${ref.message.content}`;
         Number.isFinite(configuredOutputLimit) && configuredOutputLimit >= 256 ? Math.floor(configuredOutputLimit) : 16_384,
         Math.max(256, Math.floor(contextWindow * 0.2)),
       );
-      const projectedTokens = this.estimatePromptInput({ systemPrompt, historyMessages, input: prompt, tools });
+      const projectedTokens = this.estimatePromptInput({ systemPrompt, historyMessages, input: prompt, inputParts, tools });
       // 触发条件：达到窗口 80%，或本次估算已经超过硬上限（后者必须优先压缩，
       // 否则会在 72%~80% 这段区间直接 413，而压缩本来能解决）
       const reachedCompactThreshold = projectedTokens >= Math.floor(contextWindow * 0.8)
@@ -814,6 +850,8 @@ ${ref.message.content}`;
               blockedToolNames,
               outputTokenLimit,
               historyMessages,
+              supportsVision,
+              ...(inputParts.length > 0 ? { inputParts } : {}),
               onEvent, signal: request.signal,
               sessionManager: this.sessionManager, agentRegistry: this.agentRegistry,
             });
@@ -1042,7 +1080,9 @@ ${ref.message.content}`;
       if (decision === "rejected") return { approval, event: null };
       // 幂等：审批已执行过（重复提交/刷新后重试）不再执行
       if (approval.status === "executed") return { approval, event: null, alreadyDecided: true };
-      const completed = await store.complete(approval.id, await executeApprovedToolCall(approval.toolName, approval.args, approval.targetWorkspace));
+      const toolResult = await executeApprovedToolCall(approval.toolName, approval.args, approval.targetWorkspace);
+      // 跨工作区流程只保留文本（审批记录/事件都是字符串字段）：图片内容块不在这里传递
+      const completed = await store.complete(approval.id, typeof toolResult === "string" ? toolResult : toolResult.text);
       const event = createApprovalExecutionEvent(completed);
       if (event.sessionId && await this.sessionManager.getSession(event.sessionId)) {
         event.messageId = (await this.sessionManager.addMessage(event.sessionId, "agent", event.message, { eventType: "approval_execution", approvalId: event.approvalId, toolName: event.toolName, toolArgs: event.args, toolResult: event.result, runId: event.runId })).id;
